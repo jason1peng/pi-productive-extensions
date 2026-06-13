@@ -1,0 +1,23 @@
+{
+  "name": "pi-productive-extensions",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/delivery-state-machine/index.ts",
+      "./extensions/session-usage/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/delivery-state-machine/tests/delivery-state-machine.test.ts",
+    "verify": "npm run test"
+  }
+}

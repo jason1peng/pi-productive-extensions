@@ -7,8 +7,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/delivery-state-machine/index.ts",
-      "./extensions/session-usage/index.ts"
+      "./extensions"
     ]
   },
   "peerDependencies": {

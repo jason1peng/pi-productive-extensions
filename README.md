@@ -22,20 +22,19 @@ Reports current pi session token/cost usage including pi-subagents child session
 
 ## Installation
 
-Clone this repo and configure pi to load the package/extensions.
-
-Local clone extension paths:
+Clone this repo and configure pi to load the package from the clone root:
 
 ```json
 {
-  "extensions": [
-    "/path/to/pi-productive-extensions/extensions/delivery-state-machine",
-    "/path/to/pi-productive-extensions/extensions/session-usage"
+  "packages": [
+    "/path/to/pi-productive-extensions"
   ]
 }
 ```
 
-Package-style usage may also be supported by your pi setup:
+The package manifest loads `./extensions`, so any extension added under `extensions/<name>/index.ts` is discovered automatically on the next pi startup or `/reload`. You do not need to add each extension path to `settings.json`.
+
+Git package usage is also supported:
 
 ```json
 {

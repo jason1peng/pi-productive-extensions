@@ -61,6 +61,29 @@ interface UsageTotals {
 }
 
 type PhaseRounds = Record<RunnablePhase, number>;
+type UsageAttribution = "exact" | "best-effort" | "phase-aggregate" | "unavailable";
+
+interface DeliveryStep {
+	id: string;
+	phase: RunnablePhase;
+	attempt: number;
+	childIndex?: number;
+	childCount?: number;
+	agent?: string;
+	model?: string;
+	thinking?: string;
+	context?: string;
+	status: "planned" | "reported";
+	verdict?: Verdict;
+	summary?: string;
+	artifact?: string;
+	startedAt: number;
+	endedAt?: number;
+	usageBefore?: UsageTotals;
+	usageAfter?: UsageTotals;
+	usageDelta?: UsageTotals;
+	usageAttribution?: UsageAttribution;
+}
 
 interface DeliveryState {
 	active: boolean;
@@ -81,6 +104,7 @@ interface DeliveryState {
 	pendingIssue?: PendingIssue;
 	acceptedRisks: string[];
 	history: HistoryEntry[];
+	steps: DeliveryStep[];
 	updatedAt: number;
 }
 
@@ -162,6 +186,7 @@ const initialState = (): DeliveryState => ({
 	readyToClose: false,
 	acceptedRisks: [],
 	history: [],
+	steps: [],
 	updatedAt: Date.now(),
 });
 
@@ -196,6 +221,9 @@ function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 		...raw,
 		maxRepairRounds: maxPhaseRounds.VERIFY,
 		maxPhaseRounds,
+		acceptedRisks: Array.isArray(raw.acceptedRisks) ? raw.acceptedRisks : [],
+		history: Array.isArray(raw.history) ? raw.history : [],
+		steps: Array.isArray((raw as { steps?: unknown }).steps) ? (raw as { steps: DeliveryStep[] }).steps : [],
 	};
 }
 
@@ -563,16 +591,21 @@ function slugifyLaunch(launch: LaunchConfig): string {
 		.replace(/^-+|-+$/g, "") || "child";
 }
 
+function parallelArtifactName(phase: RunnablePhase, attempt: number, launch: LaunchConfig, childIndex: number): string {
+	const childNumber = String(childIndex + 1).padStart(2, "0");
+	return `${PHASE_ARTIFACT_STEMS[phase]}-${attempt}-${childNumber}-${slugifyLaunch(launch)}.md`;
+}
+
 function parallelChildPrompt(basePrompt: string, state: DeliveryState, launch: LaunchConfig, index: number, total: number): string {
 	if (!isRunnablePhase(state.phase)) return basePrompt;
-	const childNumber = String(index + 1).padStart(2, "0");
-	const artifactName = `${PHASE_ARTIFACT_STEMS[state.phase]}-${childNumber}-${slugifyLaunch(launch)}.md`;
+	const attempt = phaseAttemptForStep(state, state.phase);
+	const artifactName = parallelArtifactName(state.phase, attempt, launch, index);
 	const artifactPath = state.artifactDir ? path.join(state.artifactDir, artifactName) : artifactName;
 	return `${basePrompt}
 
 Parallel phase instruction:
-- You are child ${index + 1}/${total} for phase ${state.phase}; work independently from the other parallel child outputs.
-- Use or return this unique artifact path for your result: ${artifactPath}.
+- You are child ${index + 1}/${total} for phase ${state.phase} attempt ${attempt}; work independently from the other parallel child outputs.
+- Use or return this unique attempt-specific artifact path for your result: ${artifactPath}.
 - Do not write to the generic phase artifact path such as ${PHASE_ARTIFACT_STEMS[state.phase]}.md; the parent/orchestrator may use that for the aggregate phase report.`;
 }
 
@@ -635,6 +668,129 @@ function nextAction(state: DeliveryState): NextAction {
 		orchestratorInstruction,
 		reportInstruction,
 	};
+}
+
+function phaseAttemptForStep(state: DeliveryState, phase: RunnablePhase): number {
+	if (phase === "IMPLEMENT") return implementationAttempt(state);
+	if (phase === "VERIFY") return Math.max(1, state.verifyRound || 1);
+	if (phase === "REVIEW") return Math.max(1, state.reviewRound || 1);
+	return state.history.filter((entry) => entry.event === "report" && entry.phase === phase).length + 1;
+}
+
+function plannedStepId(phase: RunnablePhase, attempt: number, childIndex?: number): string {
+	return `${phase}-${attempt}-${childIndex ?? 0}`;
+}
+
+function plannedArtifactPath(state: DeliveryState, phase: RunnablePhase, attempt: number, launch?: LaunchConfig, childIndex?: number, childCount?: number): string | undefined {
+	if (!state.artifactDir) return undefined;
+	const stem = PHASE_ARTIFACT_STEMS[phase];
+	let fileName: string;
+	if (childCount && childCount > 1 && launch && childIndex !== undefined) {
+		fileName = parallelArtifactName(phase, attempt, launch, childIndex);
+	} else {
+		fileName = attempt > 1 ? `${stem}-${attempt}.md` : `${stem}.md`;
+	}
+	return path.join(state.artifactDir, fileName);
+}
+
+function recordPlannedSteps(state: DeliveryState, ctx: ExtensionContext, action: NextAction) {
+	if (!isRunnablePhase(action.phase)) return;
+	const phase = action.phase;
+	const attempt = phaseAttemptForStep(state, phase);
+	const usageBefore = collectSessionUsage(ctx);
+	const launches = action.parallel?.length
+		? action.parallel
+		: [{ agent: action.agent ?? PHASE_CONFIG[phase].agent, model: action.model, thinking: action.thinking, context: action.context }];
+	launches.forEach((launch, index) => {
+		const childCount = launches.length;
+		const childIndex = childCount > 1 ? index : undefined;
+		const id = plannedStepId(phase, attempt, childIndex);
+		if (state.steps.some((step) => step.id === id)) return;
+		state.steps.push({
+			id,
+			phase,
+			attempt,
+			childIndex,
+			childCount: childCount > 1 ? childCount : undefined,
+			agent: launch.agent,
+			model: launch.model,
+			thinking: launch.thinking,
+			context: launch.context,
+			status: "planned",
+			artifact: plannedArtifactPath(state, phase, attempt, launch, childIndex, childCount),
+			startedAt: Date.now(),
+			usageBefore,
+		});
+	});
+	state.updatedAt = Date.now();
+}
+
+function ensurePlannedStepsForReport(state: DeliveryState, ctx: ExtensionContext, phase: RunnablePhase): DeliveryStep[] {
+	const attempt = phaseAttemptForStep(state, phase);
+	let steps = state.steps.filter((step) => step.phase === phase && step.attempt === attempt && step.status === "planned");
+	if (steps.length) return steps;
+	const action = nextAction(state);
+	recordPlannedSteps(state, ctx, action.phase === phase ? action : { ...action, phase });
+	steps = state.steps.filter((step) => step.phase === phase && step.attempt === attempt && step.status === "planned");
+	return steps;
+}
+
+function usageDeltaForStep(step: DeliveryStep, usageAfter: UsageTotals | undefined): UsageTotals | undefined {
+	if (!usageAfter || !step.usageBefore) return undefined;
+	return subtractUsage(usageAfter, step.usageBefore);
+}
+
+function usageAttributionForStep(step: DeliveryStep, usageAfter: UsageTotals | undefined, parallel: boolean): UsageAttribution {
+	const delta = usageDeltaForStep(step, usageAfter);
+	if (!delta || delta.assistantMessages === 0) return "unavailable";
+	return parallel ? "phase-aggregate" : "best-effort";
+}
+
+function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params: { phase: Phase; verdict?: Verdict; summary: string; artifact?: string }) {
+	if (!isRunnablePhase(params.phase)) return;
+	const steps = ensurePlannedStepsForReport(state, ctx, params.phase);
+	const usageAfter = collectSessionUsage(ctx);
+	const parallel = steps.length > 1;
+	const endedAt = Date.now();
+	for (const step of steps) {
+		step.status = "reported";
+		step.verdict = parallel ? undefined : params.verdict;
+		step.summary = parallel ? undefined : truncate(params.summary, 800);
+		if (params.artifact && steps.length === 1) step.artifact = params.artifact;
+		step.endedAt = endedAt;
+		step.usageAfter = usageAfter;
+		step.usageAttribution = usageAttributionForStep(step, usageAfter, parallel);
+		if (usageAfter && step.usageBefore && step.usageAttribution !== "unavailable") {
+			step.usageDelta = subtractUsage(usageAfter, step.usageBefore);
+		}
+	}
+	if (parallel) {
+		const aggregateId = `${params.phase}-${steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)}-aggregate`;
+		const existing = state.steps.find((step) => step.id === aggregateId);
+		const usageBefore = steps[0]?.usageBefore;
+		const aggregate: DeliveryStep = existing ?? {
+			id: aggregateId,
+			phase: params.phase,
+			attempt: steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase),
+			agent: "aggregate",
+			model: "parent",
+			status: "reported",
+			startedAt: Math.min(...steps.map((step) => step.startedAt)),
+			usageBefore,
+		};
+		aggregate.status = "reported";
+		aggregate.verdict = params.verdict;
+		aggregate.summary = truncate(params.summary, 800);
+		if (params.artifact) aggregate.artifact = params.artifact;
+		aggregate.endedAt = endedAt;
+		aggregate.usageAfter = usageAfter;
+		aggregate.usageAttribution = usageAttributionForStep(aggregate, usageAfter, true);
+		if (usageAfter && aggregate.usageBefore && aggregate.usageAttribution !== "unavailable") {
+			aggregate.usageDelta = subtractUsage(usageAfter, aggregate.usageBefore);
+		}
+		if (!existing) state.steps.push(aggregate);
+	}
+	state.updatedAt = Date.now();
 }
 
 function formatNextAction(state: DeliveryState): string {
@@ -886,32 +1042,185 @@ function shouldShowSummary(state: DeliveryState): boolean {
 	return state.phase === "DONE" && !state.active;
 }
 
-function formatDeliverySummary(state: DeliveryState, ctx: ExtensionContext): string {
-	const lines = [
-		"Delivery summary",
-		statusText(state),
-		`task: ${state.task ?? "<none>"}`,
-		`cwd: ${state.cwd ?? "<unknown>"}`,
-		`gitBranch: ${state.gitBranch ?? "<not a git worktree>"}`,
-		`artifactDir: ${state.artifactDir ?? "<none>"}`,
-		"",
-		"Phase counts:",
-		...formatPhaseCounts(state),
+function mdEscape(value: string | undefined): string {
+	return (value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function artifactLink(state: DeliveryState, artifact?: string): string {
+	if (!artifact) return "";
+	const relative = state.artifactDir && path.isAbsolute(artifact) ? path.relative(state.artifactDir, artifact) : artifact;
+	const label = path.basename(relative) || relative;
+	return `[${mdEscape(label)}](${relative.replace(/ /g, "%20")})`;
+}
+
+function costCell(step: DeliveryStep): string {
+	if (!step.usageDelta || step.usageAttribution === "unavailable") return "unavailable";
+	return `${formatCost(step.usageDelta.cost)} (${step.usageAttribution ?? "best-effort"})`;
+}
+
+function usageHasAssistantMessages(usage: UsageTotals | undefined): usage is UsageTotals {
+	return !!usage && usage.assistantMessages > 0;
+}
+
+function legacyStepsFromHistory(state: DeliveryState): DeliveryStep[] {
+	const phaseAttempts = new Map<RunnablePhase, number>();
+	return state.history
+		.filter((entry): entry is HistoryEntry & { phase: RunnablePhase } => entry.event === "report" && isRunnablePhase(entry.phase))
+		.map((entry) => {
+			const attempt = (phaseAttempts.get(entry.phase) ?? 0) + 1;
+			phaseAttempts.set(entry.phase, attempt);
+			return {
+				id: `legacy-${entry.phase}-${attempt}`,
+				phase: entry.phase,
+				attempt,
+				status: "reported" as const,
+				verdict: entry.verdict,
+				summary: entry.summary,
+				artifact: entry.artifact,
+				startedAt: entry.timestamp,
+				endedAt: entry.timestamp,
+				usageAttribution: "unavailable" as const,
+			};
+		});
+}
+
+function stepRepresentsReport(step: DeliveryStep): boolean {
+	return step.status === "reported" && (step.childIndex === undefined || step.agent === "aggregate");
+}
+
+function journeySteps(state: DeliveryState): DeliveryStep[] {
+	const reportedStepKeys = new Set(
+		state.steps
+			.filter(stepRepresentsReport)
+			.map((step) => `${step.phase}:${step.attempt}`),
+	);
+	return [
+		...legacyStepsFromHistory(state).filter((step) => !reportedStepKeys.has(`${step.phase}:${step.attempt}`)),
+		...state.steps,
 	];
-	const currentUsage = collectSessionUsage(ctx);
-	lines.push("", "Usage:");
-	if (!currentUsage) {
-		lines.push("- unavailable: current session is ephemeral or has no session file");
-	} else {
-		lines.push(`- current session including subagent session files: ${formatUsage(currentUsage)}`);
-		if (state.usageAtStart) {
-			lines.push(`- since delivery_start: ${formatUsage(subtractUsage(currentUsage, state.usageAtStart))}`);
-		} else {
-			lines.push("- since delivery_start: unavailable for deliveries started before usage baseline tracking");
-		}
-		lines.push("- note: usage is session-level/subagent-level; it is not allocated to individual phases yet.");
+}
+
+function readArtifactText(artifact?: string): string | undefined {
+	if (!artifact || !fs.existsSync(artifact) || !fs.statSync(artifact).isFile()) return undefined;
+	try {
+		return fs.readFileSync(artifact, "utf8");
+	} catch {
+		return undefined;
 	}
+}
+
+function extractMarkdownSection(markdown: string | undefined, heading: string): string | undefined {
+	if (!markdown) return undefined;
+	const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const match = new RegExp(`^##\\s+${escaped}\\s*$`, "im").exec(markdown);
+	if (!match) return undefined;
+	const tail = markdown.slice(match.index + match[0].length);
+	const nextHeading = tail.search(/^##\s+/m);
+	return tail.slice(0, nextHeading === -1 ? undefined : nextHeading).trim();
+}
+
+function firstSentence(text: string | undefined): string {
+	const normalized = (text ?? "").replace(/\s+/g, " ").trim();
+	if (!normalized) return "See phase summary/artifact.";
+	const match = /(.{1,220}?[.!?])\s/.exec(`${normalized} `);
+	return match?.[1] ?? truncate(normalized, 220);
+}
+
+function repairAfterFailure(steps: DeliveryStep[], failedStep: DeliveryStep): DeliveryStep | undefined {
+	return steps.find((step) => step.phase === "IMPLEMENT" && step.startedAt >= (failedStep.endedAt ?? failedStep.startedAt));
+}
+
+function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext): string {
+	refreshGitInfo(ctx, state);
+	const steps = journeySteps(state);
+	steps.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+	const currentUsage = collectSessionUsage(ctx);
+	const sinceStart = currentUsage && state.usageAtStart ? subtractUsage(currentUsage, state.usageAtStart) : undefined;
+	const usableSinceStart = usageHasAssistantMessages(sinceStart) ? sinceStart : undefined;
+	const status = state.phase === "DONE" ? "DONE" : state.phase === "STOPPED" ? "STOPPED" : state.active ? state.phase : "IDLE";
+	const lines: string[] = [
+		"# Delivery summary",
+		"",
+		`Task: ${state.task ?? "<none>"}`,
+		`Status: ${status}`,
+		`Artifact directory: ${state.artifactDir ?? "<none>"}`,
+		`Cwd: ${state.cwd ?? ctx.cwd ?? "<unknown>"}`,
+		`Branch: ${state.gitBranch ?? "<not a git worktree>"}`,
+		`Overall cost: ${usableSinceStart ? formatCost(usableSinceStart.cost) : "unavailable"}`,
+		`Overall tokens: ${usableSinceStart ? formatNumber(usableSinceStart.totalTokens) : "unavailable"}`,
+		"Cost attribution: best-effort per step; overall cost is authoritative for discovered session files when usage is available.",
+		"",
+		"## Journey",
+		"",
+		"| # | Phase | Agent | Model | Verdict | Cost | Detail |",
+		"|---|---|---|---|---|---:|---|",
+	];
+	if (!steps.length) {
+		lines.push("| - | - | - | - | - | unavailable | No phase reports recorded yet. |");
+	} else {
+		let displayIndex = 1;
+		for (const step of steps) {
+			const rowNumber = step.childCount && step.childIndex !== undefined
+				? `${displayIndex}${String.fromCharCode(97 + step.childIndex)}`
+				: String(displayIndex);
+			lines.push(`| ${rowNumber} | ${step.phase}${step.attempt > 1 ? ` #${step.attempt}` : ""} | ${mdEscape(step.agent || "unknown")} | ${mdEscape(step.model || "default")} | ${mdEscape(step.verdict || (step.status === "planned" ? "planned" : "unavailable"))} | ${costCell(step)} | ${artifactLink(state, step.artifact) || mdEscape(firstSentence(step.summary))} |`);
+			if (!step.childCount || step.childIndex === undefined || step.childIndex === step.childCount - 1) displayIndex += 1;
+		}
+	}
+
+	lines.push("", "## Failure overview", "", "| Failed step | Why it failed | Repair action | Detail |", "|---|---|---|---|");
+	const failures = steps.filter((step) => isFail(step.verdict));
+	if (!failures.length) {
+		lines.push("| - | No failed verifier/reviewer/close steps recorded. | - | - |");
+	} else {
+		for (const failure of failures) {
+			const artifactText = readArtifactText(failure.artifact);
+			const failureReason = firstSentence(extractMarkdownSection(artifactText, "Failure reason") ?? failure.summary);
+			const repair = repairAfterFailure(steps, failure);
+			const repairAction = repair ? firstSentence(repair.summary) : "No subsequent repair step recorded.";
+			lines.push(`| ${failure.phase} #${failure.attempt}${failure.childIndex !== undefined ? ` child ${failure.childIndex + 1}` : ""} | ${mdEscape(failureReason)} | ${mdEscape(repairAction)} | ${artifactLink(state, failure.artifact)} |`);
+		}
+	}
+
+	const retro = [...steps].reverse().find((step) => step.phase === "RETRO");
+	const retroText = readArtifactText(retro?.artifact);
+	const criticalFixes = extractMarkdownSection(retroText, "Critical fixes for future plans / delivery");
+	lines.push("", "## Critical fixes for future plans / delivery", "");
+	if (criticalFixes) lines.push(criticalFixes);
+	else if (retro?.artifact) lines.push(`See retro artifact for critical fixes and lessons: ${artifactLink(state, retro.artifact)}`);
+	else lines.push("No retro critical-fixes section recorded yet.");
+
+	lines.push("", "## Usage", "");
+	if (!currentUsage) {
+		lines.push("- Total: unavailable (current session is ephemeral or has no session file)");
+		lines.push("- Since `delivery_start`: unavailable");
+	} else if (!usageHasAssistantMessages(currentUsage)) {
+		lines.push("- Total: unavailable (current session has no usage-bearing assistant messages)");
+		lines.push("- Since `delivery_start`: unavailable");
+	} else {
+		lines.push(`- Total current session + discovered subagents: ${formatNumber(currentUsage.totalTokens)} tokens, ${formatCost(currentUsage.cost)}`);
+		lines.push(`- Since \`delivery_start\`: ${usableSinceStart ? `${formatNumber(usableSinceStart.totalTokens)} tokens, ${formatCost(usableSinceStart.cost)}` : "unavailable for deliveries started before usage baseline tracking or without usage-bearing assistant messages"}`);
+	}
+	lines.push("- Attribution notes:");
+	lines.push("  - Sequential phase costs are calculated from usage deltas when available.");
+	lines.push("  - Parallel phase child costs are exact only if child session files can be matched to child launches; otherwise rows show phase aggregate or unavailable.");
+	lines.push("  - Unavailable means no session usage file/baseline or no usage-bearing assistant messages were available; zero cost is not inferred.");
+	lines.push("", "## Phase counts", "", ...formatPhaseCounts(state).map((line) => `- ${line}`));
 	return lines.join("\n");
+}
+
+function writeJourneyReport(state: DeliveryState, ctx: ExtensionContext): string | undefined {
+	if (!state.artifactDir) return undefined;
+	fs.mkdirSync(state.artifactDir, { recursive: true });
+	const reportPath = path.join(state.artifactDir, "00-delivery-summary.md");
+	fs.writeFileSync(reportPath, formatJourneyReport(state, ctx), "utf8");
+	return reportPath;
+}
+
+function formatDeliverySummary(state: DeliveryState, ctx: ExtensionContext): string {
+	const reportPath = writeJourneyReport(state, ctx);
+	const report = formatJourneyReport(state, ctx);
+	return reportPath ? `${report}\n\nReport written: ${reportPath}` : report;
 }
 
 function formatState(state: DeliveryState): string {
@@ -1002,6 +1311,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state.verifyRound = 1;
 			state.reviewRound = 1;
 			addHistory(state, { phase: "IMPLEMENT", event: "start", summary: truncate(task) });
+			recordPlannedSteps(state, ctx, nextAction(state));
 			persist();
 			updateUi(ctx, state);
 			pi.setSessionName(`deliver: ${truncate(task, 50)}`);
@@ -1059,9 +1369,11 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state.verifyRound = 1;
 			state.reviewRound = 1;
 			addHistory(state, { phase: "IMPLEMENT", event: "start", summary: truncate(params.task) });
+			const action = nextAction(state);
+			recordPlannedSteps(state, ctx, action);
 			persist();
 			updateUi(ctx, state);
-			return { content: [{ type: "text", text: formatState(state) }], details: { state: cloneState(state), next: nextAction(state) } };
+			return { content: [{ type: "text", text: formatState(state) }], details: { state: cloneState(state), next: action } };
 		},
 	});
 
@@ -1079,8 +1391,11 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			updateUi(ctx, state);
+			const action = nextAction(state);
+			recordPlannedSteps(state, ctx, action);
+			persist();
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
-			return { content: [{ type: "text", text }], details: { state: cloneState(state), next: nextAction(state) } };
+			return { content: [{ type: "text", text }], details: { state: cloneState(state), next: action } };
 		},
 	});
 
@@ -1099,7 +1414,9 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			if (!state.active && state.phase !== "RETRO") {
 				return { content: [{ type: "text", text: "No active delivery. Use delivery_start or /deliver first." }], details: { state: cloneState(state) } };
 			}
+			recordReportedSteps(state, ctx, params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string });
 			transitionAfterReport(state, params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string; recommendedDecision?: Decision });
+			if (shouldShowSummary(state)) writeJourneyReport(state, ctx);
 			persist();
 			updateUi(ctx, state);
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);

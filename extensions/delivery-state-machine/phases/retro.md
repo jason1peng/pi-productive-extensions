@@ -23,6 +23,14 @@ Instructions:
 
 Write the retrospective for quick human scanning:
 - Outcome: one paragraph
+- Include this markdown table exactly so the final delivery summary can surface it:
+
+## Critical fixes for future plans / delivery
+
+| Area | Observed issue | Suggested fix | Scope |
+|---|---|---|---|
+| plan/delivery/repo/task | ... | ... | shared-skill/repo/task/extension |
+
 - Blockers missed: list or none
 - Non-blocking repo/product improvements: prioritized list, separate from process changes
 - Actionable delivery process improvements: for each item include target prompt/process, exact change, and acceptance check

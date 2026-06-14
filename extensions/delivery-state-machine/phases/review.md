@@ -34,6 +34,17 @@ Finding classification rules:
 - Non-blocking note: optional improvement that can safely be deferred and does not reduce confidence in this delivery.
 - Do not label something as a suggestion if you believe it should be fixed in this delivery.
 
+Artifact must include these structured failure sections before the checklist (write `none` when not failing):
+
+## Failure reason
+One sentence explaining why review failed, or `none` for PASS/PASS_WITH_NON_BLOCKING_NOTES.
+
+## Must-fix blockers
+- List every must-fix finding/blocker, or `none`.
+
+## Suggested repair
+- Specific repair action(s), or `none`.
+
 Artifact must include a short required review checklist:
 - Requirements matched by code/tests: yes/no
 - Candidate completeness/trackedness checked: yes/no/not a git repo; blockers listed or none

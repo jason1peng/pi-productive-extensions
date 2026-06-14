@@ -31,6 +31,17 @@ Instructions:
 - For bug fixes, compare before/after behavior when feasible.
 - If end-to-end execution is blocked, report the exact blocker, gather the closest equivalent evidence, and clearly mark the residual risk.
 
+Artifact must include these structured failure sections before the checklist (write `none` when not failing):
+
+## Failure reason
+One sentence explaining why verification failed, or `none` for PASS/PASS_WITH_NON_BLOCKING_NOTES.
+
+## Must-fix blockers
+- List every blocker, or `none`.
+
+## Suggested repair
+- Specific repair action(s), or `none`.
+
 Artifact must include a short required verification checklist:
 - Diff inspected: yes/no
 - Candidate completeness checked: yes/no/not a git repo; required files tracked and untracked files explained

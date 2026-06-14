@@ -37,20 +37,29 @@ cp extensions/delivery-state-machine/agents/fresh-verifier.md ~/.pi/agent/agents
 
 The bundled verifier is instructed to be read-only for project/source files. It can run validation commands and write configured verification artifacts, but it should not edit the candidate diff or run destructive git/filesystem commands.
 
-## Artifact directory configuration
+## Delivery configuration
 
-Delivery run artifacts are stored under `~/.pi/delivery-run` by default. Override the root with either config file:
+Delivery run artifacts are stored under `~/.pi/delivery-run` by default, and runnable phases default to 3 max rounds. Override those defaults with either config file:
 
 - Global: `~/.pi/agent/extensions/delivery-state-machine.json`
 - Project-local: `<repo>/.pi/delivery-state-machine.json` (overrides global)
 
 ```json
 {
-  "artifactRoot": "~/delivery-reports"
+  "artifactRoot": "~/delivery-reports",
+  "maxRounds": {
+    "IMPLEMENT": 4,
+    "VERIFY": 2,
+    "REVIEW": 3,
+    "CLOSE": 1,
+    "RETRO": 1
+  }
 }
 ```
 
 `artifactRoot` supports `~`, `${home}`, and `${cwd}`. Relative paths in project config resolve against the project cwd; relative paths in global config resolve against `~/.pi/agent`. For one-off runs, `PI_DELIVERY_ARTIFACT_ROOT` overrides both config files and resolves relative paths against the current cwd.
+
+`maxRounds` supports `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`. `IMPLEMENT`, `VERIFY`, and `REVIEW` currently bound repair loops; `CLOSE` and `RETRO` are recorded for phase-specific defaults and future loop support. The legacy `maxRepairRounds` key is still accepted as a config or `delivery_start` parameter and applies the same value to every phase.
 
 ## States
 
@@ -68,7 +77,7 @@ Failures move to `WAITING_DECISION` only when repair would change scope, conflic
 - `continue`
 - `defer`
 
-Repair loops are bounded by `maxRepairRounds`.
+Repair loops are bounded by per-phase `maxRounds` (`maxRepairRounds` remains as a legacy all-phase override).
 
 ## Guards
 

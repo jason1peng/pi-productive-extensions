@@ -1,8 +1,3 @@
----
-phase: REVIEW
-agent: reviewer
----
-
 ## Orchestrator instruction
 
 Launch both configured reviewer agents in parallel for independent read-only current-diff reviews. Aggregate both results before reporting the REVIEW phase; if either reviewer finds a must-fix issue, report REVIEW as FAIL with recommendedDecision=repair.

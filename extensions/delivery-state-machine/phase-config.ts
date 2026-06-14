@@ -25,16 +25,29 @@ export interface LaunchConfig {
 	context?: "fresh" | "fork";
 }
 
+export interface ConfigurableLaunchConfig {
+	agent?: string;
+	model?: string | null;
+	thinking?: "low" | "medium" | "high";
+	context?: "fresh" | "fork";
+}
+
+export interface ConfigurablePhaseLaunch extends ConfigurableLaunchConfig {
+	parallel?: ConfigurableLaunchConfig[];
+}
+
 export interface PhaseConfig extends LaunchConfig {
 	parallel?: LaunchConfig[];
 	orchestratorInstruction: (context: PhasePromptContext) => string;
 	childPrompt: (context: PhasePromptContext) => string;
 }
 
-interface RawPhaseConfig extends LaunchConfig {
+interface PhasePromptTemplates {
 	orchestratorInstruction: string;
 	childPrompt: string;
 }
+
+export const RUNNABLE_PHASES: RunnablePhase[] = ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"];
 
 const PHASE_FILES: Record<RunnablePhase, string> = {
 	IMPLEMENT: "implement.md",
@@ -44,10 +57,22 @@ const PHASE_FILES: Record<RunnablePhase, string> = {
 	RETRO: "retro.md",
 };
 
-const PARALLEL_CONFIG_FILE = "phase-parallel.json";
-
 const VALID_THINKING = new Set(["low", "medium", "high"]);
 const VALID_CONTEXT = new Set(["fresh", "fork"]);
+
+export const BUILTIN_PHASE_LAUNCH_CONFIG: Record<RunnablePhase, ConfigurablePhaseLaunch> = {
+	IMPLEMENT: { agent: "worker" },
+	VERIFY: { agent: "fresh-verifier", thinking: "low", context: "fresh" },
+	REVIEW: {
+		agent: "reviewer",
+		parallel: [
+			{ agent: "reviewer" },
+			{ agent: "reviewer" },
+		],
+	},
+	CLOSE: { agent: "delegate", thinking: "low" },
+	RETRO: { agent: "delegate", thinking: "high" },
+};
 
 function extensionDir(): string {
 	return path.dirname(fileURLToPath(import.meta.url));
@@ -57,29 +82,15 @@ function phasesDir(): string {
 	return path.join(extensionDir(), "phases");
 }
 
-function parseFrontmatter(markdown: string, filename: string): { data: Record<string, string>; body: string } {
-	if (!markdown.startsWith("---\n")) return { data: {}, body: markdown };
-	const end = markdown.indexOf("\n---", 4);
-	if (end === -1) throw new Error(`Phase config ${filename} has unterminated frontmatter.`);
-	const frontmatter = markdown.slice(4, end);
-	const body = markdown.slice(end + "\n---".length).replace(/^\r?\n/, "");
-	const data: Record<string, string> = {};
-	for (const line of frontmatter.split(/\r?\n/)) {
-		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith("#")) continue;
-		const separator = trimmed.indexOf(":");
-		if (separator === -1) throw new Error(`Phase config ${filename} has invalid frontmatter line: ${line}`);
-		const key = trimmed.slice(0, separator).trim();
-		const value = trimmed.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
-		data[key] = value;
-	}
-	return { data, body };
+export function assertPromptOnly(markdown: string, filename: string) {
+	if (!markdown.startsWith("---")) return;
+	throw new Error(`Phase prompt ${filename} must be prompt-only markdown. Move agent/model/thinking/context/parallel runtime settings into delivery-state-machine.json.`);
 }
 
 function section(markdown: string, heading: string, filename: string): string {
 	const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const match = new RegExp(`^##\\s+${escaped}\\s*$`, "im").exec(markdown);
-	if (!match) throw new Error(`Phase config ${filename} is missing section: ## ${heading}`);
+	if (!match) throw new Error(`Phase prompt ${filename} is missing section: ## ${heading}`);
 	const tail = markdown.slice(match.index + match[0].length);
 	const nextHeading = tail.search(/^##\s+/m);
 	return tail.slice(0, nextHeading === -1 ? undefined : nextHeading).trim();
@@ -90,76 +101,60 @@ function render(template: string, context: PhasePromptContext): string {
 	return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key: string) => String(values[key] ?? ""));
 }
 
-function validateLaunchConfig(config: LaunchConfig, filename: string, label: string) {
-	if (!config.agent) throw new Error(`Phase config ${filename} has ${label} without required agent.`);
+function readPhasePrompt(filename: string): PhasePromptTemplates {
+	const filePath = path.join(phasesDir(), filename);
+	const markdown = fs.readFileSync(filePath, "utf8");
+	assertPromptOnly(markdown, filename);
+	return {
+		orchestratorInstruction: section(markdown, "Orchestrator instruction", filename),
+		childPrompt: section(markdown, "Child prompt", filename),
+	};
+}
+
+function loadPhasePrompts(): Record<RunnablePhase, PhasePromptTemplates> {
+	return Object.fromEntries(
+		(Object.entries(PHASE_FILES) as Array<[RunnablePhase, string]>).map(([phase, filename]) => [phase, readPhasePrompt(filename)]),
+	) as Record<RunnablePhase, PhasePromptTemplates>;
+}
+
+const PHASE_PROMPTS: Record<RunnablePhase, PhasePromptTemplates> = loadPhasePrompts();
+
+export function validateConfigurableLaunch(config: ConfigurableLaunchConfig, filename: string, label: string, requireAgent = false) {
+	if (requireAgent && !config.agent) throw new Error(`Phase config ${filename} has ${label} without required agent.`);
+	if (config.agent !== undefined && typeof config.agent !== "string") throw new Error(`Phase config ${filename} has invalid ${label}.agent; expected string.`);
+	if (config.model !== undefined && config.model !== null && typeof config.model !== "string") throw new Error(`Phase config ${filename} has invalid ${label}.model; expected string or null.`);
 	if (config.thinking && !VALID_THINKING.has(config.thinking)) throw new Error(`Phase config ${filename} has invalid ${label}.thinking=${config.thinking}.`);
 	if (config.context && !VALID_CONTEXT.has(config.context)) throw new Error(`Phase config ${filename} has invalid ${label}.context=${config.context}.`);
 }
 
-function validateParallelLaunches(launches: LaunchConfig[] | undefined, filename: string): LaunchConfig[] | undefined {
-	if (!launches?.length) return undefined;
-	launches.forEach((launch, index) => validateLaunchConfig(launch, filename, `parallel[${index}]`));
-	return launches;
+export function validateConfigurablePhaseLaunch(config: ConfigurablePhaseLaunch, filename: string, label: string) {
+	validateConfigurableLaunch(config, filename, label);
+	if (config.parallel !== undefined) {
+		if (!Array.isArray(config.parallel)) throw new Error(`Phase config ${filename} has invalid ${label}.parallel; expected array.`);
+		config.parallel.forEach((launch, index) => validateConfigurableLaunch(launch, filename, `${label}.parallel[${index}]`, true));
+	}
 }
 
-function readParallelConfig(): Partial<Record<RunnablePhase, LaunchConfig[]>> {
-	const filePath = path.join(extensionDir(), PARALLEL_CONFIG_FILE);
-	if (!fs.existsSync(filePath)) return {};
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-	} catch (error) {
-		throw new Error(`Parallel config ${PARALLEL_CONFIG_FILE} is invalid JSON: ${(error as Error).message}`);
-	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Parallel config ${PARALLEL_CONFIG_FILE} must be an object keyed by phase.`);
-	const config: Partial<Record<RunnablePhase, LaunchConfig[]>> = {};
-	for (const [phase, launches] of Object.entries(parsed as Record<string, unknown>)) {
-		if (!(phase in PHASE_FILES)) throw new Error(`Parallel config ${PARALLEL_CONFIG_FILE} has unknown phase: ${phase}`);
-		if (!Array.isArray(launches)) throw new Error(`Parallel config ${PARALLEL_CONFIG_FILE} phase ${phase} must be an array.`);
-		config[phase as RunnablePhase] = validateParallelLaunches(launches as LaunchConfig[], `${PARALLEL_CONFIG_FILE}.${phase}`);
-	}
-	return config;
+function materializeLaunch(config: ConfigurableLaunchConfig, filename: string, label: string): LaunchConfig {
+	validateConfigurableLaunch(config, filename, label, true);
+	const launch: LaunchConfig = { agent: config.agent as string };
+	if (typeof config.model === "string") launch.model = config.model;
+	if (config.thinking) launch.thinking = config.thinking;
+	if (config.context) launch.context = config.context;
+	return launch;
 }
 
-function readRawPhaseConfig(phase: RunnablePhase, filename: string): RawPhaseConfig {
-	const filePath = path.join(phasesDir(), filename);
-	const markdown = fs.readFileSync(filePath, "utf8");
-	const { data, body } = parseFrontmatter(markdown, filename);
-	if (data.phase && data.phase !== phase) throw new Error(`Phase config ${filename} declares phase=${data.phase}, expected ${phase}.`);
-	if (!data.agent) throw new Error(`Phase config ${filename} is missing required frontmatter: agent.`);
-	if (data.tools) throw new Error(`Phase config ${filename} must not declare tools; subagent tools come from the actual agent definition.`);
-	const primary: LaunchConfig = {
-		agent: data.agent,
-		model: data.model || undefined,
-		thinking: data.thinking as RawPhaseConfig["thinking"],
-		context: data.context as RawPhaseConfig["context"],
-	};
-	validateLaunchConfig(primary, filename, "primary launch");
-	if (data.parallel) throw new Error(`Phase config ${filename} must not declare parallel; configure parallel launches in ${PARALLEL_CONFIG_FILE}.`);
+export function materializePhaseConfig(phase: RunnablePhase, launchConfig: ConfigurablePhaseLaunch): PhaseConfig {
+	validateConfigurablePhaseLaunch(launchConfig, "resolved phases", phase);
+	const prompt = PHASE_PROMPTS[phase];
+	const primary = materializeLaunch(launchConfig, "resolved phases", phase);
+	const parallel = launchConfig.parallel?.length
+		? launchConfig.parallel.map((launch, index) => materializeLaunch(launch, "resolved phases", `${phase}.parallel[${index}]`))
+		: undefined;
 	return {
 		...primary,
-		orchestratorInstruction: section(body, "Orchestrator instruction", filename),
-		childPrompt: section(body, "Child prompt", filename),
-	};
-}
-
-function materializeConfig(raw: RawPhaseConfig, parallel?: LaunchConfig[]): PhaseConfig {
-	return {
-		agent: raw.agent,
-		model: raw.model,
-		thinking: raw.thinking,
-		context: raw.context,
 		parallel,
-		orchestratorInstruction: (context) => render(raw.orchestratorInstruction, context),
-		childPrompt: (context) => render(raw.childPrompt, context),
+		orchestratorInstruction: (context) => render(prompt.orchestratorInstruction, context),
+		childPrompt: (context) => render(prompt.childPrompt, context),
 	};
 }
-
-function loadPhaseConfigs(): Record<RunnablePhase, PhaseConfig> {
-	const parallelConfig = readParallelConfig();
-	return Object.fromEntries(
-		(Object.entries(PHASE_FILES) as Array<[RunnablePhase, string]>).map(([phase, filename]) => [phase, materializeConfig(readRawPhaseConfig(phase, filename), parallelConfig[phase])]),
-	) as Record<RunnablePhase, PhaseConfig>;
-}
-
-export const PHASE_CONFIG: Record<RunnablePhase, PhaseConfig> = loadPhaseConfigs();

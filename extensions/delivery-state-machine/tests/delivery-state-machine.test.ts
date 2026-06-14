@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import deliveryStateMachine from "../index.ts";
+import { assertPromptOnly } from "../phase-config.ts";
 
 interface RegisteredTool {
 	execute: (toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: FakeContext) => Promise<any>;
@@ -112,10 +113,104 @@ await runTest("/deliver reaches review with exactly the configured parallel revi
 	assert.equal(action.parallel[0].model, undefined);
 	assert.match(action.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
 	assert.equal(action.parallel[1].agent, "reviewer");
-	assert.equal(action.parallel[1].model, "openai/gpt-5.5");
-	assert.match(action.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.equal(action.parallel[1].model, undefined);
+	assert.match(action.parallel[1].childPrompt, /03-review-1-02-reviewer\.md/);
 	assert.match(action.reportInstruction, /After all 2 children complete/);
 	assert.match(action.reportInstruction, /aggregates their findings/);
+});
+
+await runTest("default rounds favor implementation and verifier/reviewer repair budgets", async () => {
+	const harness = createHarness();
+	const result = await harness.tool("delivery_start", { task: "default rounds smoke" });
+
+	assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 10);
+	assert.equal(result.details.state.maxPhaseRounds.VERIFY, 5);
+	assert.equal(result.details.state.maxPhaseRounds.REVIEW, 5);
+	assert.equal(result.details.state.maxPhaseRounds.CLOSE, 3);
+	assert.equal(result.details.state.maxPhaseRounds.RETRO, 3);
+	assert.equal(result.details.state.maxRepairRounds, 5);
+});
+
+await runTest("phase launch config can pin and clear inherited models", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-phase-config-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	fs.mkdirSync(path.join(agentDir, "extensions"), { recursive: true });
+	fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "extensions", "delivery-state-machine.json"), JSON.stringify({
+		phases: {
+			VERIFY: { model: "api/verifier" },
+			REVIEW: { parallel: [{ agent: "reviewer", model: "api/reviewer" }] },
+		},
+	}), "utf8");
+	fs.writeFileSync(path.join(cwd, ".pi", "delivery-state-machine.json"), JSON.stringify({
+		phases: {
+			VERIFY: { model: null },
+			REVIEW: { parallel: [{ agent: "reviewer", model: null }, { agent: "reviewer", model: "api/project-reviewer" }] },
+		},
+	}), "utf8");
+
+	try {
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const harness = createHarness({ cwd });
+		await harness.tool("delivery_start", { task: "phase config smoke" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		let next = await harness.tool("delivery_next");
+		assert.equal(next.details.next.phase, "VERIFY");
+		assert.equal(next.details.next.agent, "fresh-verifier");
+		assert.equal(next.details.next.model, undefined);
+
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		next = await harness.tool("delivery_next");
+		assert.equal(next.details.next.phase, "REVIEW");
+		assert.equal(next.details.next.parallel.length, 2);
+		assert.equal(next.details.next.parallel[0].model, undefined);
+		assert.equal(next.details.next.parallel[1].model, "api/project-reviewer");
+	} finally {
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		fs.rmSync(agentDir, { recursive: true, force: true });
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("invalid phase config semantics fail fast", async () => {
+	const cases: Array<[string, unknown, RegExp]> = [
+		["unknown phase", { phases: { BOGUS: { agent: "reviewer" } } }, /unknown phase: BOGUS/],
+		["invalid phase launch shape", { phases: { VERIFY: "fresh-verifier" } }, /invalid phases\.VERIFY; expected object/],
+		["invalid model type", { phases: { VERIFY: { model: 123 } } }, /invalid phases\.VERIFY\.model; expected string or null/],
+		["invalid parallel type", { phases: { REVIEW: { parallel: "reviewer" } } }, /invalid phases\.REVIEW\.parallel; expected array/],
+		["invalid parallel entry shape", { phases: { REVIEW: { parallel: ["reviewer"] } } }, /invalid phases\.REVIEW\.parallel\[0\]; expected object/],
+		["invalid parallel entry without agent", { phases: { REVIEW: { parallel: [{ model: "api/reviewer" }] } } }, /phases\.REVIEW\.parallel\[0\] without required agent/],
+	];
+
+	for (const [label, config, expected] of cases) {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-invalid-phase-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(path.join(cwd, ".pi", "delivery-state-machine.json"), JSON.stringify(config), "utf8");
+
+		try {
+			const harness = createHarness({ cwd });
+			await assert.rejects(() => harness.tool("delivery_start", { task: `invalid phase smoke: ${label}` }), expected);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	}
+});
+
+await runTest("phase prompt frontmatter is rejected with migration guidance", async () => {
+	assert.doesNotThrow(() => assertPromptOnly("## Orchestrator instruction\n\nOk\n", "ok.md"));
+	assert.throws(
+		() => assertPromptOnly("---\nphase: VERIFY\nagent: fresh-verifier\n---\n\n## Orchestrator instruction\n", "verify.md"),
+		/Phase prompt verify\.md must be prompt-only markdown\. Move agent\/model\/thinking\/context\/parallel runtime settings into delivery-state-machine\.json\./,
+	);
+});
+
+await runTest("phase prompt markdown is frontmatter-free", async () => {
+	const phasesDir = path.resolve("extensions/delivery-state-machine/phases");
+	for (const file of fs.readdirSync(phasesDir).filter((name) => name.endsWith(".md"))) {
+		assert.equal(fs.readFileSync(path.join(phasesDir, file), "utf8").startsWith("---"), false, `${file} should be prompt-only`);
+	}
 });
 
 await runTest("artifact root can be configured from project .pi config", async () => {
@@ -130,6 +225,32 @@ await runTest("artifact root can be configured from project .pi config", async (
 		const artifactDir = result.details.state.artifactDir as string;
 		assert.equal(path.dirname(artifactDir), configuredRoot);
 		assert.equal(fs.existsSync(artifactDir), true);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("legacy config aliases are retained", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-legacy-config-"));
+	const configuredRoot = path.join(cwd, "legacy-artifacts");
+	fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(cwd, ".pi", "delivery-state-machine.json"), JSON.stringify({
+		artifactRootDir: "legacy-artifacts",
+		maxRepairRounds: 4,
+		phaseMaxRounds: { VERIFY: 2, REVIEW: 3 },
+	}), "utf8");
+
+	try {
+		const harness = createHarness({ cwd });
+		const result = await harness.tool("delivery_start", { task: "legacy config aliases smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		assert.equal(path.dirname(artifactDir), configuredRoot);
+		assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 4);
+		assert.equal(result.details.state.maxPhaseRounds.VERIFY, 2);
+		assert.equal(result.details.state.maxPhaseRounds.REVIEW, 3);
+		assert.equal(result.details.state.maxPhaseRounds.CLOSE, 4);
+		assert.equal(result.details.state.maxPhaseRounds.RETRO, 4);
+		assert.equal(result.details.state.maxRepairRounds, 2);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
@@ -249,9 +370,9 @@ await runTest("parallel reviewer aggregate report does not fabricate per-child v
 	assert.deepEqual(childSteps.map((step: any) => step.verdict), [undefined, undefined]);
 	assert.equal(aggregateStep?.verdict, "FAIL");
 	assert.match(text, /03-review-1-01-reviewer\.md/);
-	assert.match(text, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(text, /03-review-1-02-reviewer\.md/);
 	assert.match(text, /\| 4 \| REVIEW \| aggregate \| parent \| FAIL \| unavailable \| reviewer 1 FAIL/);
-	assert.match(text, /openai\/gpt-5\.5/);
+	assert.doesNotMatch(text, /openai\/gpt-5\.5/);
 });
 
 await runTest("parallel review repair journey preserves distinct child artifact links per attempt", async () => {
@@ -263,7 +384,7 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified initial change" });
 	const firstReview = await harness.tool("delivery_next");
 	assert.match(firstReview.details.next.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
-	assert.match(firstReview.details.next.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(firstReview.details.next.parallel[1].childPrompt, /03-review-1-02-reviewer\.md/);
 
 	result = await harness.tool("delivery_report", {
 		phase: "REVIEW",
@@ -276,7 +397,7 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified artifact path repair" });
 	const secondReview = await harness.tool("delivery_next");
 	assert.match(secondReview.details.next.parallel[0].childPrompt, /03-review-2-01-reviewer\.md/);
-	assert.match(secondReview.details.next.parallel[1].childPrompt, /03-review-2-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(secondReview.details.next.parallel[1].childPrompt, /03-review-2-02-reviewer\.md/);
 
 	await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "review passed after repair" });
 	await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed locally" });
@@ -288,17 +409,17 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 		.map((step: any) => path.relative(artifactDir, step.artifact));
 	assert.deepEqual(reviewChildArtifacts, [
 		"03-review-1-01-reviewer.md",
-		"03-review-1-02-reviewer-openai-gpt-5-5.md",
+		"03-review-1-02-reviewer.md",
 		"03-review-2-01-reviewer.md",
-		"03-review-2-02-reviewer-openai-gpt-5-5.md",
+		"03-review-2-02-reviewer.md",
 	]);
 	assert.equal(new Set(reviewChildArtifacts).size, reviewChildArtifacts.length);
 
 	const report = fs.readFileSync(path.join(artifactDir, "00-delivery-summary.md"), "utf8");
 	assert.match(report, /03-review-1-01-reviewer\.md/);
-	assert.match(report, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(report, /03-review-1-02-reviewer\.md/);
 	assert.match(report, /03-review-2-01-reviewer\.md/);
-	assert.match(report, /03-review-2-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(report, /03-review-2-02-reviewer\.md/);
 });
 
 await runTest("delivery summary merges legacy history-only reports with newly recorded steps", async () => {
@@ -341,7 +462,7 @@ await runTest("delivery summary merges legacy history-only reports with newly re
 		assert.match(text, /IMPLEMENT \| unknown \| default \| PASS \| unavailable \| legacy initial implementation/);
 		assert.match(text, /VERIFY \| unknown \| default \| FAIL \| unavailable \| legacy verification found missing regression/);
 		assert.match(text, /IMPLEMENT #2 \| unknown \| default \| PASS \| unavailable \| legacy repair implementation/);
-		assert.match(text, /VERIFY #2 \| fresh-verifier \| openai\/gpt-5\.5 \| PASS \| unavailable \| \[02-verification-2\.md\]/);
+		assert.match(text, /VERIFY #2 \| fresh-verifier \| default \| PASS \| unavailable \| \[02-verification-2\.md\]/);
 		assert.match(text, /legacy verification found missing regression/);
 		assert.match(text, /legacy repair implementation/);
 	} finally {

@@ -39,20 +39,37 @@ The bundled verifier is instructed to be read-only for project/source files. It 
 
 ## Delivery configuration
 
-Delivery run artifacts are stored under `~/.pi/delivery-run` by default, and runnable phases default to 3 max rounds. Override those defaults with either config file:
+Delivery run artifacts are stored under `~/.pi/delivery-run` by default. Built-in max rounds are `IMPLEMENT: 10`, `VERIFY: 5`, `REVIEW: 5`, `CLOSE: 3`, and `RETRO: 3`.
 
-- Global: `~/.pi/agent/extensions/delivery-state-machine.json`
+Override delivery settings with either config file:
+
+- Global/user: `~/.pi/agent/extensions/delivery-state-machine.json`
 - Project-local: `<repo>/.pi/delivery-state-machine.json` (overrides global)
+
+Configuration is layered in this order: built-in defaults, then global/user config, then project-local config. Edit those config files instead of editing files inside the extension checkout when you want conflict-free local customization.
 
 ```json
 {
   "artifactRoot": "~/delivery-reports",
   "maxRounds": {
-    "IMPLEMENT": 4,
-    "VERIFY": 2,
-    "REVIEW": 3,
-    "CLOSE": 1,
-    "RETRO": 1
+    "IMPLEMENT": 10,
+    "VERIFY": 5,
+    "REVIEW": 5,
+    "CLOSE": 3,
+    "RETRO": 3
+  },
+  "phases": {
+    "VERIFY": {
+      "agent": "fresh-verifier",
+      "thinking": "low",
+      "context": "fresh"
+    },
+    "REVIEW": {
+      "parallel": [
+        { "agent": "reviewer" },
+        { "agent": "reviewer" }
+      ]
+    }
   }
 }
 ```
@@ -60,6 +77,46 @@ Delivery run artifacts are stored under `~/.pi/delivery-run` by default, and run
 `artifactRoot` supports `~`, `${home}`, and `${cwd}`. Relative paths in project config resolve against the project cwd; relative paths in global config resolve against `~/.pi/agent`. For one-off runs, `PI_DELIVERY_ARTIFACT_ROOT` overrides both config files and resolves relative paths against the current cwd.
 
 `maxRounds` supports `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`. `IMPLEMENT`, `VERIFY`, and `REVIEW` currently bound repair loops; `CLOSE` and `RETRO` are recorded for phase-specific defaults and future loop support. The legacy `maxRepairRounds` key is still accepted as a config or `delivery_start` parameter and applies the same value to every phase.
+
+`phases.<PHASE>` config owns launch/runtime settings: `agent`, `model`, `thinking`, `context`, and optional `parallel` launch entries. Built-in defaults omit `model`, so pi's default/current/subscription-backed model can be used without API-token-specific model pins.
+
+Default/subscription model users usually do not need model config:
+
+```json
+{
+  "phases": {
+    "VERIFY": { "agent": "fresh-verifier" }
+  }
+}
+```
+
+Users who want explicit API model pins can set `model`:
+
+```json
+{
+  "phases": {
+    "VERIFY": { "model": "openai/gpt-5.5" },
+    "REVIEW": {
+      "parallel": [
+        { "agent": "reviewer" },
+        { "agent": "reviewer", "model": "openai/gpt-5.5" }
+      ]
+    }
+  }
+}
+```
+
+Use `model: null` only to clear a model inherited from another config layer. The launcher-facing config omits `model`; it never receives literal `null`:
+
+```json
+{
+  "phases": {
+    "VERIFY": { "model": null }
+  }
+}
+```
+
+Migration note: earlier bundled defaults pinned `IMPLEMENT` and `VERIFY` to `openai/gpt-5.5`, `CLOSE` to `global.anthropic.claude-haiku-4-5-20251001-v1:0`, and one default reviewer to `openai/gpt-5.5`. Those pins are no longer built in. Re-add them in global or project config if you want the old API-model behavior.
 
 ## States
 
@@ -100,50 +157,40 @@ Delivery state-machine tools are hardcoded in `index.ts` and are intended for th
 
 The `/deliver` bootstrap prompt lives in `prompts/deliver.md` so parent/orchestrator instructions are easy to review and edit. It supports placeholders such as `{{task}}` and `{{artifactDir}}`.
 
-Phase setup lives in `phases/*.md`, similar to pi agent-style config files. Each runnable phase markdown file defines its primary subagent name, optional model/thinking/context settings, parent orchestration instruction, and child prompt. Additional parallel launches are configured separately in `phase-parallel.json`, keyed by phase. `phase-config.ts` only loads and renders those files. Common child workflow instructions, such as returning results to the parent and not calling `delivery_report`, are appended centrally from `index.ts`. Parent `delivery_report` instructions are hardcoded state-machine behavior in `index.ts`.
+Phase prompts live in `phases/*.md` as prompt-only markdown. They define the parent orchestration instruction and child prompt text only. Launch/runtime behavior (`agent`, `model`, `thinking`, `context`, and `parallel`) belongs in the layered delivery-state-machine config described above. Phase markdown frontmatter is rejected with a migration error so users do not have duplicate places to configure models. Common child workflow instructions, such as returning results to the parent and not calling `delivery_report`, are appended centrally from `index.ts`. Parent `delivery_report` instructions are hardcoded state-machine behavior in `index.ts`.
 
 Phase files do not configure subagent tools. Subagent tool availability comes from the actual agent definition used by the subagent launcher. Verification phases use the `fresh-verifier` agent, installed from `agents/fresh-verifier.md` into `~/.pi/agent/agents/fresh-verifier.md`. If another child should not have delivery tools, configure that in the child agent definition, for example with dedicated delivery agents such as `delivery-worker` or `delivery-verifier`.
 
-`delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. When `phase-parallel.json` defines launches for a phase, `delivery_next` also returns `details.next.parallel` containing exactly those configured launches; the phase's primary agent is used only as the single-child fallback when no parallel config exists. Each parallel entry has a unique child prompt and artifact path instruction. The parent should launch all entries concurrently, save child artifacts separately, and call `delivery_report` once with the aggregate result.
+`delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. When `phases.<PHASE>.parallel` is configured, `delivery_next` also returns `details.next.parallel` containing exactly those configured launches; the phase's primary agent is used only as the single-child fallback when no parallel config exists. Each parallel entry has a unique child prompt and artifact path instruction. The parent should launch all entries concurrently, save child artifacts separately, and call `delivery_report` once with the aggregate result.
 
 `delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. The report lists every planned/reported phase step in order, including parallel reviewer rows, agent/model, verdict, artifact link, best-effort cost attribution, failure overview, repair action, retro critical fixes, phase counts, and usage totals. It estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. When a delivery was started after usage baseline tracking existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. Cost attribution is explicitly labeled as best-effort, phase-aggregate, or unavailable; zero cost is not inferred when no usage-bearing session data exists. When a delivery reaches `DONE`, final `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically and refresh `00-delivery-summary.md`.
 
 Phase markdown format:
 
 ```md
----
-phase: IMPLEMENT
-agent: worker
-model: openai/gpt-5.5
-thinking: low
-context: fresh
----
-
 ## Orchestrator instruction
 Parent-only launch instruction.
 
 ## Child prompt
 Prompt passed to the subagent. Supports placeholders such as `{{task}}`, `{{artifactGuidance}}`, `{{verifyRound}}`, and `{{maxRepairRounds}}`.
-
 ```
 
-Parallel launch config format (`phase-parallel.json`):
+Parallel launch config format in `delivery-state-machine.json`:
 
 ```json
 {
-  "REVIEW": [
-    {
-      "agent": "reviewer"
-    },
-    {
-      "agent": "reviewer",
-      "model": "openai/gpt-5.5"
+  "phases": {
+    "REVIEW": {
+      "parallel": [
+        { "agent": "reviewer" },
+        { "agent": "reviewer", "model": "openai/gpt-5.5" }
+      ]
     }
-  ]
+  }
 }
 ```
 
-When a phase is present in `phase-parallel.json`, the configured entries replace the phase's primary launch list for that phase. Add every child you want to launch, including a default-model reviewer if desired. To launch multiple identical children, add multiple entries. Entries support `agent`, `model`, `thinking`, and `context`.
+When `parallel` is present for a phase, the configured entries replace the phase's primary launch list for that phase. Add every child you want to launch, including a default-model reviewer if desired. To launch multiple identical children, add multiple entries. Entries support `agent`, `model`, `thinking`, and `context`.
 
 The phase prompts ask subagents to keep artifacts scan-friendly:
 

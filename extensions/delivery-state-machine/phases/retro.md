@@ -1,9 +1,3 @@
----
-phase: RETRO
-agent: delegate
-thinking: high
----
-
 ## Orchestrator instruction
 
 Launch delegate for a read-only delivery retrospective.

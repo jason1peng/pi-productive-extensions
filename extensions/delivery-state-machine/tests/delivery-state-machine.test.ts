@@ -126,6 +126,32 @@ await runTest("artifact root can be configured from project .pi config", async (
 	}
 });
 
+await runTest("max rounds can be configured per phase", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-rounds-"));
+	fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(cwd, ".pi", "delivery-state-machine.json"), JSON.stringify({ maxRounds: { IMPLEMENT: 2, VERIFY: 1, REVIEW: 4 } }), "utf8");
+
+	try {
+		const harness = createHarness({ cwd });
+		let result = await harness.tool("delivery_start", { task: "custom phase rounds smoke" });
+		assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 2);
+		assert.equal(result.details.state.maxPhaseRounds.VERIFY, 1);
+		assert.equal(result.details.state.maxPhaseRounds.REVIEW, 4);
+
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented once" });
+		result = await harness.tool("delivery_report", {
+			phase: "VERIFY",
+			verdict: "FAIL",
+			summary: "verification blocked at configured max round",
+			recommendedDecision: "repair",
+		});
+		assert.equal(result.details.state.phase, "WAITING_DECISION");
+		assert.equal(result.details.state.pendingIssue.recommendedDecision, "repair");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 await runTest("verify and review failures with recommendedDecision=repair route back to implement", async () => {
 	const harness = createHarness();
 

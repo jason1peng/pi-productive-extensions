@@ -60,6 +60,8 @@ interface UsageTotals {
 	sessionFiles: number;
 }
 
+type PhaseRounds = Record<RunnablePhase, number>;
+
 interface DeliveryState {
 	active: boolean;
 	task?: string;
@@ -67,6 +69,7 @@ interface DeliveryState {
 	verifyRound: number;
 	reviewRound: number;
 	maxRepairRounds: number;
+	maxPhaseRounds: PhaseRounds;
 	artifactDir?: string;
 	usageAtStart?: UsageTotals;
 	cwd?: string;
@@ -100,7 +103,14 @@ interface NextAction {
 
 const START_PARAMS = Type.Object({
 	task: Type.String({ description: "User task, bug, issue URL, or requirement to deliver" }),
-	maxRepairRounds: Type.Optional(Type.Number({ description: "Maximum repair loops before stopping for parent decision" })),
+	maxRepairRounds: Type.Optional(Type.Number({ description: "Legacy override: maximum repair loops for every phase" })),
+	maxRounds: Type.Optional(Type.Object({
+		IMPLEMENT: Type.Optional(Type.Number({ description: "Maximum IMPLEMENT attempts before stopping" })),
+		VERIFY: Type.Optional(Type.Number({ description: "Maximum VERIFY rounds before stopping" })),
+		REVIEW: Type.Optional(Type.Number({ description: "Maximum REVIEW rounds before stopping" })),
+		CLOSE: Type.Optional(Type.Number({ description: "Maximum CLOSE rounds before stopping" })),
+		RETRO: Type.Optional(Type.Number({ description: "Maximum RETRO rounds before stopping" })),
+	}, { description: "Per-phase maximum rounds. Overrides configured defaults for this delivery." })),
 });
 
 const REPORT_PARAMS = Type.Object({
@@ -128,12 +138,27 @@ const DECIDE_PARAMS = Type.Object({
 
 const EMPTY_PARAMS = Type.Object({});
 
+const RUNNABLE_PHASES: RunnablePhase[] = ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"];
+const DEFAULT_MAX_ROUNDS = 3;
+const DEFAULT_PHASE_ROUNDS: PhaseRounds = {
+	IMPLEMENT: DEFAULT_MAX_ROUNDS,
+	VERIFY: DEFAULT_MAX_ROUNDS,
+	REVIEW: DEFAULT_MAX_ROUNDS,
+	CLOSE: DEFAULT_MAX_ROUNDS,
+	RETRO: DEFAULT_MAX_ROUNDS,
+};
+
+function allPhaseRounds(value: number): PhaseRounds {
+	return Object.fromEntries(RUNNABLE_PHASES.map((phase) => [phase, value])) as PhaseRounds;
+}
+
 const initialState = (): DeliveryState => ({
 	active: false,
 	phase: "IDLE",
 	verifyRound: 0,
 	reviewRound: 0,
-	maxRepairRounds: 3,
+	maxRepairRounds: DEFAULT_MAX_ROUNDS,
+	maxPhaseRounds: { ...DEFAULT_PHASE_ROUNDS },
 	readyToClose: false,
 	acceptedRisks: [],
 	history: [],
@@ -142,6 +167,40 @@ const initialState = (): DeliveryState => ({
 
 function cloneState(state: DeliveryState): DeliveryState {
 	return JSON.parse(JSON.stringify(state)) as DeliveryState;
+}
+
+function normalizeRound(value: unknown): number | undefined {
+	if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+	return Math.max(1, Math.floor(value));
+}
+
+function normalizePhaseRounds(raw: unknown): Partial<PhaseRounds> {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+	const out: Partial<PhaseRounds> = {};
+	for (const phase of RUNNABLE_PHASES) {
+		const value = normalizeRound((raw as Record<string, unknown>)[phase]);
+		if (value !== undefined) out[phase] = value;
+	}
+	return out;
+}
+
+function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
+	const base = initialState();
+	if (!raw) return base;
+	const legacyAllRounds = raw.maxPhaseRounds ? undefined : normalizeRound(raw.maxRepairRounds);
+	const maxPhaseRounds = legacyAllRounds !== undefined
+		? allPhaseRounds(legacyAllRounds)
+		: { ...DEFAULT_PHASE_ROUNDS, ...normalizePhaseRounds(raw.maxPhaseRounds) };
+	return {
+		...base,
+		...raw,
+		maxRepairRounds: maxPhaseRounds.VERIFY,
+		maxPhaseRounds,
+	};
+}
+
+function maxRoundsForPhase(state: DeliveryState, phase: RunnablePhase): number {
+	return state.maxPhaseRounds?.[phase] ?? state.maxRepairRounds ?? DEFAULT_MAX_ROUNDS;
 }
 
 function emptyUsageTotals(): UsageTotals {
@@ -281,6 +340,7 @@ function datePrefix(now = new Date()): string {
 interface DeliveryConfig {
 	artifactRoot?: string;
 	artifactRootBaseDir?: string;
+	maxRounds?: Partial<PhaseRounds>;
 }
 
 const DEFAULT_ARTIFACT_ROOT = path.join(os.homedir(), ".pi", "delivery-run");
@@ -292,17 +352,40 @@ function getAgentDir(): string {
 function readDeliveryConfigFile(filePath: string, artifactRootBaseDir: string): Partial<DeliveryConfig> {
 	if (!fs.existsSync(filePath)) return {};
 	try {
-		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as { artifactRoot?: unknown; artifactRootDir?: unknown };
+		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as {
+			artifactRoot?: unknown;
+			artifactRootDir?: unknown;
+			maxRepairRounds?: unknown;
+			maxRounds?: unknown;
+			phaseMaxRounds?: unknown;
+		};
 		const artifactRoot = typeof parsed.artifactRoot === "string"
 			? parsed.artifactRoot
 			: typeof parsed.artifactRootDir === "string"
 				? parsed.artifactRootDir
 				: undefined;
-		return artifactRoot ? { artifactRoot, artifactRootBaseDir } : {};
+		const allRounds = normalizeRound(parsed.maxRepairRounds);
+		const maxRounds = {
+			...(allRounds !== undefined ? allPhaseRounds(allRounds) : {}),
+			...normalizePhaseRounds(parsed.maxRounds),
+			...normalizePhaseRounds(parsed.phaseMaxRounds),
+		};
+		return {
+			...(artifactRoot ? { artifactRoot, artifactRootBaseDir } : {}),
+			...(Object.keys(maxRounds).length ? { maxRounds } : {}),
+		};
 	} catch (error) {
 		console.error(`Warning: could not parse delivery-state-machine config ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
 		return {};
 	}
+}
+
+function mergeDeliveryConfig(base: DeliveryConfig, override: Partial<DeliveryConfig>): DeliveryConfig {
+	return {
+		...base,
+		...override,
+		maxRounds: { ...(base.maxRounds ?? {}), ...(override.maxRounds ?? {}) },
+	};
 }
 
 function loadDeliveryConfig(cwd: string): DeliveryConfig {
@@ -310,8 +393,8 @@ function loadDeliveryConfig(cwd: string): DeliveryConfig {
 	const globalConfigPath = path.join(agentDir, "extensions", "delivery-state-machine.json");
 	const projectConfigPath = path.join(cwd, ".pi", "delivery-state-machine.json");
 	let config: DeliveryConfig = {};
-	config = { ...config, ...readDeliveryConfigFile(globalConfigPath, agentDir) };
-	config = { ...config, ...readDeliveryConfigFile(projectConfigPath, cwd) };
+	config = mergeDeliveryConfig(config, readDeliveryConfigFile(globalConfigPath, agentDir));
+	config = mergeDeliveryConfig(config, readDeliveryConfigFile(projectConfigPath, cwd));
 	if (process.env.PI_DELIVERY_ARTIFACT_ROOT) {
 		config.artifactRoot = process.env.PI_DELIVERY_ARTIFACT_ROOT;
 		config.artifactRootBaseDir = cwd;
@@ -332,6 +415,16 @@ function resolveArtifactRoot(cwd: string, config: DeliveryConfig): string {
 	const expanded = expandArtifactRoot(configuredRoot, cwd);
 	if (path.isAbsolute(expanded)) return expanded;
 	return path.resolve(config.artifactRootBaseDir ?? cwd, expanded);
+}
+
+function resolveMaxPhaseRounds(config: DeliveryConfig, maxRepairRounds?: unknown, maxRounds?: unknown): PhaseRounds {
+	const allRounds = normalizeRound(maxRepairRounds);
+	return {
+		...DEFAULT_PHASE_ROUNDS,
+		...(config.maxRounds ?? {}),
+		...(allRounds !== undefined ? allPhaseRounds(allRounds) : {}),
+		...normalizePhaseRounds(maxRounds),
+	};
 }
 
 function createArtifactDir(cwd: string, task: string): string {
@@ -378,17 +471,24 @@ function isFail(verdict?: Verdict): boolean {
 	return verdict === "FAIL" || verdict === "INCONCLUSIVE";
 }
 
+function completedImplementationReports(state: DeliveryState): number {
+	return state.history.filter((entry) => entry.event === "report" && entry.phase === "IMPLEMENT").length;
+}
+
 function implementationAttempt(state: DeliveryState): number {
-	const completed = state.history.filter((entry) => entry.event === "report" && entry.phase === "IMPLEMENT").length;
-	return completed + (state.active && state.phase === "IMPLEMENT" ? 1 : 0);
+	return completedImplementationReports(state) + (state.active && state.phase === "IMPLEMENT" ? 1 : 0);
+}
+
+function hasImplementRepairBudget(state: DeliveryState): boolean {
+	return completedImplementationReports(state) < maxRoundsForPhase(state, "IMPLEMENT");
 }
 
 function phaseLabel(state: DeliveryState): string {
 	if (!state.active) return "idle";
 	let label = state.phase.toLowerCase().replace(/_/g, "-");
-	if (state.phase === "IMPLEMENT") label += ` attempt ${implementationAttempt(state)}/${state.maxRepairRounds}`;
-	if (state.phase === "VERIFY") label += ` attempt ${state.verifyRound}/${state.maxRepairRounds}`;
-	if (state.phase === "REVIEW") label += ` attempt ${state.reviewRound}/${state.maxRepairRounds}`;
+	if (state.phase === "IMPLEMENT") label += ` attempt ${implementationAttempt(state)}/${maxRoundsForPhase(state, "IMPLEMENT")}`;
+	if (state.phase === "VERIFY") label += ` attempt ${state.verifyRound}/${maxRoundsForPhase(state, "VERIFY")}`;
+	if (state.phase === "REVIEW") label += ` attempt ${state.reviewRound}/${maxRoundsForPhase(state, "REVIEW")}`;
 	return label;
 }
 
@@ -432,7 +532,7 @@ function phasePromptContext(state: DeliveryState) {
 		task: state.task ?? "<missing task>",
 		artifactGuidance: artifactGuidance(state),
 		verifyRound: state.verifyRound,
-		maxRepairRounds: state.maxRepairRounds,
+		maxRepairRounds: isRunnablePhase(state.phase) ? maxRoundsForPhase(state, state.phase) : maxRoundsForPhase(state, "VERIFY"),
 		pendingIssueSummary: state.pendingIssue?.summary,
 		pendingIssueInstruction: state.pendingIssue
 			? `Pending ${state.pendingIssue.source} issue to address before re-running verify/review:\n${state.pendingIssue.summary}`
@@ -559,8 +659,9 @@ function formatNextAction(state: DeliveryState): string {
 
 function applyAutoRepairDecision(state: DeliveryState, pending: PendingIssue): boolean {
 	if (pending.recommendedDecision !== "repair") return false;
-	if (pending.source === "verify" && state.verifyRound >= state.maxRepairRounds) return false;
-	if (pending.source === "review" && state.reviewRound >= state.maxRepairRounds) return false;
+	if (!hasImplementRepairBudget(state)) return false;
+	if (pending.source === "verify" && state.verifyRound >= maxRoundsForPhase(state, "VERIFY")) return false;
+	if (pending.source === "review" && state.reviewRound >= maxRoundsForPhase(state, "REVIEW")) return false;
 	state.pendingIssue = pending;
 	state.phase = "IMPLEMENT";
 	addHistory(state, {
@@ -610,7 +711,7 @@ function transitionAfterReport(state: DeliveryState, params: { phase: Phase; ver
 			verdict: params.verdict ?? "INCONCLUSIVE",
 			summary: params.summary,
 			artifact: params.artifact,
-			recommendedDecision: params.recommendedDecision ?? (state.verifyRound < state.maxRepairRounds ? "repair" : "stop"),
+			recommendedDecision: params.recommendedDecision ?? (hasImplementRepairBudget(state) && state.verifyRound < maxRoundsForPhase(state, "VERIFY") ? "repair" : "stop"),
 		};
 		if (params.recommendedDecision === "repair" && applyAutoRepairDecision(state, pending)) return;
 		state.pendingIssue = pending;
@@ -632,7 +733,7 @@ function transitionAfterReport(state: DeliveryState, params: { phase: Phase; ver
 			verdict: params.verdict ?? "FAIL",
 			summary: params.summary,
 			artifact: params.artifact,
-			recommendedDecision: params.recommendedDecision ?? (state.reviewRound < state.maxRepairRounds ? "repair" : "stop"),
+			recommendedDecision: params.recommendedDecision ?? (hasImplementRepairBudget(state) && state.reviewRound < maxRoundsForPhase(state, "REVIEW") ? "repair" : "stop"),
 		};
 		if (params.recommendedDecision === "repair" && applyAutoRepairDecision(state, pending)) return;
 		state.pendingIssue = pending;
@@ -712,20 +813,32 @@ function applyDecision(state: DeliveryState, decision: Decision, rationale?: str
 	// repair: route back to IMPLEMENT with the pending issue attached. IMPLEMENT is the only writer phase.
 	state.pendingIssue = pending;
 	if (pending.source === "verify") {
-		if (state.verifyRound >= state.maxRepairRounds) {
+		if (!hasImplementRepairBudget(state)) {
 			state.phase = "STOPPED";
 			state.active = false;
-			addHistory(state, { phase: "STOPPED", event: "max_verify_rounds", summary: `Reached ${state.maxRepairRounds} verify repair rounds` });
+			addHistory(state, { phase: "STOPPED", event: "max_implement_rounds", summary: `Reached ${maxRoundsForPhase(state, "IMPLEMENT")} implement repair attempts` });
+			return;
+		}
+		if (state.verifyRound >= maxRoundsForPhase(state, "VERIFY")) {
+			state.phase = "STOPPED";
+			state.active = false;
+			addHistory(state, { phase: "STOPPED", event: "max_verify_rounds", summary: `Reached ${maxRoundsForPhase(state, "VERIFY")} verify repair rounds` });
 			return;
 		}
 		state.phase = "IMPLEMENT";
 		return;
 	}
 	if (pending.source === "review") {
-		if (state.reviewRound >= state.maxRepairRounds) {
+		if (!hasImplementRepairBudget(state)) {
 			state.phase = "STOPPED";
 			state.active = false;
-			addHistory(state, { phase: "STOPPED", event: "max_review_rounds", summary: `Reached ${state.maxRepairRounds} review repair rounds` });
+			addHistory(state, { phase: "STOPPED", event: "max_implement_rounds", summary: `Reached ${maxRoundsForPhase(state, "IMPLEMENT")} implement repair attempts` });
+			return;
+		}
+		if (state.reviewRound >= maxRoundsForPhase(state, "REVIEW")) {
+			state.phase = "STOPPED";
+			state.active = false;
+			addHistory(state, { phase: "STOPPED", event: "max_review_rounds", summary: `Reached ${maxRoundsForPhase(state, "REVIEW")} review repair rounds` });
 			return;
 		}
 		state.phase = "IMPLEMENT";
@@ -805,7 +918,7 @@ function formatState(state: DeliveryState): string {
 	const lines = [
 		statusText(state),
 		`task: ${state.task ?? "<none>"}`,
-		`rounds: verify ${state.verifyRound}/${state.maxRepairRounds}, review ${state.reviewRound}/${state.maxRepairRounds}`,
+		`rounds: implement ${implementationAttempt(state)}/${maxRoundsForPhase(state, "IMPLEMENT")}, verify ${state.verifyRound}/${maxRoundsForPhase(state, "VERIFY")}, review ${state.reviewRound}/${maxRoundsForPhase(state, "REVIEW")}, close ${maxRoundsForPhase(state, "CLOSE")}, retro ${maxRoundsForPhase(state, "RETRO")}`,
 		`readyToClose: ${state.readyToClose}`,
 	];
 	if (state.cwd) lines.push(`cwd: ${state.cwd}`);
@@ -842,13 +955,13 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		state = initialState();
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === "delivery-state-machine") {
-				state = { ...initialState(), ...(entry.data as DeliveryState) };
+				state = normalizeState(entry.data as Partial<DeliveryState>);
 			}
 			if (entry.type === "message" && entry.message.role === "toolResult") {
 				const toolName = entry.message.toolName;
 				if (toolName?.startsWith("delivery_")) {
-					const details = entry.message.details as { state?: DeliveryState } | undefined;
-					if (details?.state) state = { ...initialState(), ...details.state };
+					const details = entry.message.details as { state?: Partial<DeliveryState> } | undefined;
+					if (details?.state) state = normalizeState(details.state);
 				}
 			}
 		}
@@ -881,6 +994,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state = initialState();
 			state.active = true;
 			state.task = task;
+			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd));
+			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			state.artifactDir = createArtifactDir(ctx.cwd, task);
 			state.usageAtStart = collectSessionUsage(ctx);
 			state.phase = "IMPLEMENT";
@@ -936,9 +1051,10 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state = initialState();
 			state.active = true;
 			state.task = params.task;
+			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd), params.maxRepairRounds, params.maxRounds);
+			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			state.artifactDir = createArtifactDir(ctx.cwd, params.task);
 			state.usageAtStart = collectSessionUsage(ctx);
-			state.maxRepairRounds = params.maxRepairRounds ?? 3;
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
 			state.reviewRound = 1;

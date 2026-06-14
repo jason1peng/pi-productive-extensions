@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { PHASE_CONFIG, type LaunchConfig, type RunnablePhase } from "./phase-config";
+import { BUILTIN_PHASE_LAUNCH_CONFIG, RUNNABLE_PHASES, materializePhaseConfig, validateConfigurablePhaseLaunch, type ConfigurableLaunchConfig, type ConfigurablePhaseLaunch, type LaunchConfig, type PhaseConfig, type RunnablePhase } from "./phase-config";
 
 type Phase =
 	| "IDLE"
@@ -162,12 +162,11 @@ const DECIDE_PARAMS = Type.Object({
 
 const EMPTY_PARAMS = Type.Object({});
 
-const RUNNABLE_PHASES: RunnablePhase[] = ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"];
 const DEFAULT_MAX_ROUNDS = 3;
 const DEFAULT_PHASE_ROUNDS: PhaseRounds = {
-	IMPLEMENT: DEFAULT_MAX_ROUNDS,
-	VERIFY: DEFAULT_MAX_ROUNDS,
-	REVIEW: DEFAULT_MAX_ROUNDS,
+	IMPLEMENT: 10,
+	VERIFY: 5,
+	REVIEW: 5,
 	CLOSE: DEFAULT_MAX_ROUNDS,
 	RETRO: DEFAULT_MAX_ROUNDS,
 };
@@ -369,6 +368,7 @@ interface DeliveryConfig {
 	artifactRoot?: string;
 	artifactRootBaseDir?: string;
 	maxRounds?: Partial<PhaseRounds>;
+	phases?: Partial<Record<RunnablePhase, ConfigurablePhaseLaunch>>;
 }
 
 const DEFAULT_ARTIFACT_ROOT = path.join(os.homedir(), ".pi", "delivery-run");
@@ -377,42 +377,115 @@ function getAgentDir(): string {
 	return process.env.PI_CODING_AGENT_DIR?.replace(/^~(?=$|\/)/, os.homedir()) ?? path.join(os.homedir(), ".pi", "agent");
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseLaunchOverride(raw: unknown, filename: string, label: string, requireAgent = false): ConfigurableLaunchConfig {
+	if (!isPlainObject(raw)) throw new Error(`Phase config ${filename} has invalid ${label}; expected object.`);
+	const out: ConfigurableLaunchConfig = {};
+	const agent = raw.agent;
+	if (agent !== undefined) {
+		if (typeof agent !== "string") throw new Error(`Phase config ${filename} has invalid ${label}.agent; expected string.`);
+		out.agent = agent;
+	}
+	const model = raw.model;
+	if (model !== undefined) {
+		if (model !== null && typeof model !== "string") throw new Error(`Phase config ${filename} has invalid ${label}.model; expected string or null.`);
+		out.model = model;
+	}
+	const thinking = raw.thinking;
+	if (thinking !== undefined) {
+		if (thinking !== "low" && thinking !== "medium" && thinking !== "high") throw new Error(`Phase config ${filename} has invalid ${label}.thinking=${String(thinking)}.`);
+		out.thinking = thinking;
+	}
+	const context = raw.context;
+	if (context !== undefined) {
+		if (context !== "fresh" && context !== "fork") throw new Error(`Phase config ${filename} has invalid ${label}.context=${String(context)}.`);
+		out.context = context;
+	}
+	validateConfigurablePhaseLaunch(out, filename, label);
+	if (requireAgent && !out.agent) throw new Error(`Phase config ${filename} has ${label} without required agent.`);
+	return out;
+}
+
+function parsePhaseOverride(raw: unknown, filename: string, phase: RunnablePhase): ConfigurablePhaseLaunch {
+	if (!isPlainObject(raw)) throw new Error(`Phase config ${filename} has invalid phases.${phase}; expected object.`);
+	const out = parseLaunchOverride(raw, filename, `phases.${phase}`) as ConfigurablePhaseLaunch;
+	if ("parallel" in raw) {
+		if (!Array.isArray(raw.parallel)) throw new Error(`Phase config ${filename} has invalid phases.${phase}.parallel; expected array.`);
+		out.parallel = raw.parallel.map((entry, index) => parseLaunchOverride(entry, filename, `phases.${phase}.parallel[${index}]`, true));
+	}
+	validateConfigurablePhaseLaunch(out, filename, `phases.${phase}`);
+	return out;
+}
+
+function parsePhaseOverrides(raw: unknown, filename: string): Partial<Record<RunnablePhase, ConfigurablePhaseLaunch>> {
+	if (raw === undefined) return {};
+	if (!isPlainObject(raw)) throw new Error(`Phase config ${filename} has invalid phases; expected object keyed by phase.`);
+	const out: Partial<Record<RunnablePhase, ConfigurablePhaseLaunch>> = {};
+	for (const [phaseName, config] of Object.entries(raw)) {
+		if (!RUNNABLE_PHASES.includes(phaseName as RunnablePhase)) throw new Error(`Phase config ${filename} has unknown phase: ${phaseName}`);
+		out[phaseName as RunnablePhase] = parsePhaseOverride(config, filename, phaseName as RunnablePhase);
+	}
+	return out;
+}
+
 function readDeliveryConfigFile(filePath: string, artifactRootBaseDir: string): Partial<DeliveryConfig> {
 	if (!fs.existsSync(filePath)) return {};
+	let parsed: {
+		artifactRoot?: unknown;
+		artifactRootDir?: unknown;
+		maxRepairRounds?: unknown;
+		maxRounds?: unknown;
+		phaseMaxRounds?: unknown;
+		phases?: unknown;
+	};
 	try {
-		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as {
-			artifactRoot?: unknown;
-			artifactRootDir?: unknown;
-			maxRepairRounds?: unknown;
-			maxRounds?: unknown;
-			phaseMaxRounds?: unknown;
-		};
-		const artifactRoot = typeof parsed.artifactRoot === "string"
-			? parsed.artifactRoot
-			: typeof parsed.artifactRootDir === "string"
-				? parsed.artifactRootDir
-				: undefined;
-		const allRounds = normalizeRound(parsed.maxRepairRounds);
-		const maxRounds = {
-			...(allRounds !== undefined ? allPhaseRounds(allRounds) : {}),
-			...normalizePhaseRounds(parsed.maxRounds),
-			...normalizePhaseRounds(parsed.phaseMaxRounds),
-		};
-		return {
-			...(artifactRoot ? { artifactRoot, artifactRootBaseDir } : {}),
-			...(Object.keys(maxRounds).length ? { maxRounds } : {}),
-		};
+		parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
 	} catch (error) {
 		console.error(`Warning: could not parse delivery-state-machine config ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
 		return {};
 	}
+	const artifactRoot = typeof parsed.artifactRoot === "string"
+		? parsed.artifactRoot
+		: typeof parsed.artifactRootDir === "string"
+			? parsed.artifactRootDir
+			: undefined;
+	const allRounds = normalizeRound(parsed.maxRepairRounds);
+	const maxRounds = {
+		...(allRounds !== undefined ? allPhaseRounds(allRounds) : {}),
+		...normalizePhaseRounds(parsed.maxRounds),
+		...normalizePhaseRounds(parsed.phaseMaxRounds),
+	};
+	const phases = parsePhaseOverrides(parsed.phases, filePath);
+	return {
+		...(artifactRoot ? { artifactRoot, artifactRootBaseDir } : {}),
+		...(Object.keys(maxRounds).length ? { maxRounds } : {}),
+		...(Object.keys(phases).length ? { phases } : {}),
+	};
+}
+
+function mergePhaseLaunch(base: ConfigurablePhaseLaunch | undefined, override: ConfigurablePhaseLaunch | undefined): ConfigurablePhaseLaunch | undefined {
+	if (!base && !override) return undefined;
+	return {
+		...(base ?? {}),
+		...(override ?? {}),
+		...(override && "parallel" in override ? { parallel: override.parallel } : {}),
+	};
 }
 
 function mergeDeliveryConfig(base: DeliveryConfig, override: Partial<DeliveryConfig>): DeliveryConfig {
+	const phases: Partial<Record<RunnablePhase, ConfigurablePhaseLaunch>> = { ...(base.phases ?? {}) };
+	for (const phase of RUNNABLE_PHASES) {
+		const merged = mergePhaseLaunch(phases[phase], override.phases?.[phase]);
+		if (merged) phases[phase] = merged;
+	}
 	return {
 		...base,
 		...override,
 		maxRounds: { ...(base.maxRounds ?? {}), ...(override.maxRounds ?? {}) },
+		phases,
 	};
 }
 
@@ -420,7 +493,7 @@ function loadDeliveryConfig(cwd: string): DeliveryConfig {
 	const agentDir = getAgentDir();
 	const globalConfigPath = path.join(agentDir, "extensions", "delivery-state-machine.json");
 	const projectConfigPath = path.join(cwd, ".pi", "delivery-state-machine.json");
-	let config: DeliveryConfig = {};
+	let config: DeliveryConfig = { phases: { ...BUILTIN_PHASE_LAUNCH_CONFIG } };
 	config = mergeDeliveryConfig(config, readDeliveryConfigFile(globalConfigPath, agentDir));
 	config = mergeDeliveryConfig(config, readDeliveryConfigFile(projectConfigPath, cwd));
 	if (process.env.PI_DELIVERY_ARTIFACT_ROOT) {
@@ -453,6 +526,11 @@ function resolveMaxPhaseRounds(config: DeliveryConfig, maxRepairRounds?: unknown
 		...(allRounds !== undefined ? allPhaseRounds(allRounds) : {}),
 		...normalizePhaseRounds(maxRounds),
 	};
+}
+
+function effectivePhaseConfig(cwd: string, phase: RunnablePhase): PhaseConfig {
+	const config = loadDeliveryConfig(cwd).phases?.[phase] ?? BUILTIN_PHASE_LAUNCH_CONFIG[phase];
+	return materializePhaseConfig(phase, config);
 }
 
 function createArtifactDir(cwd: string, task: string): string {
@@ -552,7 +630,7 @@ function addHistory(state: DeliveryState, entry: Omit<HistoryEntry, "timestamp">
 }
 
 function isRunnablePhase(phase: Phase): phase is RunnablePhase {
-	return phase in PHASE_CONFIG;
+	return RUNNABLE_PHASES.includes(phase as RunnablePhase);
 }
 
 function phasePromptContext(state: DeliveryState) {
@@ -646,7 +724,7 @@ function nextAction(state: DeliveryState): NextAction {
 		};
 	}
 
-	const config = PHASE_CONFIG[state.phase];
+	const config = effectivePhaseConfig(state.cwd ?? process.cwd(), state.phase);
 	const context = phasePromptContext(state);
 	const childPrompt = `${config.childPrompt(context)}${CHILD_PROMPT_FOOTER}`;
 	const parallelLaunches = config.parallel?.length ? config.parallel : undefined;
@@ -698,9 +776,10 @@ function recordPlannedSteps(state: DeliveryState, ctx: ExtensionContext, action:
 	const phase = action.phase;
 	const attempt = phaseAttemptForStep(state, phase);
 	const usageBefore = collectSessionUsage(ctx);
+	const fallbackConfig = effectivePhaseConfig(state.cwd ?? ctx.cwd, phase);
 	const launches = action.parallel?.length
 		? action.parallel
-		: [{ agent: action.agent ?? PHASE_CONFIG[phase].agent, model: action.model, thinking: action.thinking, context: action.context }];
+		: [{ agent: action.agent ?? fallbackConfig.agent, model: action.model, thinking: action.thinking, context: action.context }];
 	launches.forEach((launch, index) => {
 		const childCount = launches.length;
 		const childIndex = childCount > 1 ? index : undefined;
@@ -1303,6 +1382,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state = initialState();
 			state.active = true;
 			state.task = task;
+			state.cwd = ctx.cwd;
 			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd));
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			state.artifactDir = createArtifactDir(ctx.cwd, task);
@@ -1361,6 +1441,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state = initialState();
 			state.active = true;
 			state.task = params.task;
+			state.cwd = ctx.cwd;
 			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd), params.maxRepairRounds, params.maxRounds);
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			state.artifactDir = createArtifactDir(ctx.cwd, params.task);

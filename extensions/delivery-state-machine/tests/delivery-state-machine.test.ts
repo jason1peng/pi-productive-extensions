@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import deliveryStateMachine from "../index.ts";
 
 interface RegisteredTool {
@@ -23,7 +25,7 @@ interface FakeContext {
 
 const artifactDirs = new Set<string>();
 
-function createHarness() {
+function createHarness(options: { cwd?: string } = {}) {
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, { handler: (args: string, ctx: FakeContext) => Promise<void> }>();
 	const sentMessages: string[] = [];
@@ -44,7 +46,7 @@ function createHarness() {
 	};
 
 	const ctx: FakeContext = {
-		cwd: process.cwd(),
+		cwd: options.cwd ?? process.cwd(),
 		hasUI: false,
 		ui: {
 			notify() {},
@@ -105,6 +107,23 @@ await runTest("/deliver reaches review with exactly the configured parallel revi
 	assert.match(action.parallel[1].childPrompt, /03-review-02-reviewer-openai-gpt-5-5\.md/);
 	assert.match(action.reportInstruction, /After all 2 children complete/);
 	assert.match(action.reportInstruction, /aggregates their findings/);
+});
+
+await runTest("artifact root can be configured from project .pi config", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-cwd-"));
+	const configuredRoot = path.join(cwd, "custom-artifacts");
+	fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(cwd, ".pi", "delivery-state-machine.json"), JSON.stringify({ artifactRoot: "custom-artifacts" }), "utf8");
+
+	try {
+		const harness = createHarness({ cwd });
+		const result = await harness.tool("delivery_start", { task: "custom artifact root smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		assert.equal(path.dirname(artifactDir), configuredRoot);
+		assert.equal(fs.existsSync(artifactDir), true);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
 });
 
 await runTest("verify and review failures with recommendedDecision=repair route back to implement", async () => {

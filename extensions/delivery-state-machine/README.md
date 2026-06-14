@@ -6,7 +6,7 @@ Pi extension for parent-controlled delivery orchestration.
 
 - `/deliver <task>` — start the state machine and prompt the parent agent to orchestrate subagents.
 - `/delivery-status` — show current state.
-- `/delivery-summary` — show phase execution counts and session/subagent usage summary.
+- `/delivery-summary` — show the full delivery journey summary, including phase attempts, failures/repairs, artifact links, and session/subagent usage.
 - `/delivery-reset` — reset to idle.
 
 ## Tools
@@ -16,7 +16,7 @@ Pi extension for parent-controlled delivery orchestration.
 - `delivery_report` — report a completed phase and advance the state machine.
 - `delivery_decide` — apply a parent/user decision for a pending blocker.
 - `delivery_status` — inspect state.
-- `delivery_summary` — summarize phase counts and session/subagent usage.
+- `delivery_summary` — summarize the full delivery journey with phase attempts, failures/repairs, artifact links, and session/subagent usage.
 - `delivery_reset` — reset state.
 
 ## Setup
@@ -106,7 +106,7 @@ Phase files do not configure subagent tools. Subagent tool availability comes fr
 
 `delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. When `phase-parallel.json` defines launches for a phase, `delivery_next` also returns `details.next.parallel` containing exactly those configured launches; the phase's primary agent is used only as the single-child fallback when no parallel config exists. Each parallel entry has a unique child prompt and artifact path instruction. The parent should launch all entries concurrently, save child artifacts separately, and call `delivery_report` once with the aggregate result.
 
-`delivery_summary` reports completed phase counts from state-machine history. It also estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. When a delivery was started after this feature existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. When a delivery reaches `DONE`, `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically.
+`delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. The report lists every planned/reported phase step in order, including parallel reviewer rows, agent/model, verdict, artifact link, best-effort cost attribution, failure overview, repair action, retro critical fixes, phase counts, and usage totals. It estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. When a delivery was started after usage baseline tracking existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. Cost attribution is explicitly labeled as best-effort, phase-aggregate, or unavailable; zero cost is not inferred when no usage-bearing session data exists. When a delivery reaches `DONE`, final `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically and refresh `00-delivery-summary.md`.
 
 Phase markdown format:
 

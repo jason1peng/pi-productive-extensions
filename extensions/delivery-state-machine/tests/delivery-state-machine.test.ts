@@ -18,21 +18,24 @@ interface FakeContext {
 		setWidget: () => void;
 	};
 	sessionManager: {
-		getSessionFile: () => undefined;
+		getSessionFile: () => string | undefined;
 		getBranch: () => never[];
 	};
 }
 
 const artifactDirs = new Set<string>();
 
-function createHarness(options: { cwd?: string } = {}) {
+function createHarness(options: { cwd?: string; sessionFile?: string; branchEntries?: any[] } = {}) {
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, { handler: (args: string, ctx: FakeContext) => Promise<void> }>();
+	const eventHandlers = new Map<string, (event: unknown, ctx: FakeContext) => Promise<void>>();
 	const sentMessages: string[] = [];
 
 	const pi = {
 		appendEntry() {},
-		on() {},
+		on(eventName: string, handler: (event: unknown, ctx: FakeContext) => Promise<void>) {
+			eventHandlers.set(eventName, handler);
+		},
 		registerTool(tool: RegisteredTool & { name: string }) {
 			tools.set(tool.name, tool);
 		},
@@ -55,12 +58,18 @@ function createHarness(options: { cwd?: string } = {}) {
 			setWidget() {},
 		},
 		sessionManager: {
-			getSessionFile: () => undefined,
-			getBranch: () => [],
+			getSessionFile: () => options.sessionFile,
+			getBranch: () => (options.branchEntries ?? []) as never[],
 		},
 	};
 
 	deliveryStateMachine(pi as any);
+
+	async function emit(eventName: string, event: unknown = {}) {
+		const handler = eventHandlers.get(eventName);
+		if (!handler) throw new Error(`Event handler not registered: ${eventName}`);
+		await handler(event, ctx);
+	}
 
 	async function tool(name: string, params: Record<string, unknown> = {}) {
 		const registered = tools.get(name);
@@ -71,7 +80,7 @@ function createHarness(options: { cwd?: string } = {}) {
 		return result;
 	}
 
-	return { tools, commands, sentMessages, ctx, tool };
+	return { tools, commands, sentMessages, ctx, tool, emit };
 }
 
 async function runTest(name: string, fn: () => Promise<void>) {
@@ -101,10 +110,10 @@ await runTest("/deliver reaches review with exactly the configured parallel revi
 	assert.equal(action.parallel.length, 2);
 	assert.equal(action.parallel[0].agent, "reviewer");
 	assert.equal(action.parallel[0].model, undefined);
-	assert.match(action.parallel[0].childPrompt, /03-review-01-reviewer\.md/);
+	assert.match(action.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
 	assert.equal(action.parallel[1].agent, "reviewer");
 	assert.equal(action.parallel[1].model, "openai/gpt-5.5");
-	assert.match(action.parallel[1].childPrompt, /03-review-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(action.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
 	assert.match(action.reportInstruction, /After all 2 children complete/);
 	assert.match(action.reportInstruction, /aggregates their findings/);
 });
@@ -180,4 +189,213 @@ await runTest("verify and review failures with recommendedDecision=repair route 
 	assert.equal(result.details.state.phase, "IMPLEMENT");
 	assert.equal(result.details.state.pendingIssue.source, "review");
 	assert.match(result.details.next.childPrompt, /Pending review issue/);
+});
+
+await runTest("delivery summary writes full journey with failure and repair", async () => {
+	const harness = createHarness();
+
+	let result = await harness.tool("delivery_start", { task: "journey report failure repair smoke", maxRepairRounds: 3 });
+	const artifactDir = result.details.state.artifactDir as string;
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "initial implementation complete" });
+	await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: "Missing regression coverage for summary report generation.",
+		recommendedDecision: "repair",
+	});
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "added regression coverage for summary report generation" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verification passed after repair" });
+	await harness.tool("delivery_next");
+	await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "both reviewers passed" });
+	await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed locally" });
+	result = await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
+
+	assert.equal(result.details.state.phase, "DONE");
+	const reportPath = path.join(artifactDir, "00-delivery-summary.md");
+	assert.equal(fs.existsSync(reportPath), true);
+	const report = fs.readFileSync(reportPath, "utf8");
+	assert.match(report, /# Delivery summary/);
+	assert.match(report, /VERIFY #1/);
+	assert.match(report, /VERIFY #2/);
+	assert.match(report, /Missing regression coverage/);
+	assert.match(report, /added regression coverage/);
+	assert.match(report, /## Failure overview/);
+	assert.match(report, /unavailable/);
+});
+
+await runTest("parallel reviewer aggregate report does not fabricate per-child verdicts", async () => {
+	const harness = createHarness();
+
+	await harness.tool("delivery_start", { task: "parallel review summary smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	const next = await harness.tool("delivery_next");
+	assert.equal(next.details.state.steps.filter((step: any) => step.phase === "REVIEW").length, 2);
+
+	const result = await harness.tool("delivery_report", {
+		phase: "REVIEW",
+		verdict: "FAIL",
+		summary: "reviewer 1 FAIL: missing artifact note; reviewer 2 PASS: no blockers",
+		recommendedDecision: "repair",
+	});
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const reviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+	const childSteps = reviewSteps.filter((step: any) => step.childIndex !== undefined);
+	const aggregateStep = reviewSteps.find((step: any) => step.id === "REVIEW-1-aggregate");
+
+	assert.equal(result.details.state.phase, "IMPLEMENT");
+	assert.equal(childSteps.length, 2);
+	assert.deepEqual(childSteps.map((step: any) => step.verdict), [undefined, undefined]);
+	assert.equal(aggregateStep?.verdict, "FAIL");
+	assert.match(text, /03-review-1-01-reviewer\.md/);
+	assert.match(text, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(text, /\| 4 \| REVIEW \| aggregate \| parent \| FAIL \| unavailable \| reviewer 1 FAIL/);
+	assert.match(text, /openai\/gpt-5\.5/);
+});
+
+await runTest("parallel review repair journey preserves distinct child artifact links per attempt", async () => {
+	const harness = createHarness();
+
+	let result = await harness.tool("delivery_start", { task: "parallel review repair summary smoke", maxRepairRounds: 3 });
+	const artifactDir = result.details.state.artifactDir as string;
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented initial change" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified initial change" });
+	const firstReview = await harness.tool("delivery_next");
+	assert.match(firstReview.details.next.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
+	assert.match(firstReview.details.next.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+
+	result = await harness.tool("delivery_report", {
+		phase: "REVIEW",
+		verdict: "FAIL",
+		summary: "reviewer 1 FAIL: repeated review artifacts reused; reviewer 2 PASS",
+		recommendedDecision: "repair",
+	});
+	assert.equal(result.details.state.phase, "IMPLEMENT");
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "added attempt-specific parallel artifact paths" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified artifact path repair" });
+	const secondReview = await harness.tool("delivery_next");
+	assert.match(secondReview.details.next.parallel[0].childPrompt, /03-review-2-01-reviewer\.md/);
+	assert.match(secondReview.details.next.parallel[1].childPrompt, /03-review-2-02-reviewer-openai-gpt-5-5\.md/);
+
+	await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "review passed after repair" });
+	await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed locally" });
+	result = await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
+
+	assert.equal(result.details.state.phase, "DONE");
+	const reviewChildArtifacts = result.details.state.steps
+		.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined)
+		.map((step: any) => path.relative(artifactDir, step.artifact));
+	assert.deepEqual(reviewChildArtifacts, [
+		"03-review-1-01-reviewer.md",
+		"03-review-1-02-reviewer-openai-gpt-5-5.md",
+		"03-review-2-01-reviewer.md",
+		"03-review-2-02-reviewer-openai-gpt-5-5.md",
+	]);
+	assert.equal(new Set(reviewChildArtifacts).size, reviewChildArtifacts.length);
+
+	const report = fs.readFileSync(path.join(artifactDir, "00-delivery-summary.md"), "utf8");
+	assert.match(report, /03-review-1-01-reviewer\.md/);
+	assert.match(report, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(report, /03-review-2-01-reviewer\.md/);
+	assert.match(report, /03-review-2-02-reviewer-openai-gpt-5-5\.md/);
+});
+
+await runTest("delivery summary merges legacy history-only reports with newly recorded steps", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-legacy-"));
+	const artifactDir = path.join(cwd, "artifacts");
+	fs.mkdirSync(artifactDir, { recursive: true });
+	artifactDirs.add(artifactDir);
+	const oldTimestamp = Date.now() - 10_000;
+	const legacyState = {
+		active: true,
+		task: "legacy history resume smoke",
+		phase: "VERIFY",
+		verifyRound: 2,
+		reviewRound: 1,
+		maxRepairRounds: 3,
+		maxPhaseRounds: { IMPLEMENT: 3, VERIFY: 3, REVIEW: 3, CLOSE: 3, RETRO: 3 },
+		artifactDir,
+		cwd,
+		readyToClose: false,
+		acceptedRisks: [],
+		// This simulates state persisted before delivery steps existed.
+		history: [
+			{ timestamp: oldTimestamp, phase: "IMPLEMENT", event: "start", summary: "legacy start" },
+			{ timestamp: oldTimestamp + 1, phase: "IMPLEMENT", event: "report", verdict: "PASS", summary: "legacy initial implementation" },
+			{ timestamp: oldTimestamp + 2, phase: "VERIFY", event: "report", verdict: "FAIL", summary: "legacy verification found missing regression" },
+			{ timestamp: oldTimestamp + 3, phase: "IMPLEMENT", event: "auto_repair", decision: "repair", summary: "legacy auto repair" },
+			{ timestamp: oldTimestamp + 4, phase: "IMPLEMENT", event: "report", verdict: "PASS", summary: "legacy repair implementation" },
+		],
+		updatedAt: oldTimestamp + 4,
+	};
+
+	try {
+		const harness = createHarness({ cwd, branchEntries: [{ type: "custom", customType: "delivery-state-machine", data: legacyState }] });
+		await harness.emit("session_start");
+		await harness.tool("delivery_next");
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "new verification passed after resume" });
+		const summary = await harness.tool("delivery_summary");
+		const text = summary.content[0].text as string;
+
+		assert.match(text, /IMPLEMENT \| unknown \| default \| PASS \| unavailable \| legacy initial implementation/);
+		assert.match(text, /VERIFY \| unknown \| default \| FAIL \| unavailable \| legacy verification found missing regression/);
+		assert.match(text, /IMPLEMENT #2 \| unknown \| default \| PASS \| unavailable \| legacy repair implementation/);
+		assert.match(text, /VERIFY #2 \| fresh-verifier \| openai\/gpt-5\.5 \| PASS \| unavailable \| \[02-verification-2\.md\]/);
+		assert.match(text, /legacy verification found missing regression/);
+		assert.match(text, /legacy repair implementation/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("usage summary marks costs unavailable without usage-bearing session data", async () => {
+	const harness = createHarness();
+
+	await harness.tool("delivery_start", { task: "cost unavailable smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+
+	assert.match(text, /Overall cost: unavailable/);
+	assert.match(text, /unavailable means no session usage file\/baseline or no usage-bearing assistant messages/i);
+});
+
+await runTest("usage summary does not show exact zero cost for session files with no usage-bearing messages", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-empty-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "empty usage file smoke" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		const summary = await harness.tool("delivery_summary");
+		const text = summary.content[0].text as string;
+
+		assert.match(text, /Overall cost: unavailable/);
+		assert.doesNotMatch(text, /Overall cost: \$0\.0000/);
+		assert.match(text, /Total: unavailable \(current session has no usage-bearing assistant messages\)/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("usage summary reports overall cost since delivery_start when session usage exists", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "usage baseline smoke" });
+		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 100, output: 25, totalTokens: 125, cost: { total: 0.0123 } } } })}\n`, "utf8");
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented with usage" });
+		const summary = await harness.tool("delivery_summary");
+		const text = summary.content[0].text as string;
+
+		assert.match(text, /Overall cost: \$0\.0123/);
+		assert.match(text, /Overall tokens: 125/);
+		assert.match(text, /\$0\.0123 \(best-effort\)/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
 });

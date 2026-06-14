@@ -278,8 +278,64 @@ function datePrefix(now = new Date()): string {
 	return `${dd}-${mm}-${yyyy}`;
 }
 
-function createArtifactDir(_cwd: string, task: string): string {
-	const root = path.join(os.homedir(), ".pi", "delivery-run");
+interface DeliveryConfig {
+	artifactRoot?: string;
+	artifactRootBaseDir?: string;
+}
+
+const DEFAULT_ARTIFACT_ROOT = path.join(os.homedir(), ".pi", "delivery-run");
+
+function getAgentDir(): string {
+	return process.env.PI_CODING_AGENT_DIR?.replace(/^~(?=$|\/)/, os.homedir()) ?? path.join(os.homedir(), ".pi", "agent");
+}
+
+function readDeliveryConfigFile(filePath: string, artifactRootBaseDir: string): Partial<DeliveryConfig> {
+	if (!fs.existsSync(filePath)) return {};
+	try {
+		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as { artifactRoot?: unknown; artifactRootDir?: unknown };
+		const artifactRoot = typeof parsed.artifactRoot === "string"
+			? parsed.artifactRoot
+			: typeof parsed.artifactRootDir === "string"
+				? parsed.artifactRootDir
+				: undefined;
+		return artifactRoot ? { artifactRoot, artifactRootBaseDir } : {};
+	} catch (error) {
+		console.error(`Warning: could not parse delivery-state-machine config ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+		return {};
+	}
+}
+
+function loadDeliveryConfig(cwd: string): DeliveryConfig {
+	const agentDir = getAgentDir();
+	const globalConfigPath = path.join(agentDir, "extensions", "delivery-state-machine.json");
+	const projectConfigPath = path.join(cwd, ".pi", "delivery-state-machine.json");
+	let config: DeliveryConfig = {};
+	config = { ...config, ...readDeliveryConfigFile(globalConfigPath, agentDir) };
+	config = { ...config, ...readDeliveryConfigFile(projectConfigPath, cwd) };
+	if (process.env.PI_DELIVERY_ARTIFACT_ROOT) {
+		config.artifactRoot = process.env.PI_DELIVERY_ARTIFACT_ROOT;
+		config.artifactRootBaseDir = cwd;
+	}
+	return config;
+}
+
+function expandArtifactRoot(root: string, cwd: string): string {
+	return root
+		.replace(/^~(?=$|\/)/, os.homedir())
+		.replace(/\$\{home\}/g, os.homedir())
+		.replace(/\$\{cwd\}/g, cwd);
+}
+
+function resolveArtifactRoot(cwd: string, config: DeliveryConfig): string {
+	const configuredRoot = config.artifactRoot?.trim();
+	if (!configuredRoot) return DEFAULT_ARTIFACT_ROOT;
+	const expanded = expandArtifactRoot(configuredRoot, cwd);
+	if (path.isAbsolute(expanded)) return expanded;
+	return path.resolve(config.artifactRootBaseDir ?? cwd, expanded);
+}
+
+function createArtifactDir(cwd: string, task: string): string {
+	const root = resolveArtifactRoot(cwd, loadDeliveryConfig(cwd));
 	const baseName = `${datePrefix()}-${slugifyTask(task)}`;
 	let candidate = path.join(root, baseName);
 	let suffix = 2;

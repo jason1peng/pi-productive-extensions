@@ -37,6 +37,21 @@ cp extensions/delivery-state-machine/agents/fresh-verifier.md ~/.pi/agent/agents
 
 The bundled verifier is instructed to be read-only for project/source files. It can run validation commands and write configured verification artifacts, but it should not edit the candidate diff or run destructive git/filesystem commands.
 
+## Artifact directory configuration
+
+Delivery run artifacts are stored under `~/.pi/delivery-run` by default. Override the root with either config file:
+
+- Global: `~/.pi/agent/extensions/delivery-state-machine.json`
+- Project-local: `<repo>/.pi/delivery-state-machine.json` (overrides global)
+
+```json
+{
+  "artifactRoot": "~/delivery-reports"
+}
+```
+
+`artifactRoot` supports `~`, `${home}`, and `${cwd}`. Relative paths in project config resolve against the project cwd; relative paths in global config resolve against `~/.pi/agent`. For one-off runs, `PI_DELIVERY_ARTIFACT_ROOT` overrides both config files and resolves relative paths against the current cwd.
+
 ## States
 
 `IMPLEMENT -> VERIFY -> REVIEW -> CLOSE -> RETRO -> DONE`

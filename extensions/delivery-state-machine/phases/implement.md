@@ -1,12 +1,10 @@
 ---
 phase: IMPLEMENT
-agent: worker
-model: openai/gpt-5.5
 ---
 
 ## Orchestrator instruction
 
-Launch subagent worker as sole writer for implementation.
+Launch the configured implementation subagent as sole writer for implementation.
 
 ## Child prompt
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -24,6 +25,19 @@ interface FakeContext {
 }
 
 const artifactDirs = new Set<string>();
+
+async function withTemporaryUserExtensionFile<T>(relativePath: string, content: string, fn: () => Promise<T>): Promise<T> {
+	const target = path.join(os.homedir(), ".pi", "agent", "extensions", "delivery-state-machine", relativePath);
+	const backup = fs.existsSync(target) ? fs.readFileSync(target) : undefined;
+	fs.mkdirSync(path.dirname(target), { recursive: true });
+	fs.writeFileSync(target, content, "utf8");
+	try {
+		return await fn();
+	} finally {
+		if (backup === undefined) fs.rmSync(target, { force: true });
+		else fs.writeFileSync(target, backup);
+	}
+}
 
 function createHarness(options: { cwd?: string; sessionFile?: string; branchEntries?: any[] } = {}) {
 	const tools = new Map<string, RegisteredTool>();
@@ -116,6 +130,124 @@ await runTest("/deliver reaches review with exactly the configured parallel revi
 	assert.match(action.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
 	assert.match(action.reportInstruction, /After all 2 children complete/);
 	assert.match(action.reportInstruction, /aggregates their findings/);
+});
+
+await runTest("user launch override can force GPT-only models", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", JSON.stringify({
+		IMPLEMENT: { agent: "worker", model: "openai/gpt-5.5" },
+		VERIFY: { agent: "fresh-verifier", model: "openai/gpt-5.5", thinking: "low", context: "fresh" },
+		REVIEW: [
+			{ agent: "reviewer", model: "openai/gpt-5.5" },
+			{ agent: "reviewer", model: "openai/gpt-5.5" },
+		],
+		CLOSE: { agent: "delegate", model: "openai/gpt-5.5", thinking: "low" },
+		RETRO: { agent: "delegate", model: "openai/gpt-5.5", thinking: "high" },
+	}), async () => {
+		const harness = createHarness();
+		await harness.tool("delivery_start", { task: "gpt-only launch override smoke" });
+		let next = await harness.tool("delivery_next");
+		assert.equal(next.details.next.model, "openai/gpt-5.5");
+
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		next = await harness.tool("delivery_next");
+		assert.deepEqual(next.details.next.parallel.map((launch: any) => launch.model), ["openai/gpt-5.5", "openai/gpt-5.5"]);
+	});
+});
+
+await runTest("project phase prompt override wins over user prompt and can replace one section", async () => {
+	await withTemporaryUserExtensionFile("phases/verify.md", `---\nphase: VERIFY\n---\n\n## Child prompt\n\nUSER VERIFY PROMPT {{task}}\n`, async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-prompt-"));
+		try {
+			const projectPhasesDir = path.join(cwd, ".pi", "delivery-state-machine", "phases");
+			fs.mkdirSync(projectPhasesDir, { recursive: true });
+			fs.writeFileSync(path.join(projectPhasesDir, "verify.md"), `---\nphase: VERIFY\n---\n\n## Child prompt\n\nPROJECT VERIFY PROMPT {{task}}\n`, "utf8");
+
+			const harness = createHarness({ cwd });
+			await harness.tool("delivery_start", { task: "prompt override smoke" });
+			await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+			const next = await harness.tool("delivery_next");
+
+			assert.match(next.details.next.childPrompt, /PROJECT VERIFY PROMPT prompt override smoke/);
+			assert.doesNotMatch(next.details.next.childPrompt, /USER VERIFY PROMPT/);
+			assert.match(next.details.next.orchestratorInstruction, /Launch the configured verifier/);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+await runTest("project launch override wins over user launch override", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", JSON.stringify({
+		IMPLEMENT: { agent: "worker", model: "user/model" },
+	}), async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-launch-"));
+		try {
+			const projectConfigDir = path.join(cwd, ".pi", "delivery-state-machine");
+			fs.mkdirSync(projectConfigDir, { recursive: true });
+			fs.writeFileSync(path.join(projectConfigDir, "phase-launches.json"), JSON.stringify({
+				IMPLEMENT: { agent: "worker", model: "project/model" },
+			}), "utf8");
+
+			const harness = createHarness({ cwd });
+			const result = await harness.tool("delivery_start", { task: "launch precedence smoke" });
+			assert.equal(result.details.next.model, "project/model");
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+await runTest("project prompt and launch overrides are discovered from git root when cwd is a subdirectory", async () => {
+	const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-git-root-"));
+	try {
+		execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+		const cwd = path.join(repoRoot, "packages", "app");
+		fs.mkdirSync(cwd, { recursive: true });
+		const projectConfigDir = path.join(repoRoot, ".pi", "delivery-state-machine");
+		fs.mkdirSync(path.join(projectConfigDir, "phases"), { recursive: true });
+		fs.writeFileSync(path.join(projectConfigDir, "phase-launches.json"), JSON.stringify({
+			IMPLEMENT: { agent: "worker", model: "repo-root/model" },
+		}), "utf8");
+		fs.writeFileSync(path.join(projectConfigDir, "phases", "verify.md"), `---\nphase: VERIFY\n---\n\n## Child prompt\n\nREPO ROOT VERIFY PROMPT {{task}}\n`, "utf8");
+
+		const harness = createHarness({ cwd });
+		let result = await harness.tool("delivery_start", { task: "subdirectory override smoke" });
+		assert.equal(result.details.state.gitRoot, fs.realpathSync(repoRoot));
+		assert.equal(result.details.next.model, "repo-root/model");
+
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		result = await harness.tool("delivery_next");
+		assert.match(result.details.next.childPrompt, /REPO ROOT VERIFY PROMPT subdirectory override smoke/);
+	} finally {
+		fs.rmSync(repoRoot, { recursive: true, force: true });
+	}
+});
+
+await runTest("phase markdown launch fields are rejected", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-invalid-phase-"));
+	try {
+		const projectPhasesDir = path.join(cwd, ".pi", "delivery-state-machine", "phases");
+		fs.mkdirSync(projectPhasesDir, { recursive: true });
+		fs.writeFileSync(path.join(projectPhasesDir, "implement.md"), `---\nphase: IMPLEMENT\nmodel: openai/gpt-5.5\n---\n`, "utf8");
+		const harness = createHarness({ cwd });
+		await assert.rejects(() => harness.tool("delivery_start", { task: "invalid phase frontmatter smoke" }), /must not declare model/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("invalid launch config is rejected", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-invalid-launch-"));
+	try {
+		const projectConfigDir = path.join(cwd, ".pi", "delivery-state-machine");
+		fs.mkdirSync(projectConfigDir, { recursive: true });
+		fs.writeFileSync(path.join(projectConfigDir, "phase-launches.json"), JSON.stringify({ VERIFY: { agent: "fresh-verifier", thinking: "extreme" } }), "utf8");
+		const harness = createHarness({ cwd });
+		await assert.rejects(() => harness.tool("delivery_start", { task: "invalid launch config smoke" }), /invalid VERIFY\[0\]\.thinking=extreme/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
 });
 
 await runTest("artifact root can be configured from project .pi config", async () => {

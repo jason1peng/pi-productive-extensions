@@ -100,11 +100,23 @@ Delivery state-machine tools are hardcoded in `index.ts` and are intended for th
 
 The `/deliver` bootstrap prompt lives in `prompts/deliver.md` so parent/orchestrator instructions are easy to review and edit. It supports placeholders such as `{{task}}` and `{{artifactDir}}`.
 
-Phase setup lives in `phases/*.md`, similar to pi agent-style config files. Each runnable phase markdown file defines its primary subagent name, optional model/thinking/context settings, parent orchestration instruction, and child prompt. Additional parallel launches are configured separately in `phase-parallel.json`, keyed by phase. `phase-config.ts` only loads and renders those files. Common child workflow instructions, such as returning results to the parent and not calling `delivery_report`, are appended centrally from `index.ts`. Parent `delivery_report` instructions are hardcoded state-machine behavior in `index.ts`.
+Phase prompts live in `phases/*.md`, similar to pi agent-style config files. Launch settings live separately in `phase-launches.json`. `phase-config.ts` layers built-in defaults, user/global overrides, and project overrides. Common child workflow instructions, such as returning results to the parent and not calling `delivery_report`, are appended centrally from `index.ts`. Parent `delivery_report` instructions are hardcoded state-machine behavior in `index.ts`.
 
-Phase files do not configure subagent tools. Subagent tool availability comes from the actual agent definition used by the subagent launcher. Verification phases use the `fresh-verifier` agent, installed from `agents/fresh-verifier.md` into `~/.pi/agent/agents/fresh-verifier.md`. If another child should not have delivery tools, configure that in the child agent definition, for example with dedicated delivery agents such as `delivery-worker` or `delivery-verifier`.
+Prompt override paths, from lowest to highest precedence:
 
-`delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. When `phase-parallel.json` defines launches for a phase, `delivery_next` also returns `details.next.parallel` containing exactly those configured launches; the phase's primary agent is used only as the single-child fallback when no parallel config exists. Each parallel entry has a unique child prompt and artifact path instruction. The parent should launch all entries concurrently, save child artifacts separately, and call `delivery_report` once with the aggregate result.
+- Built-in: `extensions/delivery-state-machine/phases/*.md`
+- User/global: `~/.pi/agent/extensions/delivery-state-machine/phases/*.md`
+- Project-local: `<repo>/.pi/delivery-state-machine/phases/*.md`
+
+Launch override paths, from lowest to highest precedence:
+
+- Built-in: `extensions/delivery-state-machine/phase-launches.json`
+- User/global: `~/.pi/agent/extensions/delivery-state-machine/phase-launches.json`
+- Project-local: `<repo>/.pi/delivery-state-machine/phase-launches.json`
+
+Phase files do not configure subagent launch settings or tools. Frontmatter may only declare `phase`; `agent`, `model`, `thinking`, `context`, `tools`, and `parallel` are rejected there. Subagent tool availability comes from the actual agent definition used by the subagent launcher. Verification phases use the `fresh-verifier` agent, installed from `agents/fresh-verifier.md` into `~/.pi/agent/agents/fresh-verifier.md`. If another child should not have delivery tools, configure that in the child agent definition, for example with dedicated delivery agents such as `delivery-worker` or `delivery-verifier`.
+
+`delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. When `phase-launches.json` configures multiple launches for a phase, `delivery_next` also returns `details.next.parallel` containing exactly those configured launches. Each parallel entry has a unique child prompt and artifact path instruction. The parent should launch all entries concurrently, save child artifacts separately, and call `delivery_report` once with the aggregate result.
 
 `delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. The report lists every planned/reported phase step in order, including parallel reviewer rows, agent/model, verdict, artifact link, best-effort cost attribution, failure overview, repair action, retro critical fixes, phase counts, and usage totals. It estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. When a delivery was started after usage baseline tracking existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. Cost attribution is explicitly labeled as best-effort, phase-aggregate, or unavailable; zero cost is not inferred when no usage-bearing session data exists. When a delivery reaches `DONE`, final `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically and refresh `00-delivery-summary.md`.
 
@@ -112,25 +124,33 @@ Phase markdown format:
 
 ```md
 ---
-phase: IMPLEMENT
-agent: worker
-model: openai/gpt-5.5
-thinking: low
-context: fresh
+phase: VERIFY
 ---
 
 ## Orchestrator instruction
-Parent-only launch instruction.
+Parent-only launch instruction. Supports placeholders such as `{{verifyRound}}` and `{{maxRepairRounds}}`.
 
 ## Child prompt
 Prompt passed to the subagent. Supports placeholders such as `{{task}}`, `{{artifactGuidance}}`, `{{verifyRound}}`, and `{{maxRepairRounds}}`.
 
 ```
 
-Parallel launch config format (`phase-parallel.json`):
+Prompt overrides are partial by section: an override file can provide only `## Child prompt` or only `## Orchestrator instruction`, and missing sections fall back to lower-precedence files. If frontmatter is omitted, the phase is inferred from the filename; if frontmatter is present and includes `phase`, it must match the filename's phase.
+
+Launch config format (`phase-launches.json`):
 
 ```json
 {
+  "IMPLEMENT": {
+    "agent": "worker",
+    "model": "openai/gpt-5.5"
+  },
+  "VERIFY": {
+    "agent": "fresh-verifier",
+    "model": "openai/gpt-5.5",
+    "thinking": "low",
+    "context": "fresh"
+  },
   "REVIEW": [
     {
       "agent": "reviewer"
@@ -143,7 +163,7 @@ Parallel launch config format (`phase-parallel.json`):
 }
 ```
 
-When a phase is present in `phase-parallel.json`, the configured entries replace the phase's primary launch list for that phase. Add every child you want to launch, including a default-model reviewer if desired. To launch multiple identical children, add multiple entries. Entries support `agent`, `model`, `thinking`, and `context`.
+A phase value may be one launch object or an array of launch objects. Arrays mean parallel children for that phase. Higher-precedence `phase-launches.json` files replace launch config per phase key; they do not deep-merge individual launch objects. Entries support `agent`, `model`, `thinking`, and `context`. To force GPT-only or Claude-only execution, define all phases in user/global `phase-launches.json` with the model names available to your subscription.
 
 The phase prompts ask subagents to keep artifacts scan-friendly:
 

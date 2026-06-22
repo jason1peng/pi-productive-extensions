@@ -1,13 +1,10 @@
 ---
 phase: CLOSE
-agent: delegate
-model: global.anthropic.claude-haiku-4-5-20251001-v1:0
-thinking: low
 ---
 
 ## Orchestrator instruction
 
-Launch delegate with the configured lightweight model only if verification passed and review has no blockers.
+Launch the configured close subagent only if verification passed and review has no blockers.
 
 ## Child prompt
 

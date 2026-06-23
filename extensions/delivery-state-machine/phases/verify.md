@@ -1,14 +1,10 @@
 ---
 phase: VERIFY
-agent: fresh-verifier
-model: openai/gpt-5.5
-thinking: low
-context: fresh
 ---
 
 ## Orchestrator instruction
 
-Launch fresh-verifier in fresh context for verification round {{verifyRound}}/{{maxRepairRounds}}.
+Launch the configured verifier for verification round {{verifyRound}}/{{maxRepairRounds}}.
 
 ## Child prompt
 

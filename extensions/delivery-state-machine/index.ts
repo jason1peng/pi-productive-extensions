@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { PHASE_CONFIG, type LaunchConfig, type RunnablePhase } from "./phase-config";
+import { loadPhaseConfigs, type LaunchConfig, type RunnablePhase } from "./phase-config";
 
 type Phase =
 	| "IDLE"
@@ -552,7 +552,7 @@ function addHistory(state: DeliveryState, entry: Omit<HistoryEntry, "timestamp">
 }
 
 function isRunnablePhase(phase: Phase): phase is RunnablePhase {
-	return phase in PHASE_CONFIG;
+	return RUNNABLE_PHASES.includes(phase as RunnablePhase);
 }
 
 function phasePromptContext(state: DeliveryState) {
@@ -646,22 +646,25 @@ function nextAction(state: DeliveryState): NextAction {
 		};
 	}
 
-	const config = PHASE_CONFIG[state.phase];
+	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot)[state.phase];
 	const context = phasePromptContext(state);
 	const childPrompt = `${config.childPrompt(context)}${CHILD_PROMPT_FOOTER}`;
-	const parallelLaunches = config.parallel?.length ? config.parallel : undefined;
-	const parallel = parallelLaunches?.map((launch, index, launches) => ({
-		...launch,
-		childPrompt: parallelChildPrompt(childPrompt, state, launch, index, launches.length),
-	}));
+	const launches = config.launches;
+	const [primaryLaunch] = launches;
+	const parallel = launches.length > 1
+		? launches.map((launch, index, allLaunches) => ({
+			...launch,
+			childPrompt: parallelChildPrompt(childPrompt, state, launch, index, allLaunches.length),
+		}))
+		: undefined;
 	const orchestratorInstruction = [worktreePolicyInstruction(state), config.orchestratorInstruction(context)].filter(Boolean).join(" ");
-	const reportInstruction = reportInstructionForPhase(state.phase, parallel?.length ?? 1);
+	const reportInstruction = reportInstructionForPhase(state.phase, launches.length);
 	return {
 		phase: state.phase,
-		agent: config.agent,
-		model: config.model,
-		thinking: config.thinking,
-		context: config.context,
+		agent: primaryLaunch.agent,
+		model: primaryLaunch.model,
+		thinking: primaryLaunch.thinking,
+		context: primaryLaunch.context,
 		parallel,
 		prompt: childPrompt,
 		childPrompt,
@@ -698,9 +701,10 @@ function recordPlannedSteps(state: DeliveryState, ctx: ExtensionContext, action:
 	const phase = action.phase;
 	const attempt = phaseAttemptForStep(state, phase);
 	const usageBefore = collectSessionUsage(ctx);
+	const fallbackLaunch = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot)[phase].launches[0];
 	const launches = action.parallel?.length
 		? action.parallel
-		: [{ agent: action.agent ?? PHASE_CONFIG[phase].agent, model: action.model, thinking: action.thinking, context: action.context }];
+		: [{ agent: action.agent ?? fallbackLaunch.agent, model: action.model, thinking: action.thinking, context: action.context }];
 	launches.forEach((launch, index) => {
 		const childCount = launches.length;
 		const childIndex = childCount > 1 ? index : undefined;
@@ -1307,6 +1311,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			state.artifactDir = createArtifactDir(ctx.cwd, task);
 			state.usageAtStart = collectSessionUsage(ctx);
+			refreshGitInfo(ctx, state);
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
 			state.reviewRound = 1;
@@ -1365,6 +1370,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			state.artifactDir = createArtifactDir(ctx.cwd, params.task);
 			state.usageAtStart = collectSessionUsage(ctx);
+			refreshGitInfo(ctx, state);
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
 			state.reviewRound = 1;

@@ -20,6 +20,18 @@ Reports current pi session token/cost usage including pi-subagents child session
 - Tool: `session_usage_all`
 - Details: [extensions/session-usage/README.md](extensions/session-usage/README.md)
 
+## Apps
+
+### report-viewer
+
+Optional local dashboard for delivery reports. It scans `~/.pi/delivery-run` by default, prefers structured `delivery-report.json`, and falls back to legacy `00-delivery-summary.md`.
+
+```bash
+npm run report-viewer
+```
+
+Details and future approval/execution workflow are tracked in [docs/plans/report-viewer-and-structured-reports.md](docs/plans/report-viewer-and-structured-reports.md).
+
 ## Installation
 
 Clone this repo and configure pi to load the package from the clone root:

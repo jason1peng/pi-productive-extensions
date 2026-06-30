@@ -59,8 +59,12 @@ function builtinPhasesDir(): string {
 	return path.join(extensionDir(), "phases");
 }
 
+function agentDir(): string {
+	return process.env.PI_CODING_AGENT_DIR?.replace(/^~(?=$|\/)/, os.homedir()) ?? path.join(os.homedir(), ".pi", "agent");
+}
+
 function userConfigDir(): string {
-	return path.join(os.homedir(), ".pi", "agent", "extensions", "delivery-state-machine");
+	return path.join(agentDir(), "extensions", "delivery-state-machine");
 }
 
 function projectConfigDir(cwd: string, projectRoot?: string): string {

@@ -5,6 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import deliveryStateMachine from "../index.ts";
 
+const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
+process.env.PI_CODING_AGENT_DIR = testAgentDir;
+
 interface RegisteredTool {
 	execute: (toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: FakeContext) => Promise<any>;
 }
@@ -27,7 +30,7 @@ interface FakeContext {
 const artifactDirs = new Set<string>();
 
 async function withTemporaryUserExtensionFile<T>(relativePath: string, content: string, fn: () => Promise<T>): Promise<T> {
-	const target = path.join(os.homedir(), ".pi", "agent", "extensions", "delivery-state-machine", relativePath);
+	const target = path.join(testAgentDir, "extensions", "delivery-state-machine", relativePath);
 	const backup = fs.existsSync(target) ? fs.readFileSync(target) : undefined;
 	fs.mkdirSync(path.dirname(target), { recursive: true });
 	fs.writeFileSync(target, content, "utf8");
@@ -344,8 +347,11 @@ await runTest("delivery summary writes full journey with failure and repair", as
 
 	assert.equal(result.details.state.phase, "DONE");
 	const reportPath = path.join(artifactDir, "00-delivery-summary.md");
+	const jsonPath = path.join(artifactDir, "delivery-report.json");
 	assert.equal(fs.existsSync(reportPath), true);
+	assert.equal(fs.existsSync(jsonPath), true);
 	const report = fs.readFileSync(reportPath, "utf8");
+	const structuredReport = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
 	assert.match(report, /# Delivery summary/);
 	assert.match(report, /VERIFY #1/);
 	assert.match(report, /VERIFY #2/);
@@ -353,6 +359,23 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	assert.match(report, /added regression coverage/);
 	assert.match(report, /## Failure overview/);
 	assert.match(report, /unavailable/);
+	assert.equal(structuredReport.schemaVersion, 1);
+	assert.equal(structuredReport.source, "delivery-state-machine");
+	assert.equal(structuredReport.id, path.basename(artifactDir));
+	assert.equal(structuredReport.task, "journey report failure repair smoke");
+	assert.equal(structuredReport.phase, "DONE");
+	assert.equal(structuredReport.status, "DONE");
+	assert.equal(structuredReport.artifactDir, artifactDir);
+	assert.equal(structuredReport.summaryMarkdownPath, reportPath);
+	assert.ok(Array.isArray(structuredReport.steps));
+	assert.ok(structuredReport.steps.some((step: any) => step.phase === "VERIFY" && step.verdict === "FAIL"));
+	assert.ok(Array.isArray(structuredReport.history));
+	assert.deepEqual(structuredReport.acceptedRisks, []);
+	assert.equal(structuredReport.pendingIssue, null);
+	assert.equal(structuredReport.usage.currentSessionTotals, null);
+	assert.equal(structuredReport.usage.sinceDeliveryStart, null);
+	assert.equal(structuredReport.usage.attribution, "unavailable");
+	assert.equal(fs.existsSync(`${jsonPath}.tmp-${process.pid}`), false);
 });
 
 await runTest("parallel reviewer aggregate report does not fabricate per-child verdicts", async () => {

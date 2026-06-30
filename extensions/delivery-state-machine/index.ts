@@ -63,6 +63,47 @@ interface UsageTotals {
 type PhaseRounds = Record<RunnablePhase, number>;
 type UsageAttribution = "exact" | "best-effort" | "phase-aggregate" | "unavailable";
 
+interface ReportUsageSnapshot {
+	currentSessionTotals?: UsageTotals;
+	sinceDeliveryStart?: UsageTotals;
+	usableCurrentSessionTotals?: UsageTotals;
+	usableSinceDeliveryStart?: UsageTotals;
+	attribution: UsageAttribution;
+}
+
+interface DeliveryReportJsonV1 {
+	schemaVersion: 1;
+	source: "delivery-state-machine";
+	id: string;
+	task: string | null;
+	status: Phase;
+	phase: Phase;
+	artifactDir: string;
+	cwd?: string;
+	gitBranch?: string;
+	gitRoot?: string;
+	createdAt?: number;
+	updatedAt: number;
+	generatedAt: number;
+	summaryMarkdownPath: string;
+	history: HistoryEntry[];
+	steps: DeliveryStep[];
+	acceptedRisks: string[];
+	pendingIssue: PendingIssue | null;
+	usage: {
+		currentSessionTotals: UsageTotals | null;
+		sinceDeliveryStart: UsageTotals | null;
+		attribution: UsageAttribution;
+	};
+}
+
+interface ReportArtifacts {
+	markdownPath?: string;
+	jsonPath?: string;
+	markdown: string;
+	jsonWriteError?: string;
+}
+
 interface DeliveryStep {
 	id: string;
 	phase: RunnablePhase;
@@ -1134,14 +1175,32 @@ function repairAfterFailure(steps: DeliveryStep[], failedStep: DeliveryStep): De
 	return steps.find((step) => step.phase === "IMPLEMENT" && step.startedAt >= (failedStep.endedAt ?? failedStep.startedAt));
 }
 
-function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext): string {
+function deliveryStatus(state: DeliveryState): Phase {
+	return state.phase === "DONE" ? "DONE" : state.phase === "STOPPED" ? "STOPPED" : state.active ? state.phase : "IDLE";
+}
+
+function reportUsageSnapshot(state: DeliveryState, ctx: ExtensionContext): ReportUsageSnapshot {
+	const currentSessionTotals = collectSessionUsage(ctx);
+	const sinceDeliveryStart = currentSessionTotals && state.usageAtStart ? subtractUsage(currentSessionTotals, state.usageAtStart) : undefined;
+	const usableCurrentSessionTotals = usageHasAssistantMessages(currentSessionTotals) ? currentSessionTotals : undefined;
+	const usableSinceDeliveryStart = usageHasAssistantMessages(sinceDeliveryStart) ? sinceDeliveryStart : undefined;
+	return {
+		currentSessionTotals,
+		sinceDeliveryStart,
+		usableCurrentSessionTotals,
+		usableSinceDeliveryStart,
+		attribution: usableCurrentSessionTotals ? "best-effort" : "unavailable",
+	};
+}
+
+function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageSnapshot = reportUsageSnapshot(state, ctx)): string {
 	refreshGitInfo(ctx, state);
 	const steps = journeySteps(state);
 	steps.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
-	const currentUsage = collectSessionUsage(ctx);
-	const sinceStart = currentUsage && state.usageAtStart ? subtractUsage(currentUsage, state.usageAtStart) : undefined;
-	const usableSinceStart = usageHasAssistantMessages(sinceStart) ? sinceStart : undefined;
-	const status = state.phase === "DONE" ? "DONE" : state.phase === "STOPPED" ? "STOPPED" : state.active ? state.phase : "IDLE";
+	const currentUsage = usageSnapshot.currentSessionTotals;
+	const usableCurrentUsage = usageSnapshot.usableCurrentSessionTotals;
+	const usableSinceStart = usageSnapshot.usableSinceDeliveryStart;
+	const status = deliveryStatus(state);
 	const lines: string[] = [
 		"# Delivery summary",
 		"",
@@ -1213,18 +1272,85 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext): strin
 	return lines.join("\n");
 }
 
-function writeJourneyReport(state: DeliveryState, ctx: ExtensionContext): string | undefined {
-	if (!state.artifactDir) return undefined;
+function buildStructuredReport(
+	state: DeliveryState,
+	_ctx: ExtensionContext,
+	summaryMarkdownPath: string,
+	generatedAt: number,
+	usageSnapshot: ReportUsageSnapshot,
+): DeliveryReportJsonV1 {
+	const plainState = cloneState(state);
+	const firstHistoryTimestamp = plainState.history.length
+		? Math.min(...plainState.history.map((entry) => entry.timestamp).filter((timestamp) => Number.isFinite(timestamp)))
+		: undefined;
+	return {
+		schemaVersion: 1,
+		source: "delivery-state-machine",
+		id: path.basename(plainState.artifactDir ?? path.dirname(summaryMarkdownPath)),
+		task: plainState.task ?? null,
+		status: deliveryStatus(plainState),
+		phase: plainState.phase,
+		artifactDir: plainState.artifactDir ?? path.dirname(summaryMarkdownPath),
+		...(plainState.cwd ? { cwd: plainState.cwd } : {}),
+		...(plainState.gitBranch ? { gitBranch: plainState.gitBranch } : {}),
+		...(plainState.gitRoot ? { gitRoot: plainState.gitRoot } : {}),
+		...(firstHistoryTimestamp !== undefined ? { createdAt: firstHistoryTimestamp } : {}),
+		updatedAt: plainState.updatedAt,
+		generatedAt,
+		summaryMarkdownPath,
+		history: plainState.history,
+		steps: plainState.steps,
+		acceptedRisks: plainState.acceptedRisks,
+		pendingIssue: plainState.pendingIssue ?? null,
+		usage: {
+			currentSessionTotals: usageSnapshot.usableCurrentSessionTotals ?? null,
+			sinceDeliveryStart: usageSnapshot.usableSinceDeliveryStart ?? null,
+			attribution: usageSnapshot.attribution,
+		},
+	};
+}
+
+function writeJsonAtomic(filePath: string, data: unknown) {
+	const tmpPath = `${filePath}.tmp-${process.pid}`;
+	fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+	fs.renameSync(tmpPath, filePath);
+}
+
+function writeReportArtifacts(state: DeliveryState, ctx: ExtensionContext): ReportArtifacts {
+	const usageSnapshot = reportUsageSnapshot(state, ctx);
+	const markdown = formatJourneyReport(state, ctx, usageSnapshot);
+	if (!state.artifactDir) return { markdown };
 	fs.mkdirSync(state.artifactDir, { recursive: true });
-	const reportPath = path.join(state.artifactDir, "00-delivery-summary.md");
-	fs.writeFileSync(reportPath, formatJourneyReport(state, ctx), "utf8");
-	return reportPath;
+	const markdownPath = path.join(state.artifactDir, "00-delivery-summary.md");
+	const jsonPath = path.join(state.artifactDir, "delivery-report.json");
+	fs.writeFileSync(markdownPath, markdown, "utf8");
+	try {
+		const generatedAt = Date.now();
+		writeJsonAtomic(jsonPath, buildStructuredReport(state, ctx, markdownPath, generatedAt, usageSnapshot));
+		return { markdownPath, jsonPath, markdown };
+	} catch (error) {
+		return {
+			markdownPath,
+			jsonPath,
+			markdown,
+			jsonWriteError: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+function writeJourneyReport(state: DeliveryState, ctx: ExtensionContext): string | undefined {
+	return writeReportArtifacts(state, ctx).markdownPath;
 }
 
 function formatDeliverySummary(state: DeliveryState, ctx: ExtensionContext): string {
-	const reportPath = writeJourneyReport(state, ctx);
-	const report = formatJourneyReport(state, ctx);
-	return reportPath ? `${report}\n\nReport written: ${reportPath}` : report;
+	const artifacts = writeReportArtifacts(state, ctx);
+	if (!artifacts.markdownPath) return artifacts.markdown;
+	const jsonLine = artifacts.jsonPath
+		? artifacts.jsonWriteError
+			? `\nStructured JSON write warning: ${artifacts.jsonWriteError}`
+			: `\nStructured JSON written: ${artifacts.jsonPath}`
+		: "";
+	return `${artifacts.markdown}\n\nReport written: ${artifacts.markdownPath}${jsonLine}`;
 }
 
 function formatState(state: DeliveryState): string {
@@ -1422,7 +1548,6 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			}
 			recordReportedSteps(state, ctx, params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string });
 			transitionAfterReport(state, params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string; recommendedDecision?: Decision });
-			if (shouldShowSummary(state)) writeJourneyReport(state, ctx);
 			persist();
 			updateUi(ctx, state);
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);

@@ -17,6 +17,8 @@
   },
   "scripts": {
     "test": "NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/delivery-state-machine/tests/delivery-state-machine.test.ts",
-    "verify": "npm run test"
+    "report-viewer": "bun apps/report-viewer/src/server.ts",
+    "report-viewer:verify": "bun apps/report-viewer/tests/report-viewer.test.ts",
+    "verify": "npm run test && npm run report-viewer:verify"
   }
 }

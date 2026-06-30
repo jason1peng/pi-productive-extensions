@@ -95,18 +95,35 @@ REPORT_VIEWER_CSRF_TOKEN=<optional-fixed-local-token>
 
 If no CSRF token is configured, the server generates one at startup and exposes it in a page meta tag for the local UI.
 
+## Convert legacy Markdown reports
+
+New delivery runs write `delivery-report.json` automatically. Older runs may only have `00-delivery-summary.md`; convert one with:
+
+```bash
+npm run convert-report -- ~/.pi/delivery-run/<legacy-run-directory>
+```
+
+The converter is deterministic and best-effort. It preserves unknown fields as null/empty values and writes `source: "legacy-markdown-conversion"`. It will not replace an existing `delivery-report.json` unless you pass `--overwrite`:
+
+```bash
+npm run convert-report -- ~/.pi/delivery-run/<legacy-run-directory> --overwrite
+```
+
 ## Routes
 
 - `/reports` — local report list UI.
-- `/reports/:viewerReportId` — local report detail UI.
+- `/reports/:viewerReportId` — local report detail UI with dashboard cards, timeline, artifacts, improvement forms, prompt preview, and run controls.
 - `/reports/:viewerReportId/artifacts/*artifactPath` — sanitized local artifact viewer.
 - `/api/reports` — report list API.
+- `/api/reports/:viewerReportId/runs` — agent run status API.
 
 ## Behavior
 
 - Reads extension-owned `delivery-report.json` first.
 - Falls back to legacy `00-delivery-summary.md` when JSON is missing.
 - Stores app-owned metadata under each report directory in `.report-viewer/`.
+- Includes UI forms for creating, approving, rejecting, previewing, and running retro improvements.
+- Includes a deterministic `convert-report` helper for legacy Markdown-only runs.
 - Rejects artifact path traversal and symlink escapes.
 - Requires `x-report-viewer-token` for POST API routes.
 - Requires `{ "confirmExecution": true }` on the run endpoint.

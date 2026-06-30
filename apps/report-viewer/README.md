@@ -10,6 +10,55 @@ npm run report-viewer
 
 The server binds to `127.0.0.1:8765` by default.
 
+## Run over Tailscale
+
+Use this when you want to open the report viewer from another device on your tailnet.
+
+1. Find this machine's Tailscale IP:
+
+```bash
+tailscale ip -4
+```
+
+If the `tailscale` CLI is not installed, inspect network interfaces and look for the `100.x.y.z` address:
+
+```bash
+ifconfig | grep -A3 -E 'tailscale|utun|100\.'
+```
+
+2. Start the viewer bound to that IP:
+
+```bash
+mkdir -p /tmp/pi-report-viewer
+REPORT_VIEWER_HOST=<tailscale-ip> \
+REPORT_VIEWER_PORT=8765 \
+REPORT_VIEWER_ROOTS=$HOME/.pi/delivery-run \
+nohup npm run report-viewer > /tmp/pi-report-viewer/report-viewer.log 2>&1 &
+sleep 1
+lsof -tiTCP:8765 -sTCP:LISTEN > /tmp/pi-report-viewer/report-viewer.pid
+```
+
+3. Open from any device that can reach your tailnet:
+
+```txt
+http://<tailscale-ip>:8765/reports
+```
+
+4. Check or stop the server:
+
+```bash
+tail -f /tmp/pi-report-viewer/report-viewer.log
+kill $(cat /tmp/pi-report-viewer/report-viewer.pid)
+```
+
+For example, if the Tailscale IP is `100.126.13.87`, open:
+
+```txt
+http://100.126.13.87:8765/reports
+```
+
+Security note: this exposes the app to devices that can reach that Tailscale IP. Keep agent execution disabled unless you intentionally configure `REPORT_VIEWER_AGENT_PROMPT_MODE=stdin` after confirming your local `pi` CLI supports non-interactive stdin prompts.
+
 ## Config
 
 Default config path:

@@ -4,6 +4,21 @@
 
 Add reliable, app-readable delivery report output to the existing `delivery-state-machine` extension, then build an optional standalone local web app that reads those extension outputs, displays delivery reports, and later lets a single local user approve retro improvements and directly invoke `pi` for approved work.
 
+## Implementation status
+
+Status as of PR #6 (`delivery/report-viewer-structured-reports`):
+
+| Area | Status | Notes |
+|---|---|---|
+| Phase 1: Extension structured report output | Done | `delivery-report.json` is generated from extension state alongside Markdown; JSON writes are atomic and covered by tests. |
+| Phase 2: Standalone report viewer app | Done, minimal UI | `apps/report-viewer/` provides JSON-first report reading, legacy Markdown fallback, `/reports` UI routes, safe artifact viewing, config/env loading, and tests. UI is functional but not polished. |
+| Phase 3: Retro improvement approval metadata | Foundation done | App-owned `.report-viewer/improvements.json` storage, create/approve/reject APIs, CSRF protection, and tests exist. Polished UI forms/buttons are still future work. |
+| Phase 4: Direct pi invocation for approved improvements | Foundation done, disabled by default | Approved-only run API, prompt preview/audit file, explicit confirmation, argv-based spawn, run logs/status, stale-run reconciliation, and tests exist. Real `pi` execution is gated by `promptMode: "stdin"` and was not end-to-end tested with the real `pi` binary. |
+| Phase 5: Legacy conversion helper | Not started | No `convert-report` CLI yet. Current app supports legacy Markdown fallback instead. |
+| Tailscale access docs | Done | `apps/report-viewer/README.md` documents binding the viewer to a Tailscale IP. |
+
+Current PR: https://github.com/jason1peng/pi-productive-extensions/pull/6
+
 ## Decisions
 
 - The extension remains the source of delivery report artifacts.
@@ -27,6 +42,8 @@ Add reliable, app-readable delivery report output to the existing `delivery-stat
 - stores in-memory/session state with fields already suitable for JSON export, including `task`, `phase`, `artifactDir`, `cwd`, `gitBranch`, `gitRoot`, `history`, `steps`, `acceptedRisks`, `pendingIssue`, and usage data.
 
 ## Phase 1: Extension structured report output
+
+Status: **Done in PR #6**.
 
 ### Scope
 
@@ -144,6 +161,8 @@ npm run verify
 Also manually inspect a sample artifact directory after a delivery summary is generated.
 
 ## Phase 2: Standalone report viewer app
+
+Status: **Done in PR #6 with minimal UI**.
 
 ### Scope
 
@@ -266,6 +285,8 @@ For legacy runs without JSON:
 
 ## Phase 3: Retro improvement approval metadata
 
+Status: **Foundation done in PR #6; polished UI still future work**.
+
 ### Scope
 
 Let a local user create, approve, or reject retro improvement candidates from a report.
@@ -314,6 +335,8 @@ running -> failed
 - Approval status persists in `.report-viewer/improvements.json`.
 
 ## Phase 4: Direct pi invocation for approved improvements
+
+Status: **Foundation done in PR #6; real `pi` execution remains gated and not end-to-end validated**.
 
 ### Scope
 
@@ -374,6 +397,8 @@ Generated prompt should include:
 - instruction to avoid unrelated cleanup.
 
 ## Phase 5: Legacy conversion helper
+
+Status: **Not started**.
 
 ### Scope
 

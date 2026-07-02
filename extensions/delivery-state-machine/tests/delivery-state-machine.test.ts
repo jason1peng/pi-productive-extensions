@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import deliveryStateMachine from "../index.ts";
 
 const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
@@ -109,6 +110,28 @@ async function runTest(name: string, fn: () => Promise<void>) {
 		artifactDirs.clear();
 	}
 }
+
+await runTest("phase prompts define stable artifact contracts", async () => {
+	const phaseDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "phases");
+	const expected: Record<string, string[]> = {
+		implement: ["RESULT: PASS|FAIL", "## Summary", "## Required checklist", "## Changed files", "## Tests added or updated", "## Commands run", "## Evidence", "## Residual risks", "## Recommendation"],
+		verify: ["RESULT: PASS|FAIL|INCONCLUSIVE", "## Summary", "## Findings", "## Commands run", "## Behavioral evidence", "## Candidate completeness", "## Residual risks", "## Recommendation"],
+		review: ["RESULT: PASS|PASS_WITH_NON_BLOCKING_NOTES|FAIL", "## Summary", "## Must-fix findings", "## Non-blocking notes", "## Evidence reviewed", "## Risk checks", "## Recommendation"],
+		close: ["RESULT: MR_CREATED|DONE|FAIL", "## Summary", "## Close-readiness checklist", "## Branch / commit / PR", "## Commands run", "## Remote CI", "## Residual risks"],
+		retro: ["RESULT: DONE", "## Outcome", "## Improvement candidates", "## Plan-quality lessons", "## Critical fixes", "## Residual risks", "## Recommendations"],
+	};
+	for (const [phase, fragments] of Object.entries(expected)) {
+		const prompt = fs.readFileSync(path.join(phaseDir, `${phase}.md`), "utf8");
+		for (const fragment of fragments) assert.match(prompt, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${phase} prompt includes ${fragment}`);
+	}
+});
+
+await runTest("delivery child prompts include central RESULT artifact guidance", async () => {
+	const harness = createHarness();
+	const result = await harness.tool("delivery_start", { task: "artifact guidance smoke" });
+	assert.match(result.details.next.childPrompt, /Start the artifact with exactly one result line: RESULT:/);
+	assert.match(result.details.next.childPrompt, /Use the phase-specific headings/);
+});
 
 await runTest("/deliver reaches review with exactly the configured parallel reviewers", async () => {
 	const harness = createHarness();

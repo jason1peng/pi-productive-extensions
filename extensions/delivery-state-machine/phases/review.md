@@ -33,18 +33,19 @@ Finding classification rules:
 - Non-blocking note: optional improvement that can safely be deferred and does not reduce confidence in this delivery.
 - Do not label something as a suggestion if you believe it should be fixed in this delivery.
 
-Artifact must include these structured failure sections before the checklist (write `none` when not failing):
+Artifact contract for REVIEW (use these headings in this order):
 
-## Failure reason
-One sentence explaining why review failed, or `none` for PASS/PASS_WITH_NON_BLOCKING_NOTES.
+    RESULT: PASS|PASS_WITH_NON_BLOCKING_NOTES|FAIL
 
-## Must-fix blockers
-- List every must-fix finding/blocker, or `none`.
+    ## Summary
+    ## Must-fix findings
+    ## Non-blocking notes
+    ## Evidence reviewed
+    ## Risk checks
+    ## Recommendation
 
-## Suggested repair
-- Specific repair action(s), or `none`.
-
-Artifact must include a short required review checklist:
+The Must-fix findings section must include the failure reason and suggested repair when failing; write `none` when not failing.
+The Evidence reviewed and Risk checks sections must include:
 - Requirements matched by code/tests: yes/no
 - Candidate completeness/trackedness checked: yes/no/not a git repo; blockers listed or none
 - Scope mapping checked when relevant: changed surfaces reviewed; protected surfaces preserved by zero-diff/sentinel check
@@ -53,9 +54,10 @@ Artifact must include a short required review checklist:
 - Verification evidence challenged: yes/no; gaps listed or none
 - For endpoint changes, live/in-process HTTP evidence sufficient: yes/no/not applicable; missing required endpoint/status-code evidence is a blocker
 - For destructive delete/cleanup/filter changes, preservation sentinel checked: yes/no/not applicable
-- Must-fix findings/blockers: list or none
 - Non-blocking notes safe to defer: list or none
 - If no findings: strongest potential objections and why they are not blockers
 - Verdict follows classification rules: yes/no
+
+Use `none` for empty Must-fix findings, Non-blocking notes, or Recommendation. Parallel child artifacts and aggregate review artifacts must use the same headings.
 
 {{artifactGuidance}}

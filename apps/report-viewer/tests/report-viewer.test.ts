@@ -15,6 +15,7 @@ import {
 	scanReports,
 	type ReportViewerConfig,
 } from "../src/server.ts";
+import { parseArtifactContract } from "../src/artifact-contract.ts";
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
 	try {
@@ -42,7 +43,12 @@ function writeJsonReport(dir: string, task: string, overrides: Record<string, un
 		generatedAt: 1235,
 		summaryMarkdownPath: path.join(dir, "00-delivery-summary.md"),
 		history: [],
-		steps: [{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, status: "reported", artifact: "02-verification.md", startedAt: 1 }],
+		steps: [
+			{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented structured report UI", startedAt: 1 },
+			{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "FAIL", artifact: "02-verification.md", summary: "verification found a missing card", startedAt: 2 },
+			{ id: "IMPLEMENT-2", phase: "IMPLEMENT", attempt: 2, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation-2.md", summary: "repair added the missing card", startedAt: 3 },
+			{ id: "REVIEW-1", phase: "REVIEW", attempt: 1, agent: "reviewer", status: "reported", verdict: "PASS", artifact: "03-review.md", summary: "review passed", startedAt: 4 },
+		],
 		acceptedRisks: [],
 		pendingIssue: null,
 		usage: { currentSessionTotals: null, sinceDeliveryStart: null, attribution: "unavailable" },
@@ -50,7 +56,12 @@ function writeJsonReport(dir: string, task: string, overrides: Record<string, un
 	};
 	fs.writeFileSync(path.join(dir, "delivery-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
 	fs.writeFileSync(path.join(dir, "00-delivery-summary.md"), `# Delivery summary\n\nTask: ${task}\nStatus: DONE\n`, "utf8");
-	fs.writeFileSync(path.join(dir, "02-verification.md"), "PASS verification evidence\n", "utf8");
+	fs.writeFileSync(path.join(dir, "01-implementation.md"), "RESULT: PASS\n\n## Summary\nImplemented structured report UI.\n\n## Required checklist\n- Expected behavior clarified before changing production code: yes\n\n## Changed files\n- apps/report-viewer/src/server.ts\n\n## Tests added or updated\n- apps/report-viewer/tests/report-viewer.test.ts\n\n## Commands run\n- `npm run report-viewer:verify` - passed\n\n## Evidence\n- phase cards render\n\n## Residual risks\nnone\n\n## Recommendation\nnone\n", "utf8");
+	fs.writeFileSync(path.join(dir, "02-verification.md"), "RESULT: PASS\n\n## Summary\nPASS verification evidence\n\n## Findings\nnone\n\n## Commands run\n- `curl /reports` - passed\n\n## Behavioral evidence\n- real HTTP route rendered\n\n## Candidate completeness\n- checked\n\n## Residual risks\nnone\n\n## Recommendation\nnone\n", "utf8");
+	fs.writeFileSync(path.join(dir, "03-review.md"), "RESULT: PASS\n\n## Summary\nReview passed.\n\n## Must-fix findings\nnone\n\n## Non-blocking notes\nnone\n\n## Evidence reviewed\n- diff and tests\n\n## Risk checks\n- no blockers\n\n## Recommendation\nnone\n", "utf8");
+	fs.writeFileSync(path.join(dir, "04-close.md"), "RESULT: DONE\n\n## Summary\nClosed locally.\n\n## Close-readiness checklist\n- local fast verification passed\n\n## Branch / commit / PR\n- branch: local\n- commit: none\n- pr: none\n\n## Commands run\n- `npm run verify` - passed\n\n## Remote CI\nnone\n\n## Residual risks\nnone\n", "utf8");
+	fs.writeFileSync(path.join(dir, "05-retro.md"), "RESULT: DONE\n\n## Outcome\nDelivery completed with structured UI.\n\n## Improvement candidates\n| Title | Severity | Source evidence | Suggested action |\n|---|---|---|---|\n| Add parser fixtures | medium | 03-review.md | Keep contract fixtures current |\n\n## Plan-quality lessons\n- Include consumer-path checks.\n\n## Critical fixes\n| Area | Observed issue | Suggested fix | Scope |\n|---|---|---|---|\n| plan | none | none | task |\n\n## Residual risks\nnone\n\n## Recommendations\n- Monitor legacy fallback.\n", "utf8");
+	fs.writeFileSync(path.join(dir, "malformed.md"), "# Unrecognized artifact\n\n<script>alert('owned')</script>\n\nFreeform content without the required contract headings.\n", "utf8");
 }
 
 function writeLegacyReport(dir: string, task: string) {
@@ -121,8 +132,44 @@ await runTest("loadReport reads structured JSON and renders escaped Markdown", (
 	}
 });
 
-await runTest("renderMarkdownSafe escapes embedded HTML", () => {
-	assert.equal(renderMarkdownSafe("<b>x</b>"), '<pre class="markdown-report">&lt;b&gt;x&lt;/b&gt;</pre>');
+await runTest("renderMarkdownSafe supports safe basic Markdown", () => {
+	const html = renderMarkdownSafe("# Heading\n\n- item\n\n```\n<b>x</b>\n```\n\n| A | B |\n|---|---|\n| 1 | <script>bad()</script> |");
+	assert.match(html, /<h1>Heading<\/h1>/);
+	assert.match(html, /<ul><li>item<\/li><\/ul>/);
+	assert.match(html, /<pre><code>&lt;b&gt;x&lt;\/b&gt;<\/code><\/pre>/);
+	assert.match(html, /<table><thead><tr><th>A<\/th><th>B<\/th><\/tr><\/thead><tbody><tr><td>1<\/td><td>&lt;script&gt;bad\(\)&lt;\/script&gt;<\/td><\/tr><\/tbody><\/table>/);
+	assert.doesNotMatch(html, /<script>/);
+});
+
+await runTest("artifact contract parser handles phase fixtures and legacy fallback", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-parser-"));
+	try {
+		const dir = path.join(root, "run");
+		writeJsonReport(dir, "parser task");
+		for (const name of ["01-implementation.md", "02-verification.md", "03-review.md", "04-close.md", "05-retro.md"]) {
+			const parsed = parseArtifactContract(fs.readFileSync(path.join(dir, name), "utf8"), { artifactPath: name });
+			assert.equal(parsed.isContract, true, `${name} follows the contract`);
+			assert.ok(parsed.result, `${name} has a RESULT line`);
+			assert.ok(parsed.sections.length > 0, `${name} sections parsed`);
+		}
+		const retro = parseArtifactContract(fs.readFileSync(path.join(dir, "05-retro.md"), "utf8"), { artifactPath: "05-retro.md" });
+		assert.equal(retro.retroCandidates[0].title, "Add parser fixtures");
+		const fencedOutput = parseArtifactContract("RESULT: PASS\n\n## Summary\nVerifier passed after inspecting output.\n\n## Findings\nnone\n\n## Commands run\n- `npm run verify` - passed\n\n```txt\n## fake heading from command output\nnot a real artifact section\n```\n\n## Behavioral evidence\n- dashboard rendered\n\n## Candidate completeness\n- checked\n\n## Residual risks\nnone\n\n## Recommendation\nnone\n", { artifactPath: "02-verification.md" });
+		assert.equal(fencedOutput.isContract, true);
+		assert.deepEqual(fencedOutput.sections.map((section) => section.heading), ["Summary", "Findings", "Commands run", "Behavioral evidence", "Candidate completeness", "Residual risks", "Recommendation"]);
+		assert.match(fencedOutput.sectionMap["commands run"], /## fake heading from command output/);
+		const legacy = parseArtifactContract("PASS legacy verifier output\n\nChecklist: ok\n\nFindings:\n- missing card\n\nValidation commands:\n- `curl /reports` - passed - route rendered\n\nEvidence:\n- user-facing page rendered\n\nResidual risks:\n- visual polish not checked\n\nRecommendation: repair", { artifactPath: "02-verification.md" });
+		assert.equal(legacy.result, "PASS");
+		assert.equal(legacy.isContract, false);
+		assert.equal(legacy.summary, "legacy verifier output");
+		assert.deepEqual(legacy.findings, ["missing card"]);
+		assert.equal(legacy.commands[0].command, "curl /reports");
+		assert.equal(legacy.commands[0].result, "passed");
+		assert.deepEqual(legacy.residualRisks, ["visual polish not checked"]);
+		assert.equal(legacy.recommendation, "repair");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
 });
 
 await runTest("UI routes render report list, report detail, and artifact content", async () => {
@@ -132,15 +179,95 @@ await runTest("UI routes render report list, report detail, and artifact content
 		const config = configFor([root]);
 		const [summary] = scanReports(config);
 		await withServer(config, async (baseUrl) => {
-			const list = await fetch(`${baseUrl}/reports`);
+			const list = await fetch(`${baseUrl}/reports?source=json&task=route`);
 			assert.equal(list.status, 200);
-			assert.match(await list.text(), /ui route task/);
+			const listHtml = await list.text();
+			assert.match(listHtml, /ui route task/);
+			assert.match(listHtml, /Apply filters/);
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
-			assert.match(await detail.text(), /Phase timeline/);
+			const detailHtml = await detail.text();
+			assert.match(detailHtml, /Phase journey/);
+			assert.match(detailHtml, /phase-card/);
+			assert.match(detailHtml, /Failures and repairs/);
+			assert.match(detailHtml, /Raw structured JSON/);
 			const artifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("02-verification.md")}`);
 			assert.equal(artifact.status, 200);
-			assert.match(await artifact.text(), /PASS verification evidence/);
+			const artifactHtml = await artifact.text();
+			assert.match(artifactHtml, /PASS verification evidence/);
+			assert.match(artifactHtml, /Raw Markdown/);
+			const retroArtifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("05-retro.md")}`);
+			assert.equal(retroArtifact.status, 200);
+			const retroHtml = await retroArtifact.text();
+			assert.match(retroHtml, /Actionable improvement candidates/);
+			assert.match(retroHtml, /Create improvement/);
+			assert.match(retroHtml, /05-retro.md/);
+			assert.match(retroHtml, new RegExp(`<a href="/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/03-review\\.md">03-review\\.md</a>`));
+			const detailWithRetroCandidates = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detailWithRetroCandidates.status, 200);
+			const detailWithRetroCandidatesHtml = await detailWithRetroCandidates.text();
+			assert.match(detailWithRetroCandidatesHtml, /Actionable improvement candidates/);
+			assert.match(detailWithRetroCandidatesHtml, /Add parser fixtures/);
+			assert.match(detailWithRetroCandidatesHtml, new RegExp(`<a href="/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/03-review\\.md">03-review\\.md</a>`));
+			const malformed = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("malformed.md")}`);
+			assert.equal(malformed.status, 200);
+			const malformedHtml = await malformed.text();
+			assert.match(malformedHtml, /Structured parsing unavailable for this artifact/);
+			assert.match(malformedHtml, /Raw Markdown/);
+			assert.match(malformedHtml, /&lt;script&gt;alert\(&#39;owned&#39;\)&lt;\/script&gt;/);
+			assert.doesNotMatch(malformedHtml, /<script>alert\('owned'\)<\/script>/);
+			const created = await fetch(`${baseUrl}/api/reports/${encodeURIComponent(summary.viewerReportId)}/improvements`, {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-report-viewer-token": config.csrfToken },
+				body: JSON.stringify({ title: "Add parser fixtures", description: "Keep contract fixtures current", risk: "medium", sourceArtifact: "05-retro.md", sourceText: "| Add parser fixtures | medium | 03-review.md | Keep contract fixtures current |" }),
+			});
+			assert.equal(created.status, 201);
+			const improvement = await created.json();
+			assert.equal(improvement.sourceArtifact, "05-retro.md");
+			assert.match(improvement.sourceText, /Add parser fixtures/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("report detail groups repeated phase attempts and report list highlights risks", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-signals-"));
+	try {
+		const reportDir = path.join(root, "run");
+		writeJsonReport(reportDir, "signals task", {
+			acceptedRisks: ["accepted launch risk"],
+			steps: [
+				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "initial implementation", startedAt: 1 },
+				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "FAIL", artifact: "02-verification.md", summary: "missing grouped phase attempts", startedAt: 2 },
+				{ id: "IMPLEMENT-2", phase: "IMPLEMENT", attempt: 2, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation-2.md", summary: "repair grouped repeated attempts", startedAt: 3 },
+				{ id: "VERIFY-2", phase: "VERIFY", attempt: 2, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification-2.md", summary: "verify passed", startedAt: 4 },
+				{ id: "REVIEW-1", phase: "REVIEW", attempt: 1, agent: "reviewer", status: "reported", verdict: "FAIL", artifact: "03-review.md", summary: "report list missing risk cues", startedAt: 5 },
+				{ id: "REVIEW-2", phase: "REVIEW", attempt: 2, agent: "reviewer", status: "reported", verdict: "PASS", artifact: "03-review-2.md", summary: "review passed", startedAt: 6 },
+			],
+		});
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		const improvement = createImprovement(config, summary.viewerReportId, {
+			title: "Follow up on retro finding",
+			description: "Create an app-owned improvement from retro evidence.",
+		});
+		decideImprovement(config, summary.viewerReportId, improvement.id, "approved", "ready to run");
+		await withServer(config, async (baseUrl) => {
+			const list = await fetch(`${baseUrl}/reports?task=signals`);
+			assert.equal(list.status, 200);
+			const listHtml = await list.text();
+			assert.match(listHtml, /Failed verify\/review: VERIFY #1, REVIEW #1/);
+			assert.match(listHtml, /Accepted risks: 1/);
+			assert.match(listHtml, /Retro improvements: 1/);
+			assert.match(listHtml, /Retro candidates: 1/);
+			assert.match(listHtml, /Pending improvement runs: 1/);
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const detailHtml = await detail.text();
+			assert.match(detailHtml, /VERIFY attempts \(2\)/);
+			assert.match(detailHtml, /REVIEW attempts \(2\)/);
+			assert.match(detailHtml, /Repair loop: 2 attempts recorded\./);
 		});
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });

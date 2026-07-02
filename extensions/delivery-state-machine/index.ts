@@ -529,7 +529,7 @@ function renderDeliverPrompt(state: DeliveryState): string {
 
 function artifactGuidance(state: DeliveryState): string {
 	if (!state.artifactDir) return "";
-	return `\n\nArtifact guidance:\n- User-scope artifact directory for this delivery run: ${state.artifactDir}.\n- Save or report the artifact path under this directory, e.g. 01-implementation.md, 02-verification.md, 03-review.md, 04-close.md, 05-retro.md.\n- Keep artifacts scan-friendly: start with verdict/result, then required checklist, blockers, non-blocking notes, and concise evidence.`;
+	return `\n\nArtifact guidance:\n- User-scope artifact directory for this delivery run: ${state.artifactDir}.\n- Save or report the artifact path under this directory, e.g. 01-implementation.md, 02-verification.md, 03-review.md, 04-close.md, 05-retro.md.\n- Start the artifact with exactly one result line: RESULT: PASS, RESULT: PASS_WITH_NON_BLOCKING_NOTES, RESULT: FAIL, RESULT: INCONCLUSIVE, RESULT: DONE, or RESULT: MR_CREATED.\n- Use the phase-specific headings from the child prompt, in that order, and write \`none\` for empty Findings, Residual risks, or Recommendation sections.\n- Use Markdown bullet lists for checklist/evidence items and fenced code blocks only for short command output snippets. Do not wrap the whole artifact in a code block.\n- Keep the first paragraph of the summary/outcome concise enough for a report card, and put long logs behind artifact links or short fenced snippets.`;
 }
 
 function isPass(verdict?: Verdict): boolean {

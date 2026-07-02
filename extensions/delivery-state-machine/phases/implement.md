@@ -24,13 +24,27 @@ Instructions:
 - Report changed files plus concise evidence.
 - Before finishing, check candidate completeness with git status/diff when working in a git repository. Do not leave required source, test, config, script, or doc files untracked.
 
-Artifact must include a short required implementation checklist:
+Artifact contract for IMPLEMENT (use these headings in this order):
+
+    RESULT: PASS|FAIL
+
+    ## Summary
+    ## Required checklist
+    ## Changed files
+    ## Tests added or updated
+    ## Commands run
+    ## Evidence
+    ## Residual risks
+    ## Recommendation
+
+The Required checklist section must include:
 - Expected behavior clarified before changing production code: yes/no
 - Before-fix failure captured: yes/no/partial; include the command and failing output when practical
 - Tests added or updated for this change: yes/no/not needed + reason
 - Focused tests passed: command + result; if not passing, explain blocker clearly
 - Fast local gate run if appropriate: command + pass/fail/not run + reason
 - Candidate completeness checked: yes/no/not a git repo; required new files tracked and untracked files explained
-Separate missing evidence from blockers.
+
+Use `none` for empty Residual risks or Recommendation. Separate missing evidence from blockers.
 
 {{artifactGuidance}}

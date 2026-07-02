@@ -27,29 +27,31 @@ Instructions:
 - For bug fixes, compare before/after behavior when feasible.
 - If end-to-end execution is blocked, report the exact blocker, gather the closest equivalent evidence, and clearly mark the residual risk.
 
-Artifact must include these structured failure sections before the checklist (write `none` when not failing):
+Artifact contract for VERIFY (use these headings in this order):
 
-## Failure reason
-One sentence explaining why verification failed, or `none` for PASS/PASS_WITH_NON_BLOCKING_NOTES.
+    RESULT: PASS|FAIL|INCONCLUSIVE
 
-## Must-fix blockers
-- List every blocker, or `none`.
+    ## Summary
+    ## Findings
+    ## Commands run
+    ## Behavioral evidence
+    ## Candidate completeness
+    ## Residual risks
+    ## Recommendation
 
-## Suggested repair
-- Specific repair action(s), or `none`.
-
-Artifact must include a short required verification checklist:
+The Findings section must include the failure reason, must-fix blockers, and suggested repair when failing; write `none` when not failing.
+The Candidate completeness and Behavioral evidence sections must include:
 - Diff inspected: yes/no
 - Candidate completeness checked: yes/no/not a git repo; required files tracked and untracked files explained
 - Scope mapping checked when relevant: changed surfaces verified; protected surfaces preserved by zero-diff/sentinel check
-- Requirement and consumer path identified: yes/no; include path or why not applicable
+- Requirement and consumer path identified: yes/no; include the real consumer path exercised or why not feasible
 - Independent focused checks run: command + pass/fail
 - Behavioral evidence gathered through the real consumer path: yes/no/not applicable; include result
 - Setup/config/control-plane verified through downstream runtime behavior when relevant: yes/no/not applicable
 - Isolation/scoping/leakage checked when relevant: yes/no/not applicable; include scopes and no/default-scope result
 - New/changed HTTP endpoints probed by live HTTP or in-process HTTP client when relevant: yes/no/not applicable; include routes, headers, expected status, and actual status
 - Source-only or internal-state-only verification used: yes/no; if yes, explain why sufficient or list residual risk
-- Blockers: list or none
-- Non-blocking notes: list or none
+
+Use `none` for empty Findings, Residual risks, or Recommendation.
 
 {{artifactGuidance}}

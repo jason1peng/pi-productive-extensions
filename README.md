@@ -28,9 +28,10 @@ Optional local dashboard for delivery reports. It scans `~/.pi/delivery-run` by 
 
 ```bash
 npm run report-viewer
+npm run convert-report -- ~/.pi/delivery-run/<legacy-run-directory>
 ```
 
-Details and future approval/execution workflow are tracked in [docs/plans/report-viewer-and-structured-reports.md](docs/plans/report-viewer-and-structured-reports.md).
+Details for the dashboard, legacy converter, and approval/execution workflow are tracked in [docs/plans/report-viewer-and-structured-reports.md](docs/plans/report-viewer-and-structured-reports.md).
 
 ## Installation
 

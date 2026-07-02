@@ -12,9 +12,9 @@ Status as of PR #6 (`delivery/report-viewer-structured-reports`):
 |---|---|---|
 | Phase 1: Extension structured report output | Done | `delivery-report.json` is generated from extension state alongside Markdown; JSON writes are atomic and covered by tests. |
 | Phase 2: Standalone report viewer app | Done, minimal UI | `apps/report-viewer/` provides JSON-first report reading, legacy Markdown fallback, `/reports` UI routes, safe artifact viewing, config/env loading, and tests. UI is functional but not polished. |
-| Phase 3: Retro improvement approval metadata | Foundation done | App-owned `.report-viewer/improvements.json` storage, create/approve/reject APIs, CSRF protection, and tests exist. Polished UI forms/buttons are still future work. |
-| Phase 4: Direct pi invocation for approved improvements | Foundation done, disabled by default | Approved-only run API, prompt preview/audit file, explicit confirmation, argv-based spawn, run logs/status, stale-run reconciliation, and tests exist. Real `pi` execution is gated by `promptMode: "stdin"` and was not end-to-end tested with the real `pi` binary. |
-| Phase 5: Legacy conversion helper | Not started | No `convert-report` CLI yet. Current app supports legacy Markdown fallback instead. |
+| Phase 3: Retro improvement approval metadata | Done | App-owned `.report-viewer/improvements.json` storage, create/approve/reject APIs, CSRF protection, dashboard forms/buttons, and tests exist. |
+| Phase 4: Direct pi invocation for approved improvements | Done with real-`pi` gate | Approved-only run API, prompt preview/audit file, explicit confirmation, argv-based spawn, run logs/status, stale-run reconciliation, dashboard controls, and hermetic success-path tests exist. Real `pi` execution remains gated by `promptMode: "stdin"` and still requires local operator confirmation. |
+| Phase 5: Legacy conversion helper | Done | `npm run convert-report -- <artifactDir>` creates best-effort `delivery-report.json` for Markdown-only legacy runs. |
 | Tailscale access docs | Done | `apps/report-viewer/README.md` documents binding the viewer to a Tailscale IP. |
 
 Current PR: https://github.com/jason1peng/pi-productive-extensions/pull/6
@@ -285,7 +285,7 @@ For legacy runs without JSON:
 
 ## Phase 3: Retro improvement approval metadata
 
-Status: **Foundation done in PR #6; polished UI still future work**.
+Status: **Done in the remaining-work branch**.
 
 ### Scope
 
@@ -336,7 +336,7 @@ running -> failed
 
 ## Phase 4: Direct pi invocation for approved improvements
 
-Status: **Foundation done in PR #6; real `pi` execution remains gated and not end-to-end validated**.
+Status: **Done with real-`pi` gate in the remaining-work branch**. A hermetic `/bin/cat` success-path test covers process execution, status persistence, prompt audit file, and run logs; actual `pi` execution remains disabled unless the local operator confirms stdin prompt support and sets `promptMode: "stdin"`.
 
 ### Scope
 
@@ -398,7 +398,7 @@ Generated prompt should include:
 
 ## Phase 5: Legacy conversion helper
 
-Status: **Not started**.
+Status: **Done in the remaining-work branch**.
 
 ### Scope
 
@@ -456,7 +456,7 @@ Prompt-assisted converter for messy reports only, behind explicit user action be
 
 ## Remaining open questions
 
-- Should a future polished UI add forms/buttons for create/approve/run flows, or keep those as API-only until the workflow is exercised manually?
+- Should a future release add automatic retro extraction from Markdown, or keep improvement creation manual to avoid model-token cost and false positives?
 
 ## Additional implementation decisions from delivery
 
@@ -464,6 +464,8 @@ Prompt-assisted converter for messy reports only, behind explicit user action be
 - App-created execution prompts are written into `.report-viewer/runs/<runId>-prompt.md` for auditability.
 - Run execution requires both local CSRF token and explicit `{ "confirmExecution": true }` confirmation.
 - Stale `running` run records are reconciled on startup to `unknown`, and matching running improvements are marked `failed`, because child processes are not tracked across app restarts.
+- The report detail page includes local UI controls for manual improvement creation, approve/reject, prompt preview, and confirmed run requests.
+- Legacy Markdown-only runs can be converted with `npm run convert-report -- <artifactDir>`; malformed JSON falls back to legacy Markdown when possible so one bad report does not break listing other reports.
 
 ## Reviewer feedback incorporated
 

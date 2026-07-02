@@ -8,6 +8,7 @@ import {
 	decideImprovement,
 	loadConfig,
 	loadReport,
+	listRuns,
 	reconcileStaleRunningRecords,
 	renderMarkdownSafe,
 	resolveArtifactPath,
@@ -15,6 +16,7 @@ import {
 	scanReports,
 	type ReportViewerConfig,
 } from "../src/server.ts";
+import { convertLegacyReport } from "../src/convert-report.ts";
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
 	try {
@@ -122,7 +124,15 @@ await runTest("loadReport reads structured JSON and renders escaped Markdown", (
 });
 
 await runTest("renderMarkdownSafe escapes embedded HTML", () => {
-	assert.equal(renderMarkdownSafe("<b>x</b>"), '<pre class="markdown-report">&lt;b&gt;x&lt;/b&gt;</pre>');
+	assert.equal(renderMarkdownSafe("<b>x</b>"), '<div class="markdown-doc"><p>&lt;b&gt;x&lt;/b&gt;</p></div>');
+});
+
+await runTest("renderMarkdownSafe renders markdown tables as HTML tables", () => {
+	const html = renderMarkdownSafe("| Area | Finding |\n|---|---|\n| Tests | Passed |");
+	assert.match(html, /<table>/);
+	assert.match(html, /<th>Area<\/th>/);
+	assert.match(html, /<td>Passed<\/td>/);
+	assert.doesNotMatch(html, /\|---\|---\|/);
 });
 
 await runTest("UI routes render report list, report detail, and artifact content", async () => {
@@ -137,7 +147,7 @@ await runTest("UI routes render report list, report detail, and artifact content
 			assert.match(await list.text(), /ui route task/);
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
-			assert.match(await detail.text(), /Phase timeline/);
+			assert.match(await detail.text(), /Phases/);
 			const artifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("02-verification.md")}`);
 			assert.equal(artifact.status, 200);
 			assert.match(await artifact.text(), /PASS verification evidence/);
@@ -284,6 +294,257 @@ await runTest("stale running records are reconciled on startup", () => {
 		assert.match(runs[0].resultSummary, /no live child process/);
 		const updatedImprovements = JSON.parse(fs.readFileSync(improvementsPath, "utf8"));
 		assert.equal(updatedImprovements[0].status, "failed");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("malformed JSON falls back to legacy Markdown without breaking report listing", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-corrupt-"));
+	try {
+		const corruptDir = path.join(root, "corrupt");
+		writeLegacyReport(corruptDir, "corrupt but readable task");
+		fs.writeFileSync(path.join(corruptDir, "delivery-report.json"), "{not json", "utf8");
+		writeJsonReport(path.join(root, "healthy"), "healthy task");
+		const reports = scanReports(configFor([root]));
+		assert.equal(reports.length, 2);
+		assert.equal(reports.find((report) => report.task === "corrupt but readable task")?.source, "legacy-markdown");
+		assert.equal(reports.find((report) => report.task === "healthy task")?.source, "json");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("convertLegacyReport writes deterministic best-effort delivery-report JSON", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-convert-"));
+	try {
+		const reportDir = path.join(root, "legacy-run");
+		fs.mkdirSync(reportDir, { recursive: true });
+		fs.writeFileSync(path.join(reportDir, "00-delivery-summary.md"), [
+			"# Delivery summary",
+			"",
+			"Task: legacy conversion task",
+			"Status: DONE",
+			"Artifact directory: " + reportDir,
+			"Cwd: " + root,
+			"Branch: main",
+			"",
+			"## Journey",
+			"",
+			"| # | Phase | Agent | Model | Verdict | Cost | Detail |",
+			"|---|---|---|---|---|---:|---|",
+			"| 1 | VERIFY #2 | fresh-verifier | default | PASS | $0 | verification passed |",
+		].join("\n"), "utf8");
+		const { jsonPath, report } = convertLegacyReport(reportDir, { now: 42 });
+		assert.equal(jsonPath, path.join(reportDir, "delivery-report.json"));
+		assert.equal(report.source, "legacy-markdown-conversion");
+		assert.equal(report.task, "legacy conversion task");
+		assert.equal(report.status, "DONE");
+		assert.equal(report.phase, null);
+		assert.equal(report.cwd, root);
+		assert.equal(report.gitBranch, "main");
+		assert.equal(report.gitRoot, null);
+		assert.equal(report.createdAt, null);
+		assert.equal(report.generatedAt, 42);
+		assert.equal(report.steps.length, 1);
+		assert.equal(report.steps[0].phase, "VERIFY");
+		assert.equal(report.steps[0].attempt, 2);
+		assert.equal(report.steps[0].startedAt, null);
+		assert.equal(report.steps[0].endedAt, null);
+		assert.equal(JSON.parse(fs.readFileSync(jsonPath, "utf8")).source, "legacy-markdown-conversion");
+		assert.throws(() => convertLegacyReport(reportDir), /already exists/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("convertLegacyReport preserves missing legacy fields as null", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-convert-null-"));
+	try {
+		const reportDir = path.join(root, "legacy-run");
+		fs.mkdirSync(reportDir, { recursive: true });
+		fs.writeFileSync(path.join(reportDir, "00-delivery-summary.md"), "# Delivery summary\n", "utf8");
+		const { report } = convertLegacyReport(reportDir, { now: 42 });
+		assert.equal(report.task, null);
+		assert.equal(report.status, null);
+		assert.equal(report.phase, null);
+		assert.equal(report.cwd, null);
+		assert.equal(report.gitBranch, null);
+		assert.equal(report.gitRoot, null);
+		assert.equal(report.createdAt, null);
+		assert.deepEqual(report.steps, []);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+async function waitForRunStatus(config: ReportViewerConfig, reportId: string, status: string) {
+	const deadline = Date.now() + 3000;
+	while (Date.now() < deadline) {
+		const [run] = listRuns(config, reportId);
+		if (run?.status === status) return run;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	assert.fail(`Timed out waiting for run status ${status}`);
+}
+
+await runTest("approved run success path records completed status and log", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-run-success-"));
+	try {
+		const reportDir = path.join(root, "run");
+		writeJsonReport(reportDir, "run success task");
+		const config = configFor([root], { agentCommand: { bin: "/bin/cat", args: [], promptMode: "stdin" } });
+		const [summary] = scanReports(config);
+		const improvement = createImprovement(config, summary.viewerReportId, {
+			title: "Successful run improvement",
+			description: "Echo the generated prompt through cat.",
+		});
+		decideImprovement(config, summary.viewerReportId, improvement.id, "approved", "looks safe");
+		const record = runApprovedImprovement(config, summary.viewerReportId, improvement.id, { confirmExecution: true });
+		assert.equal(record.status, "running");
+		const completed = await waitForRunStatus(config, summary.viewerReportId, "completed");
+		assert.equal(completed.exitCode, 0);
+		const logPath = path.join(reportDir, completed.outputLogPath);
+		assert.match(fs.readFileSync(logPath, "utf8"), /Implement this approved retro improvement/);
+		assert.equal(fs.existsSync(path.join(reportDir, ".report-viewer", "runs", `${completed.id}-prompt.md`)), true);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("runs API route returns persisted run records", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-runs-api-"));
+	try {
+		const reportDir = path.join(root, "run");
+		writeJsonReport(reportDir, "runs api task");
+		const config = configFor([root], { agentCommand: { bin: "/bin/cat", args: [], promptMode: "stdin" } });
+		const [summary] = scanReports(config);
+		const improvement = createImprovement(config, summary.viewerReportId, {
+			title: "Runs API improvement",
+			description: "Create a persisted run record for route verification.",
+		});
+		decideImprovement(config, summary.viewerReportId, improvement.id, "approved", "looks safe");
+		const record = runApprovedImprovement(config, summary.viewerReportId, improvement.id, { confirmExecution: true });
+		const completed = await waitForRunStatus(config, summary.viewerReportId, "completed");
+		await withServer(config, async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/api/reports/${encodeURIComponent(summary.viewerReportId)}/runs`);
+			assert.equal(response.status, 200);
+			const runs = await response.json();
+			assert.equal(Array.isArray(runs), true);
+			assert.equal(runs.length, 1);
+			assert.equal(runs[0].id, record.id);
+			assert.equal(runs[0].status, "completed");
+			assert.equal(runs[0].exitCode, completed.exitCode);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("listing runs preserves a live running process", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-running-list-"));
+	try {
+		const reportDir = path.join(root, "run");
+		writeJsonReport(reportDir, "slow run task");
+		const config = configFor([root], { agentCommand: { bin: "/bin/sh", args: ["-c", "sleep 0.5; cat >/dev/null"], promptMode: "stdin" } });
+		const [summary] = scanReports(config);
+		const improvement = createImprovement(config, summary.viewerReportId, {
+			title: "Slow run improvement",
+			description: "Keep the process alive long enough to poll run status.",
+		});
+		decideImprovement(config, summary.viewerReportId, improvement.id, "approved", "looks safe");
+		const record = runApprovedImprovement(config, summary.viewerReportId, improvement.id, { confirmExecution: true });
+		assert.equal(record.status, "running");
+		const [running] = listRuns(config, summary.viewerReportId);
+		assert.equal(running.status, "running");
+		const completed = await waitForRunStatus(config, summary.viewerReportId, "completed");
+		assert.equal(completed.exitCode, 0);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("report detail UI includes improvement controls and disables non-runnable runs", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-ui-controls-"));
+	try {
+		writeJsonReport(path.join(root, "run"), "ui controls task");
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		createImprovement(config, summary.viewerReportId, {
+			title: "Proposed UI-visible improvement",
+			description: "Make controls visible.",
+		});
+		const approved = createImprovement(config, summary.viewerReportId, {
+			title: "Approved but disabled improvement",
+			description: "Show setup guidance when prompt mode is disabled.",
+		});
+		decideImprovement(config, summary.viewerReportId, approved.id, "approved", "safe");
+		await withServer(config, async (baseUrl) => {
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, /Retro improvements/);
+			assert.match(html, /Preview prompt/);
+			assert.match(html, /Agent runs/);
+			assert.match(html, /Run is available only after this improvement is approved/);
+			assert.match(html, /Agent execution is disabled/);
+			assert.match(html, /data-action="run"[^>]*disabled/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("report detail UI enables run only for approved runnable improvements", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-ui-run-enabled-"));
+	try {
+		writeJsonReport(path.join(root, "run"), "ui run enabled task");
+		const config = configFor([root], { agentCommand: { bin: "/bin/cat", args: [], promptMode: "stdin" } });
+		const [summary] = scanReports(config);
+		const approved = createImprovement(config, summary.viewerReportId, {
+			title: "Runnable improvement",
+			description: "Run button should be enabled.",
+		});
+		decideImprovement(config, summary.viewerReportId, approved.id, "approved", "safe");
+		await withServer(config, async (baseUrl) => {
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, new RegExp(`data-action="run" data-id="${approved.id}">Run`));
+			assert.doesNotMatch(html, /Agent execution is disabled/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("report detail UI falls back to usable cwd when gitRoot is unusable", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-ui-cwd-fallback-"));
+	try {
+		const reportDir = path.join(root, "run");
+		const usableCwd = path.join(root, "usable-cwd");
+		fs.mkdirSync(usableCwd, { recursive: true });
+		writeJsonReport(reportDir, "ui cwd fallback task", {
+			gitRoot: path.join(root, "missing-git-root"),
+			cwd: usableCwd,
+		});
+		const config = configFor([root], { agentCommand: { bin: "/bin/cat", args: [], promptMode: "stdin" } });
+		const [summary] = scanReports(config);
+		const approved = createImprovement(config, summary.viewerReportId, {
+			title: "Runnable via cwd improvement",
+			description: "Run button should use cwd when gitRoot is missing.",
+		});
+		decideImprovement(config, summary.viewerReportId, approved.id, "approved", "safe");
+		await withServer(config, async (baseUrl) => {
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, new RegExp(`data-action="run" data-id="${approved.id}">Run`));
+			assert.doesNotMatch(html, /Agent execution needs a usable gitRoot or cwd/);
+		});
+		const run = runApprovedImprovement(config, summary.viewerReportId, approved.id, { confirmExecution: true });
+		assert.equal(run.cwd, usableCwd);
+		await waitForRunStatus(config, summary.viewerReportId, "completed");
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

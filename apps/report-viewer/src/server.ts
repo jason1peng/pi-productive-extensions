@@ -136,11 +136,16 @@ function isDirectory(filePath: string): boolean {
 
 function readJsonIfPresent(filePath: string): any | undefined {
 	if (!fs.existsSync(filePath)) return undefined;
-	return JSON.parse(fs.readFileSync(filePath, "utf8"));
+	try {
+		return JSON.parse(fs.readFileSync(filePath, "utf8"));
+	} catch {
+		return undefined;
+	}
 }
 
 function reportSourceForDir(dir: string): ReportSource | undefined {
-	if (fs.existsSync(path.join(dir, "delivery-report.json"))) return "json";
+	const jsonPath = path.join(dir, "delivery-report.json");
+	if (fs.existsSync(jsonPath) && readJsonIfPresent(jsonPath) !== undefined) return "json";
 	if (fs.existsSync(path.join(dir, "00-delivery-summary.md"))) return "legacy-markdown";
 	return undefined;
 }
@@ -266,8 +271,90 @@ export function escapeHtml(value: string): string {
 		.replace(/'/g, "&#39;");
 }
 
+function renderInlineMarkdownSafe(value: string): string {
+	return escapeHtml(value)
+		.replace(/`([^`]+)`/g, "<code>$1</code>")
+		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+		.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>');
+}
+
+function splitMarkdownTableCells(row: string): string[] {
+	return row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function isMarkdownTableSeparator(row: string): boolean {
+	return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(row.trim());
+}
+
+function renderMarkdownTable(rows: string[]): string {
+	const header = splitMarkdownTableCells(rows[0] ?? "");
+	const bodyRows = rows.slice(2).map(splitMarkdownTableCells);
+	return `<div class="table-wrap"><table><thead><tr>${header.map((cell) => `<th>${renderInlineMarkdownSafe(cell)}</th>`).join("")}</tr></thead><tbody>${bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdownSafe(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
 export function renderMarkdownSafe(markdown: string): string {
-	return `<pre class="markdown-report">${escapeHtml(markdown)}</pre>`;
+	const lines = markdown.split(/\r?\n/);
+	const html: string[] = [];
+	let listOpen = false;
+	let codeOpen = false;
+	const closeList = () => {
+		if (listOpen) {
+			html.push("</ul>");
+			listOpen = false;
+		}
+	};
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		if (/^```/.test(line.trim())) {
+			closeList();
+			if (codeOpen) html.push("</code></pre>");
+			else html.push('<pre class="markdown-code"><code>');
+			codeOpen = !codeOpen;
+			continue;
+		}
+		if (codeOpen) {
+			html.push(`${escapeHtml(line)}\n`);
+			continue;
+		}
+		const trimmed = line.trim();
+		if (!trimmed) {
+			closeList();
+			continue;
+		}
+		if (trimmed.startsWith("|") && isMarkdownTableSeparator(lines[index + 1] ?? "")) {
+			closeList();
+			const tableRows = [trimmed, lines[index + 1].trim()];
+			index += 2;
+			while (index < lines.length && lines[index].trim().startsWith("|")) {
+				tableRows.push(lines[index].trim());
+				index++;
+			}
+			index--;
+			html.push(renderMarkdownTable(tableRows));
+			continue;
+		}
+		const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+		if (heading) {
+			closeList();
+			const level = Math.min(heading[1].length + 1, 5);
+			html.push(`<h${level}>${renderInlineMarkdownSafe(heading[2])}</h${level}>`);
+			continue;
+		}
+		const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
+		if (bullet) {
+			if (!listOpen) {
+				html.push("<ul>");
+				listOpen = true;
+			}
+			html.push(`<li>${renderInlineMarkdownSafe(bullet[1])}</li>`);
+			continue;
+		}
+		closeList();
+		html.push(`<p>${renderInlineMarkdownSafe(trimmed)}</p>`);
+	}
+	closeList();
+	if (codeOpen) html.push("</code></pre>");
+	return `<div class="markdown-doc">${html.join("\n")}</div>`;
 }
 
 function isExternalUrl(value: string): boolean {
@@ -368,6 +455,11 @@ export function listImprovements(config: Pick<ReportViewerConfig, "reportRoots">
 	return readJsonArray<RetroImprovement>(improvementsPath(dir));
 }
 
+export function listRuns(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string): AgentRunRecord[] {
+	const { dir } = reportDirForId(config, viewerReportId);
+	return readJsonArray<AgentRunRecord>(runsPath(dir));
+}
+
 export function createImprovement(
 	config: Pick<ReportViewerConfig, "reportRoots">,
 	viewerReportId: string,
@@ -447,7 +539,6 @@ export function runApprovedImprovement(
 ): AgentRunRecord {
 	const report = loadReport(config, viewerReportId);
 	const { dir } = reportDirForId(config, viewerReportId);
-	reconcileStaleRunningRecordsForDir(dir);
 	const improvements = readJsonArray<RetroImprovement>(improvementsPath(dir));
 	const improvement = improvements.find((item) => item.id === improvementId);
 	if (!improvement) throw new Error("Improvement not found");
@@ -459,8 +550,8 @@ export function runApprovedImprovement(
 	if (readJsonArray<AgentRunRecord>(runsPath(dir)).some((run) => run.improvementId === improvementId && run.status === "running")) {
 		throw new Error("Improvement already has an active run");
 	}
-	const cwd = report.structuredReport?.gitRoot ?? report.structuredReport?.cwd;
-	if (!cwd || !isDirectory(cwd)) throw new Error("Report has no usable gitRoot/cwd for agent execution");
+	const cwd = reportExecutionCwd(report);
+	if (!cwd) throw new Error("Report has no usable gitRoot/cwd for agent execution");
 	const runId = `run_${Date.now().toString(36)}`;
 	const runsDir = path.join(metadataDir(dir), "runs");
 	fs.mkdirSync(runsDir, { recursive: true });
@@ -549,7 +640,7 @@ function requireCsrfToken(request: http.IncomingMessage, config: Pick<ReportView
 }
 
 function page(title: string, body: string, config: Pick<ReportViewerConfig, "csrfToken">): string {
-	return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="report-viewer-csrf-token" content="${escapeHtml(config.csrfToken)}"><style>:root{color-scheme:light dark;--bg:#f6f8fb;--panel:#fff;--text:#182230;--muted:#667085;--border:#d0d5dd;--accent:#2563eb;--ok:#067647;--warn:#b54708;--bad:#b42318}@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--border:#374151;--accent:#60a5fa;--ok:#32d583;--warn:#fdb022;--bad:#f97066}}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);max-width:1180px;margin:0 auto;padding:2rem 1rem 4rem}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.panel,.card,details{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}.panel{padding:1rem;margin:1rem 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:1rem 0}.card{padding:1rem}.label{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.value{font-size:1.25rem;font-weight:700;margin-top:.25rem}.muted{color:var(--muted)}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:.2rem .55rem;font-size:.82rem;font-weight:700;background:#eef4ff;color:#3538cd}.badge.ok{background:#dcfae6;color:var(--ok)}.badge.warn{background:#fef0c7;color:var(--warn)}.badge.bad{background:#fee4e2;color:var(--bad)}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden}td,th{border-bottom:1px solid var(--border);padding:.65rem .75rem;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}pre{background:rgba(127,127,127,.10);padding:1rem;overflow:auto;border-radius:10px}.markdown-report{max-height:520px}details{padding:.9rem 1rem;margin:1rem 0}summary{cursor:pointer;font-weight:700}.artifact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.65rem;padding:0;list-style:none}.artifact-list li{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:.75rem}.task-link{font-weight:700}.source-json{color:var(--ok)}.source-legacy-markdown{color:var(--warn)}</style></head><body>${body}</body></html>`;
+	return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="report-viewer-csrf-token" content="${escapeHtml(config.csrfToken)}"><style>:root{color-scheme:light dark;--bg:#f6f8fb;--panel:#fff;--text:#182230;--muted:#667085;--border:#d0d5dd;--accent:#2563eb;--ok:#067647;--warn:#b54708;--bad:#b42318}@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--border:#374151;--accent:#60a5fa;--ok:#32d583;--warn:#fdb022;--bad:#f97066}}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);max-width:1180px;margin:0 auto;padding:2rem 1rem 4rem}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.panel,.card,details{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}.panel{padding:1rem;margin:1rem 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:1rem 0}.card{padding:1rem}.label{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.value{font-size:1.25rem;font-weight:700;margin-top:.25rem}.muted{color:var(--muted)}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:.2rem .55rem;font-size:.82rem;font-weight:700;background:#eef4ff;color:#3538cd}.badge.ok{background:#dcfae6;color:var(--ok)}.badge.warn{background:#fef0c7;color:var(--warn)}.badge.bad{background:#fee4e2;color:var(--bad)}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden}td,th{border-bottom:1px solid var(--border);padding:.65rem .75rem;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}pre{background:rgba(127,127,127,.10);padding:1rem;overflow:auto;border-radius:10px}.markdown-report{max-height:520px}details{padding:.9rem 1rem;margin:1rem 0}summary{cursor:pointer;font-weight:700}.artifact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.65rem;padding:0;list-style:none}.artifact-list li{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:.75rem}.task-link{font-weight:700}.source-json{color:var(--ok)}.source-legacy-markdown{color:var(--warn)}input,textarea,select,button{font:inherit}input,textarea,select{width:100%;margin:.25rem 0 .75rem;padding:.55rem;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text)}textarea{min-height:5rem}button{border:0;border-radius:8px;padding:.5rem .75rem;background:var(--accent);color:white;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed;background:var(--muted)}button.secondary{background:var(--muted)}button.danger{background:var(--bad)}.actions{display:flex;gap:.5rem;flex-wrap:wrap}.message{margin-top:.75rem}.action-note{flex-basis:100%;font-size:.85rem;color:var(--muted)}.phase-grid{display:grid;gap:1rem}.phase-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;box-shadow:0 1px 2px rgba(16,24,40,.04)}.phase-card-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}.phase-title{display:flex;align-items:center;gap:.5rem;font-weight:800;font-size:1.05rem}.phase-meta{color:var(--muted);font-size:.9rem}.phase-summary{margin:.8rem 0;line-height:1.45}.phase-actions{display:flex;gap:.5rem;flex-wrap:wrap}.button-link{display:inline-flex;align-items:center;border-radius:8px;padding:.45rem .7rem;background:var(--accent);color:white}.button-link:hover{text-decoration:none}.button-link.secondary{background:var(--muted)}.markdown-doc{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;line-height:1.5}.markdown-doc h2,.markdown-doc h3,.markdown-doc h4,.markdown-doc h5{margin:1rem 0 .5rem}.markdown-doc p{margin:.5rem 0}.markdown-doc ul{margin:.5rem 0 .75rem 1.25rem;padding:0}.markdown-doc .table-wrap{overflow-x:auto;margin:1rem 0}.markdown-doc table{font-size:.95rem}.markdown-code{white-space:pre-wrap}.summary-short{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}.path-line{overflow-wrap:anywhere;font-size:.9rem}</style></head><body>${body}</body></html>`;
 }
 
 function indexHtml(config: Pick<ReportViewerConfig, "csrfToken">): string {
@@ -569,24 +660,75 @@ function reportsHtml(config: ReportViewerConfig): string {
 	return page("Pi delivery reports", `<h1>Pi delivery reports</h1><p class="muted">JSON-backed reports show structured status, phase timeline, artifacts, usage, risks, and pending issues. Legacy runs fall back to Markdown until converted or regenerated.</p><table><thead><tr><th>Task</th><th>Status</th><th>Source</th><th>Updated</th><th>Artifact directory</th></tr></thead><tbody>${rows || `<tr><td colspan="5">No reports found.</td></tr>`}</tbody></table>`, config);
 }
 
+function reportExecutionCwd(report: LoadedReport): string | undefined {
+	for (const candidate of [report.structuredReport?.gitRoot, report.structuredReport?.cwd]) {
+		if (typeof candidate === "string" && isDirectory(candidate)) return candidate;
+	}
+	return undefined;
+}
+
+function runDisabledReason(config: ReportViewerConfig, report: LoadedReport, improvement: RetroImprovement): string | undefined {
+	if (improvement.status !== "approved") return "Run is available only after this improvement is approved.";
+	if (config.agentCommand.promptMode !== "stdin") return "Agent execution is disabled. Set REPORT_VIEWER_AGENT_PROMPT_MODE=stdin after confirming your local pi CLI supports non-interactive stdin prompts.";
+	if (!reportExecutionCwd(report)) return "Agent execution needs a usable gitRoot or cwd from the structured report.";
+	return undefined;
+}
+
+function truncateText(value: unknown, maxLength = 420): string {
+	const text = String(value ?? "").replace(/\s+/g, " ").trim();
+	return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function phaseDetailLink(viewerReportId: string, artifact: unknown): string {
+	if (typeof artifact !== "string" || !artifact) return "";
+	if (isExternalUrl(artifact)) return `<a class="button-link secondary" href="${escapeHtml(artifact)}" rel="noreferrer">Open details</a>`;
+	return `<a class="button-link" href="/reports/${encodeURIComponent(viewerReportId)}/artifacts/${encodeURIComponent(artifact)}">Open details</a>`;
+}
+
+function phaseCardsHtml(viewerReportId: string, steps: any[]): string {
+	if (!steps.length) return `<div class="panel muted">No structured steps available.</div>`;
+	return `<div class="phase-grid">${steps.map((step: any) => {
+		const verdict = String(step.verdict ?? step.status ?? "reported");
+		const phase = String(step.phase ?? "phase");
+		const attempt = step.attempt ? `#${escapeHtml(String(step.attempt))}` : "";
+		const agent = step.agent ? ` · ${escapeHtml(String(step.agent))}` : "";
+		const detailLink = phaseDetailLink(viewerReportId, step.artifact);
+		return `<article class="phase-card"><div class="phase-card-head"><div><div class="phase-title"><span>${escapeHtml(phase)}</span><span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="phase-meta">${attempt}${agent}</div></div><div class="phase-actions">${detailLink}</div></div>${step.summary ? `<p class="phase-summary summary-short">${escapeHtml(truncateText(step.summary))}</p>` : `<p class="phase-summary muted">No structured summary recorded.</p>`}</article>`;
+	}).join("")}</div>`;
+}
+
 function reportHtml(config: ReportViewerConfig, viewerReportId: string): string {
 	const report = loadReport(config, viewerReportId);
+	const improvements = listImprovements(config, viewerReportId);
+	const runs = listRuns(config, viewerReportId);
 	const artifacts = report.artifacts.map((artifact) => artifact.external
 		? `<li><a href="${escapeHtml(artifact.path)}" rel="noreferrer">${escapeHtml(artifact.label)}</a><div class="muted">external</div></li>`
 		: `<li><a href="/reports/${encodeURIComponent(viewerReportId)}/artifacts/${encodeURIComponent(artifact.path)}">${escapeHtml(artifact.label)}</a><div><code>${escapeHtml(artifact.path)}</code></div></li>`).join("");
 	const steps = Array.isArray(report.structuredReport?.steps) ? report.structuredReport.steps : [];
-	const stepRows = steps.map((step: any) => `<tr><td><strong>${escapeHtml(String(step.phase ?? ""))}</strong></td><td>${escapeHtml(String(step.attempt ?? ""))}</td><td>${escapeHtml(String(step.agent ?? ""))}</td><td><span class="badge ${badgeClass(String(step.verdict ?? step.status ?? ""))}">${escapeHtml(String(step.verdict ?? step.status ?? ""))}</span></td><td>${escapeHtml(String(step.summary ?? ""))}</td></tr>`).join("");
+	const phaseCards = phaseCardsHtml(viewerReportId, steps);
 	const usage = report.structuredReport?.usage;
 	const acceptedRisks = Array.isArray(report.structuredReport?.acceptedRisks) ? report.structuredReport.acceptedRisks : [];
 	const pendingIssue = report.structuredReport?.pendingIssue;
 	const sourceNote = report.source === "json"
 		? `<p><span class="badge ok">Structured JSON source</span> <span class="muted">The dashboard below is rendered from <code>delivery-report.json</code>.</span></p>`
-		: `<div class="panel"><span class="badge warn">Legacy Markdown source</span><p class="muted">This run does not have <code>delivery-report.json</code>, so only limited metadata is available. New runs after the extension update should show richer structured data.</p></div>`;
+		: `<div class="panel"><span class="badge warn">Legacy Markdown source</span><p class="muted">This run does not have <code>delivery-report.json</code>, so only limited metadata is available. Run <code>npm run convert-report -- ${escapeHtml(report.artifactDir)}</code> to create best-effort JSON for this legacy report.</p></div>`;
 	const cards = `<div class="grid"><div class="card"><div class="label">Status</div><div class="value"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span></div></div><div class="card"><div class="label">Phase</div><div class="value">${escapeHtml(report.phase ?? "—")}</div></div><div class="card"><div class="label">Source</div><div class="value">${escapeHtml(report.source === "json" ? "JSON" : "Markdown")}</div></div><div class="card"><div class="label">Updated</div><div class="value">${escapeHtml(new Date(report.updatedAt).toLocaleString())}</div></div></div>`;
 	const risksHtml = acceptedRisks.length ? `<ul>${acceptedRisks.map((risk: unknown) => `<li>${escapeHtml(String(risk))}</li>`).join("")}</ul>` : `<p class="muted">No accepted risks recorded.</p>`;
 	const pendingHtml = pendingIssue ? `<pre>${escapeHtml(JSON.stringify(pendingIssue, null, 2))}</pre>` : `<p class="muted">No pending issue.</p>`;
 	const usageHtml = usage ? `<pre>${escapeHtml(JSON.stringify(usage, null, 2))}</pre>` : `<p class="muted">No structured usage data.</p>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1>${escapeHtml(report.task)}</h1>${sourceNote}${cards}<div class="panel"><div class="label">Artifact directory</div><code>${escapeHtml(report.artifactDir)}</code></div><h2>Phase timeline</h2>${stepRows ? `<table><thead><tr><th>Phase</th><th>Attempt</th><th>Agent</th><th>Verdict</th><th>Summary</th></tr></thead><tbody>${stepRows}</tbody></table>` : `<div class="panel muted">No structured steps available.</div>`}<h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul><div class="grid"><div class="card"><h2>Accepted risks</h2>${risksHtml}</div><div class="card"><h2>Pending issue</h2>${pendingHtml}</div></div><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details>`, config);
+	const improvementRows = improvements.map((improvement) => {
+		const disabledRunReason = runDisabledReason(config, report, improvement);
+		const runDisabledAttrs = disabledRunReason ? ` disabled title="${escapeHtml(disabledRunReason)}"` : "";
+		const approveDisabledAttrs = improvement.status !== "proposed" ? ` disabled title="Only proposed improvements can be approved."` : "";
+		const rejectDisabledAttrs = !["proposed", "approved"].includes(improvement.status) ? ` disabled title="Only proposed or approved improvements can be rejected."` : "";
+		const runGuidance = disabledRunReason ? `<div class="action-note">${escapeHtml(disabledRunReason)}</div>` : "";
+		return `<tr><td><strong>${escapeHtml(improvement.title)}</strong><div class="muted">${escapeHtml(improvement.description)}</div>${improvement.sourceArtifact ? `<div><code>${escapeHtml(improvement.sourceArtifact)}</code></div>` : ""}</td><td>${escapeHtml(improvement.risk)}</td><td><span class="badge ${badgeClass(improvement.status)}">${escapeHtml(improvement.status)}</span></td><td class="actions"><button data-action="approve" data-id="${escapeHtml(improvement.id)}"${approveDisabledAttrs}>Approve</button><button class="secondary" data-action="reject" data-id="${escapeHtml(improvement.id)}"${rejectDisabledAttrs}>Reject</button><button class="secondary" data-action="preview" data-id="${escapeHtml(improvement.id)}">Preview prompt</button><button data-action="run" data-id="${escapeHtml(improvement.id)}"${runDisabledAttrs}>Run</button>${runGuidance}</td></tr>`;
+	}).join("");
+	const runRows = runs.map((run) => `<tr><td><code>${escapeHtml(run.id)}</code></td><td><code>${escapeHtml(run.improvementId)}</code></td><td><span class="badge ${badgeClass(run.status)}">${escapeHtml(run.status)}</span></td><td>${escapeHtml(run.startedAt)}</td><td>${escapeHtml(run.endedAt ?? "")}</td><td><code>${escapeHtml(run.outputLogPath)}</code></td></tr>`).join("");
+	const improvementPanel = `<section class="panel"><h2>Retro improvements</h2><form id="improvement-form"><label>Title<input name="title" required></label><label>Description<textarea name="description" required></textarea></label><label>Source artifact<input name="sourceArtifact" placeholder="05-retro.md"></label><label>Risk<select name="risk"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label><button type="submit">Add improvement</button></form><div id="improvement-message" class="message muted"></div><table><thead><tr><th>Improvement</th><th>Risk</th><th>Status</th><th>Actions</th></tr></thead><tbody>${improvementRows || `<tr><td colspan="4">No improvements yet.</td></tr>`}</tbody></table></section>`;
+	const runsPanel = `<section class="panel"><h2>Agent runs</h2><table><thead><tr><th>Run</th><th>Improvement</th><th>Status</th><th>Started</th><th>Ended</th><th>Log</th></tr></thead><tbody>${runRows || `<tr><td colspan="6">No runs yet.</td></tr>`}</tbody></table></section>`;
+	const script = `<script>(()=>{const token=document.querySelector('meta[name="report-viewer-csrf-token"]').content;const reportId=${JSON.stringify(viewerReportId)};const msg=document.getElementById('improvement-message');async function post(url,body={}){const res=await fetch(url,{method:'POST',headers:{'content-type':'application/json','x-report-viewer-token':token},body:JSON.stringify(body)});const text=await res.text();let data;try{data=JSON.parse(text)}catch{data=text}if(!res.ok)throw new Error(data.error||text||res.statusText);return data}function note(text){msg.textContent=text}document.getElementById('improvement-form')?.addEventListener('submit',async(event)=>{event.preventDefault();const form=new FormData(event.currentTarget);try{await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements',Object.fromEntries(form.entries()));location.reload()}catch(error){note(error.message)}});document.querySelectorAll('button[data-action]').forEach((button)=>button.addEventListener('click',async()=>{const id=button.dataset.id;const action=button.dataset.action;try{if(action==='approve'||action==='reject'){await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements/'+encodeURIComponent(id)+'/'+action,{note:'decided from report viewer UI'});location.reload()}else if(action==='preview'){const data=await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements/'+encodeURIComponent(id)+'/preview-prompt',{});alert(data.prompt)}else if(action==='run'){if(!confirm('Run the approved pi agent for this improvement?'))return;await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements/'+encodeURIComponent(id)+'/run',{confirmExecution:true});location.reload()}}catch(error){note(error.message)}}))})();</script>`;
+	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1>${escapeHtml(report.task)}</h1>${sourceNote}${cards}<div class="panel"><div class="label">Artifact directory</div><code>${escapeHtml(report.artifactDir)}</code></div><h2>Phases</h2>${phaseCards}<h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul><div class="grid"><div class="card"><h2>Accepted risks</h2>${risksHtml}</div><div class="card"><h2>Pending issue</h2>${pendingHtml}</div></div>${improvementPanel}${runsPanel}<details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details>${script}`, config);
 }
 
 function artifactHtml(config: ReportViewerConfig, viewerReportId: string, artifactPath: string): string {
@@ -595,7 +737,7 @@ function artifactHtml(config: ReportViewerConfig, viewerReportId: string, artifa
 		return page("External artifact", `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><p>External artifact: <a href="${escapeHtml(resolved.url)}" rel="noreferrer">${escapeHtml(resolved.url)}</a></p>`, config);
 	}
 	const text = fs.readFileSync(resolved.path, "utf8");
-	return page(path.basename(resolved.path), `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><h1>${escapeHtml(path.basename(resolved.path))}</h1><p><code>${escapeHtml(resolved.path)}</code></p>${renderMarkdownSafe(text)}`, config);
+	return page(path.basename(resolved.path), `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><h1>${escapeHtml(path.basename(resolved.path))}</h1><details><summary>File path</summary><p class="path-line"><code>${escapeHtml(resolved.path)}</code></p></details>${renderMarkdownSafe(text)}`, config);
 }
 
 export function createServer(config = loadConfig()): http.Server {
@@ -621,6 +763,7 @@ export function createServer(config = loadConfig()): http.Server {
 					if (resolved.kind === "external") return sendJson(response, 400, { error: "External artifacts are not proxied", url: resolved.url });
 					return sendText(response, fs.readFileSync(resolved.path, "utf8"));
 				}
+				if (request.method === "GET" && segments[3] === "runs") return sendJson(response, 200, listRuns(config, reportId));
 				if (segments[3] === "improvements") {
 					if (request.method === "GET" && segments.length === 4) return sendJson(response, 200, listImprovements(config, reportId));
 					if (request.method === "POST") requireCsrfToken(request, config);

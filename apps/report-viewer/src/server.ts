@@ -278,6 +278,20 @@ function renderInlineMarkdownSafe(value: string): string {
 		.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>');
 }
 
+function splitMarkdownTableCells(row: string): string[] {
+	return row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function isMarkdownTableSeparator(row: string): boolean {
+	return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(row.trim());
+}
+
+function renderMarkdownTable(rows: string[]): string {
+	const header = splitMarkdownTableCells(rows[0] ?? "");
+	const bodyRows = rows.slice(2).map(splitMarkdownTableCells);
+	return `<div class="table-wrap"><table><thead><tr>${header.map((cell) => `<th>${renderInlineMarkdownSafe(cell)}</th>`).join("")}</tr></thead><tbody>${bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdownSafe(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
 export function renderMarkdownSafe(markdown: string): string {
 	const lines = markdown.split(/\r?\n/);
 	const html: string[] = [];
@@ -289,7 +303,8 @@ export function renderMarkdownSafe(markdown: string): string {
 			listOpen = false;
 		}
 	};
-	for (const line of lines) {
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
 		if (/^```/.test(line.trim())) {
 			closeList();
 			if (codeOpen) html.push("</code></pre>");
@@ -304,6 +319,18 @@ export function renderMarkdownSafe(markdown: string): string {
 		const trimmed = line.trim();
 		if (!trimmed) {
 			closeList();
+			continue;
+		}
+		if (trimmed.startsWith("|") && isMarkdownTableSeparator(lines[index + 1] ?? "")) {
+			closeList();
+			const tableRows = [trimmed, lines[index + 1].trim()];
+			index += 2;
+			while (index < lines.length && lines[index].trim().startsWith("|")) {
+				tableRows.push(lines[index].trim());
+				index++;
+			}
+			index--;
+			html.push(renderMarkdownTable(tableRows));
 			continue;
 		}
 		const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
@@ -613,7 +640,7 @@ function requireCsrfToken(request: http.IncomingMessage, config: Pick<ReportView
 }
 
 function page(title: string, body: string, config: Pick<ReportViewerConfig, "csrfToken">): string {
-	return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="report-viewer-csrf-token" content="${escapeHtml(config.csrfToken)}"><style>:root{color-scheme:light dark;--bg:#f6f8fb;--panel:#fff;--text:#182230;--muted:#667085;--border:#d0d5dd;--accent:#2563eb;--ok:#067647;--warn:#b54708;--bad:#b42318}@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--border:#374151;--accent:#60a5fa;--ok:#32d583;--warn:#fdb022;--bad:#f97066}}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);max-width:1180px;margin:0 auto;padding:2rem 1rem 4rem}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.panel,.card,details{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}.panel{padding:1rem;margin:1rem 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:1rem 0}.card{padding:1rem}.label{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.value{font-size:1.25rem;font-weight:700;margin-top:.25rem}.muted{color:var(--muted)}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:.2rem .55rem;font-size:.82rem;font-weight:700;background:#eef4ff;color:#3538cd}.badge.ok{background:#dcfae6;color:var(--ok)}.badge.warn{background:#fef0c7;color:var(--warn)}.badge.bad{background:#fee4e2;color:var(--bad)}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden}td,th{border-bottom:1px solid var(--border);padding:.65rem .75rem;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}pre{background:rgba(127,127,127,.10);padding:1rem;overflow:auto;border-radius:10px}.markdown-report{max-height:520px}details{padding:.9rem 1rem;margin:1rem 0}summary{cursor:pointer;font-weight:700}.artifact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.65rem;padding:0;list-style:none}.artifact-list li{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:.75rem}.task-link{font-weight:700}.source-json{color:var(--ok)}.source-legacy-markdown{color:var(--warn)}input,textarea,select,button{font:inherit}input,textarea,select{width:100%;margin:.25rem 0 .75rem;padding:.55rem;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text)}textarea{min-height:5rem}button{border:0;border-radius:8px;padding:.5rem .75rem;background:var(--accent);color:white;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed;background:var(--muted)}button.secondary{background:var(--muted)}button.danger{background:var(--bad)}.actions{display:flex;gap:.5rem;flex-wrap:wrap}.message{margin-top:.75rem}.action-note{flex-basis:100%;font-size:.85rem;color:var(--muted)}.phase-grid{display:grid;gap:1rem}.phase-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;box-shadow:0 1px 2px rgba(16,24,40,.04)}.phase-card-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}.phase-title{display:flex;align-items:center;gap:.5rem;font-weight:800;font-size:1.05rem}.phase-meta{color:var(--muted);font-size:.9rem}.phase-summary{margin:.8rem 0;line-height:1.45}.phase-actions{display:flex;gap:.5rem;flex-wrap:wrap}.button-link{display:inline-flex;align-items:center;border-radius:8px;padding:.45rem .7rem;background:var(--accent);color:white}.button-link:hover{text-decoration:none}.button-link.secondary{background:var(--muted)}.markdown-doc{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;line-height:1.5}.markdown-doc h2,.markdown-doc h3,.markdown-doc h4,.markdown-doc h5{margin:1rem 0 .5rem}.markdown-doc p{margin:.5rem 0}.markdown-doc ul{margin:.5rem 0 .75rem 1.25rem;padding:0}.markdown-code{white-space:pre-wrap}.summary-short{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}</style></head><body>${body}</body></html>`;
+	return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="report-viewer-csrf-token" content="${escapeHtml(config.csrfToken)}"><style>:root{color-scheme:light dark;--bg:#f6f8fb;--panel:#fff;--text:#182230;--muted:#667085;--border:#d0d5dd;--accent:#2563eb;--ok:#067647;--warn:#b54708;--bad:#b42318}@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--border:#374151;--accent:#60a5fa;--ok:#32d583;--warn:#fdb022;--bad:#f97066}}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);max-width:1180px;margin:0 auto;padding:2rem 1rem 4rem}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.panel,.card,details{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}.panel{padding:1rem;margin:1rem 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:1rem 0}.card{padding:1rem}.label{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.value{font-size:1.25rem;font-weight:700;margin-top:.25rem}.muted{color:var(--muted)}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:.2rem .55rem;font-size:.82rem;font-weight:700;background:#eef4ff;color:#3538cd}.badge.ok{background:#dcfae6;color:var(--ok)}.badge.warn{background:#fef0c7;color:var(--warn)}.badge.bad{background:#fee4e2;color:var(--bad)}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden}td,th{border-bottom:1px solid var(--border);padding:.65rem .75rem;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}pre{background:rgba(127,127,127,.10);padding:1rem;overflow:auto;border-radius:10px}.markdown-report{max-height:520px}details{padding:.9rem 1rem;margin:1rem 0}summary{cursor:pointer;font-weight:700}.artifact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.65rem;padding:0;list-style:none}.artifact-list li{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:.75rem}.task-link{font-weight:700}.source-json{color:var(--ok)}.source-legacy-markdown{color:var(--warn)}input,textarea,select,button{font:inherit}input,textarea,select{width:100%;margin:.25rem 0 .75rem;padding:.55rem;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text)}textarea{min-height:5rem}button{border:0;border-radius:8px;padding:.5rem .75rem;background:var(--accent);color:white;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed;background:var(--muted)}button.secondary{background:var(--muted)}button.danger{background:var(--bad)}.actions{display:flex;gap:.5rem;flex-wrap:wrap}.message{margin-top:.75rem}.action-note{flex-basis:100%;font-size:.85rem;color:var(--muted)}.phase-grid{display:grid;gap:1rem}.phase-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;box-shadow:0 1px 2px rgba(16,24,40,.04)}.phase-card-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}.phase-title{display:flex;align-items:center;gap:.5rem;font-weight:800;font-size:1.05rem}.phase-meta{color:var(--muted);font-size:.9rem}.phase-summary{margin:.8rem 0;line-height:1.45}.phase-actions{display:flex;gap:.5rem;flex-wrap:wrap}.button-link{display:inline-flex;align-items:center;border-radius:8px;padding:.45rem .7rem;background:var(--accent);color:white}.button-link:hover{text-decoration:none}.button-link.secondary{background:var(--muted)}.markdown-doc{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;line-height:1.5}.markdown-doc h2,.markdown-doc h3,.markdown-doc h4,.markdown-doc h5{margin:1rem 0 .5rem}.markdown-doc p{margin:.5rem 0}.markdown-doc ul{margin:.5rem 0 .75rem 1.25rem;padding:0}.markdown-doc .table-wrap{overflow-x:auto;margin:1rem 0}.markdown-doc table{font-size:.95rem}.markdown-code{white-space:pre-wrap}.summary-short{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}.path-line{overflow-wrap:anywhere;font-size:.9rem}</style></head><body>${body}</body></html>`;
 }
 
 function indexHtml(config: Pick<ReportViewerConfig, "csrfToken">): string {
@@ -710,7 +737,7 @@ function artifactHtml(config: ReportViewerConfig, viewerReportId: string, artifa
 		return page("External artifact", `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><p>External artifact: <a href="${escapeHtml(resolved.url)}" rel="noreferrer">${escapeHtml(resolved.url)}</a></p>`, config);
 	}
 	const text = fs.readFileSync(resolved.path, "utf8");
-	return page(path.basename(resolved.path), `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><h1>${escapeHtml(path.basename(resolved.path))}</h1><p><code>${escapeHtml(resolved.path)}</code></p>${renderMarkdownSafe(text)}`, config);
+	return page(path.basename(resolved.path), `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><h1>${escapeHtml(path.basename(resolved.path))}</h1><details><summary>File path</summary><p class="path-line"><code>${escapeHtml(resolved.path)}</code></p></details>${renderMarkdownSafe(text)}`, config);
 }
 
 export function createServer(config = loadConfig()): http.Server {

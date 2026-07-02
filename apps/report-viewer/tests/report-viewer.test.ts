@@ -127,6 +127,14 @@ await runTest("renderMarkdownSafe escapes embedded HTML", () => {
 	assert.equal(renderMarkdownSafe("<b>x</b>"), '<div class="markdown-doc"><p>&lt;b&gt;x&lt;/b&gt;</p></div>');
 });
 
+await runTest("renderMarkdownSafe renders markdown tables as HTML tables", () => {
+	const html = renderMarkdownSafe("| Area | Finding |\n|---|---|\n| Tests | Passed |");
+	assert.match(html, /<table>/);
+	assert.match(html, /<th>Area<\/th>/);
+	assert.match(html, /<td>Passed<\/td>/);
+	assert.doesNotMatch(html, /\|---\|---\|/);
+});
+
 await runTest("UI routes render report list, report detail, and artifact content", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-ui-"));
 	try {

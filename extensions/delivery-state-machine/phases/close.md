@@ -24,7 +24,18 @@ Instructions:
 - Report MR/PR link, branch, commit, and checks; or explain why no MR/PR was needed.
 - If no MR/PR is needed for a non-repo or no-diff task, treat close as PASS and explain why in the summary.
 
-Before close, produce a close-readiness checklist:
+Artifact contract for CLOSE (use these headings in this order):
+
+    RESULT: MR_CREATED|DONE|FAIL
+
+    ## Summary
+    ## Close-readiness checklist
+    ## Branch / commit / PR
+    ## Commands run
+    ## Remote CI
+    ## Residual risks
+
+The Close-readiness checklist section must include:
 - Local fast verification passed after the final code change: yes/no, command + result
 - Code changed after that verification: yes/no
 - Final candidate completeness checked: yes/no/not a git repo; required new files tracked and untracked files explained
@@ -33,5 +44,7 @@ Before close, produce a close-readiness checklist:
 - Worktree clean before/after commit: yes/no
 - Branch pushed and MR/PR created when applicable: yes/no/not applicable + link or reason
 - Remote CI status: informational only; do not wait for CI unless the user explicitly asks. If running, write "running, not waited for by design because local verification passed".
+
+The Branch / commit / PR section must include parseable branch, commit, and PR/MR URL lines when applicable. Use `none` for empty Residual risks.
 
 {{artifactGuidance}}

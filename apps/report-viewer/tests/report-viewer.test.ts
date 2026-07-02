@@ -124,7 +124,7 @@ await runTest("loadReport reads structured JSON and renders escaped Markdown", (
 });
 
 await runTest("renderMarkdownSafe escapes embedded HTML", () => {
-	assert.equal(renderMarkdownSafe("<b>x</b>"), '<pre class="markdown-report">&lt;b&gt;x&lt;/b&gt;</pre>');
+	assert.equal(renderMarkdownSafe("<b>x</b>"), '<div class="markdown-doc"><p>&lt;b&gt;x&lt;/b&gt;</p></div>');
 });
 
 await runTest("UI routes render report list, report detail, and artifact content", async () => {
@@ -139,7 +139,7 @@ await runTest("UI routes render report list, report detail, and artifact content
 			assert.match(await list.text(), /ui route task/);
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
-			assert.match(await detail.text(), /Phase timeline/);
+			assert.match(await detail.text(), /Phases/);
 			const artifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("02-verification.md")}`);
 			assert.equal(artifact.status, 200);
 			assert.match(await artifact.text(), /PASS verification evidence/);

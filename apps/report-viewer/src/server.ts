@@ -271,8 +271,63 @@ export function escapeHtml(value: string): string {
 		.replace(/'/g, "&#39;");
 }
 
+function renderInlineMarkdownSafe(value: string): string {
+	return escapeHtml(value)
+		.replace(/`([^`]+)`/g, "<code>$1</code>")
+		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+		.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>');
+}
+
 export function renderMarkdownSafe(markdown: string): string {
-	return `<pre class="markdown-report">${escapeHtml(markdown)}</pre>`;
+	const lines = markdown.split(/\r?\n/);
+	const html: string[] = [];
+	let listOpen = false;
+	let codeOpen = false;
+	const closeList = () => {
+		if (listOpen) {
+			html.push("</ul>");
+			listOpen = false;
+		}
+	};
+	for (const line of lines) {
+		if (/^```/.test(line.trim())) {
+			closeList();
+			if (codeOpen) html.push("</code></pre>");
+			else html.push('<pre class="markdown-code"><code>');
+			codeOpen = !codeOpen;
+			continue;
+		}
+		if (codeOpen) {
+			html.push(`${escapeHtml(line)}\n`);
+			continue;
+		}
+		const trimmed = line.trim();
+		if (!trimmed) {
+			closeList();
+			continue;
+		}
+		const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+		if (heading) {
+			closeList();
+			const level = Math.min(heading[1].length + 1, 5);
+			html.push(`<h${level}>${renderInlineMarkdownSafe(heading[2])}</h${level}>`);
+			continue;
+		}
+		const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
+		if (bullet) {
+			if (!listOpen) {
+				html.push("<ul>");
+				listOpen = true;
+			}
+			html.push(`<li>${renderInlineMarkdownSafe(bullet[1])}</li>`);
+			continue;
+		}
+		closeList();
+		html.push(`<p>${renderInlineMarkdownSafe(trimmed)}</p>`);
+	}
+	closeList();
+	if (codeOpen) html.push("</code></pre>");
+	return `<div class="markdown-doc">${html.join("\n")}</div>`;
 }
 
 function isExternalUrl(value: string): boolean {
@@ -558,7 +613,7 @@ function requireCsrfToken(request: http.IncomingMessage, config: Pick<ReportView
 }
 
 function page(title: string, body: string, config: Pick<ReportViewerConfig, "csrfToken">): string {
-	return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="report-viewer-csrf-token" content="${escapeHtml(config.csrfToken)}"><style>:root{color-scheme:light dark;--bg:#f6f8fb;--panel:#fff;--text:#182230;--muted:#667085;--border:#d0d5dd;--accent:#2563eb;--ok:#067647;--warn:#b54708;--bad:#b42318}@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--border:#374151;--accent:#60a5fa;--ok:#32d583;--warn:#fdb022;--bad:#f97066}}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);max-width:1180px;margin:0 auto;padding:2rem 1rem 4rem}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.panel,.card,details{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}.panel{padding:1rem;margin:1rem 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:1rem 0}.card{padding:1rem}.label{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.value{font-size:1.25rem;font-weight:700;margin-top:.25rem}.muted{color:var(--muted)}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:.2rem .55rem;font-size:.82rem;font-weight:700;background:#eef4ff;color:#3538cd}.badge.ok{background:#dcfae6;color:var(--ok)}.badge.warn{background:#fef0c7;color:var(--warn)}.badge.bad{background:#fee4e2;color:var(--bad)}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden}td,th{border-bottom:1px solid var(--border);padding:.65rem .75rem;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}pre{background:rgba(127,127,127,.10);padding:1rem;overflow:auto;border-radius:10px}.markdown-report{max-height:520px}details{padding:.9rem 1rem;margin:1rem 0}summary{cursor:pointer;font-weight:700}.artifact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.65rem;padding:0;list-style:none}.artifact-list li{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:.75rem}.task-link{font-weight:700}.source-json{color:var(--ok)}.source-legacy-markdown{color:var(--warn)}input,textarea,select,button{font:inherit}input,textarea,select{width:100%;margin:.25rem 0 .75rem;padding:.55rem;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text)}textarea{min-height:5rem}button{border:0;border-radius:8px;padding:.5rem .75rem;background:var(--accent);color:white;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed;background:var(--muted)}button.secondary{background:var(--muted)}button.danger{background:var(--bad)}.actions{display:flex;gap:.5rem;flex-wrap:wrap}.message{margin-top:.75rem}.action-note{flex-basis:100%;font-size:.85rem;color:var(--muted)}</style></head><body>${body}</body></html>`;
+	return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="report-viewer-csrf-token" content="${escapeHtml(config.csrfToken)}"><style>:root{color-scheme:light dark;--bg:#f6f8fb;--panel:#fff;--text:#182230;--muted:#667085;--border:#d0d5dd;--accent:#2563eb;--ok:#067647;--warn:#b54708;--bad:#b42318}@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--border:#374151;--accent:#60a5fa;--ok:#32d583;--warn:#fdb022;--bad:#f97066}}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);max-width:1180px;margin:0 auto;padding:2rem 1rem 4rem}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.panel,.card,details{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}.panel{padding:1rem;margin:1rem 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:1rem 0}.card{padding:1rem}.label{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.value{font-size:1.25rem;font-weight:700;margin-top:.25rem}.muted{color:var(--muted)}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:.2rem .55rem;font-size:.82rem;font-weight:700;background:#eef4ff;color:#3538cd}.badge.ok{background:#dcfae6;color:var(--ok)}.badge.warn{background:#fef0c7;color:var(--warn)}.badge.bad{background:#fee4e2;color:var(--bad)}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden}td,th{border-bottom:1px solid var(--border);padding:.65rem .75rem;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}pre{background:rgba(127,127,127,.10);padding:1rem;overflow:auto;border-radius:10px}.markdown-report{max-height:520px}details{padding:.9rem 1rem;margin:1rem 0}summary{cursor:pointer;font-weight:700}.artifact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.65rem;padding:0;list-style:none}.artifact-list li{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:.75rem}.task-link{font-weight:700}.source-json{color:var(--ok)}.source-legacy-markdown{color:var(--warn)}input,textarea,select,button{font:inherit}input,textarea,select{width:100%;margin:.25rem 0 .75rem;padding:.55rem;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text)}textarea{min-height:5rem}button{border:0;border-radius:8px;padding:.5rem .75rem;background:var(--accent);color:white;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed;background:var(--muted)}button.secondary{background:var(--muted)}button.danger{background:var(--bad)}.actions{display:flex;gap:.5rem;flex-wrap:wrap}.message{margin-top:.75rem}.action-note{flex-basis:100%;font-size:.85rem;color:var(--muted)}.phase-grid{display:grid;gap:1rem}.phase-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;box-shadow:0 1px 2px rgba(16,24,40,.04)}.phase-card-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}.phase-title{display:flex;align-items:center;gap:.5rem;font-weight:800;font-size:1.05rem}.phase-meta{color:var(--muted);font-size:.9rem}.phase-summary{margin:.8rem 0;line-height:1.45}.phase-actions{display:flex;gap:.5rem;flex-wrap:wrap}.button-link{display:inline-flex;align-items:center;border-radius:8px;padding:.45rem .7rem;background:var(--accent);color:white}.button-link:hover{text-decoration:none}.button-link.secondary{background:var(--muted)}.markdown-doc{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:1rem;line-height:1.5}.markdown-doc h2,.markdown-doc h3,.markdown-doc h4,.markdown-doc h5{margin:1rem 0 .5rem}.markdown-doc p{margin:.5rem 0}.markdown-doc ul{margin:.5rem 0 .75rem 1.25rem;padding:0}.markdown-code{white-space:pre-wrap}.summary-short{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}</style></head><body>${body}</body></html>`;
 }
 
 function indexHtml(config: Pick<ReportViewerConfig, "csrfToken">): string {
@@ -592,6 +647,29 @@ function runDisabledReason(config: ReportViewerConfig, report: LoadedReport, imp
 	return undefined;
 }
 
+function truncateText(value: unknown, maxLength = 420): string {
+	const text = String(value ?? "").replace(/\s+/g, " ").trim();
+	return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function phaseDetailLink(viewerReportId: string, artifact: unknown): string {
+	if (typeof artifact !== "string" || !artifact) return "";
+	if (isExternalUrl(artifact)) return `<a class="button-link secondary" href="${escapeHtml(artifact)}" rel="noreferrer">Open details</a>`;
+	return `<a class="button-link" href="/reports/${encodeURIComponent(viewerReportId)}/artifacts/${encodeURIComponent(artifact)}">Open details</a>`;
+}
+
+function phaseCardsHtml(viewerReportId: string, steps: any[]): string {
+	if (!steps.length) return `<div class="panel muted">No structured steps available.</div>`;
+	return `<div class="phase-grid">${steps.map((step: any) => {
+		const verdict = String(step.verdict ?? step.status ?? "reported");
+		const phase = String(step.phase ?? "phase");
+		const attempt = step.attempt ? `#${escapeHtml(String(step.attempt))}` : "";
+		const agent = step.agent ? ` · ${escapeHtml(String(step.agent))}` : "";
+		const detailLink = phaseDetailLink(viewerReportId, step.artifact);
+		return `<article class="phase-card"><div class="phase-card-head"><div><div class="phase-title"><span>${escapeHtml(phase)}</span><span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="phase-meta">${attempt}${agent}</div></div><div class="phase-actions">${detailLink}</div></div>${step.summary ? `<p class="phase-summary summary-short">${escapeHtml(truncateText(step.summary))}</p>` : `<p class="phase-summary muted">No structured summary recorded.</p>`}</article>`;
+	}).join("")}</div>`;
+}
+
 function reportHtml(config: ReportViewerConfig, viewerReportId: string): string {
 	const report = loadReport(config, viewerReportId);
 	const improvements = listImprovements(config, viewerReportId);
@@ -600,7 +678,7 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 		? `<li><a href="${escapeHtml(artifact.path)}" rel="noreferrer">${escapeHtml(artifact.label)}</a><div class="muted">external</div></li>`
 		: `<li><a href="/reports/${encodeURIComponent(viewerReportId)}/artifacts/${encodeURIComponent(artifact.path)}">${escapeHtml(artifact.label)}</a><div><code>${escapeHtml(artifact.path)}</code></div></li>`).join("");
 	const steps = Array.isArray(report.structuredReport?.steps) ? report.structuredReport.steps : [];
-	const stepRows = steps.map((step: any) => `<tr><td><strong>${escapeHtml(String(step.phase ?? ""))}</strong></td><td>${escapeHtml(String(step.attempt ?? ""))}</td><td>${escapeHtml(String(step.agent ?? ""))}</td><td><span class="badge ${badgeClass(String(step.verdict ?? step.status ?? ""))}">${escapeHtml(String(step.verdict ?? step.status ?? ""))}</span></td><td>${escapeHtml(String(step.summary ?? ""))}</td></tr>`).join("");
+	const phaseCards = phaseCardsHtml(viewerReportId, steps);
 	const usage = report.structuredReport?.usage;
 	const acceptedRisks = Array.isArray(report.structuredReport?.acceptedRisks) ? report.structuredReport.acceptedRisks : [];
 	const pendingIssue = report.structuredReport?.pendingIssue;
@@ -623,7 +701,7 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 	const improvementPanel = `<section class="panel"><h2>Retro improvements</h2><form id="improvement-form"><label>Title<input name="title" required></label><label>Description<textarea name="description" required></textarea></label><label>Source artifact<input name="sourceArtifact" placeholder="05-retro.md"></label><label>Risk<select name="risk"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label><button type="submit">Add improvement</button></form><div id="improvement-message" class="message muted"></div><table><thead><tr><th>Improvement</th><th>Risk</th><th>Status</th><th>Actions</th></tr></thead><tbody>${improvementRows || `<tr><td colspan="4">No improvements yet.</td></tr>`}</tbody></table></section>`;
 	const runsPanel = `<section class="panel"><h2>Agent runs</h2><table><thead><tr><th>Run</th><th>Improvement</th><th>Status</th><th>Started</th><th>Ended</th><th>Log</th></tr></thead><tbody>${runRows || `<tr><td colspan="6">No runs yet.</td></tr>`}</tbody></table></section>`;
 	const script = `<script>(()=>{const token=document.querySelector('meta[name="report-viewer-csrf-token"]').content;const reportId=${JSON.stringify(viewerReportId)};const msg=document.getElementById('improvement-message');async function post(url,body={}){const res=await fetch(url,{method:'POST',headers:{'content-type':'application/json','x-report-viewer-token':token},body:JSON.stringify(body)});const text=await res.text();let data;try{data=JSON.parse(text)}catch{data=text}if(!res.ok)throw new Error(data.error||text||res.statusText);return data}function note(text){msg.textContent=text}document.getElementById('improvement-form')?.addEventListener('submit',async(event)=>{event.preventDefault();const form=new FormData(event.currentTarget);try{await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements',Object.fromEntries(form.entries()));location.reload()}catch(error){note(error.message)}});document.querySelectorAll('button[data-action]').forEach((button)=>button.addEventListener('click',async()=>{const id=button.dataset.id;const action=button.dataset.action;try{if(action==='approve'||action==='reject'){await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements/'+encodeURIComponent(id)+'/'+action,{note:'decided from report viewer UI'});location.reload()}else if(action==='preview'){const data=await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements/'+encodeURIComponent(id)+'/preview-prompt',{});alert(data.prompt)}else if(action==='run'){if(!confirm('Run the approved pi agent for this improvement?'))return;await post('/api/reports/'+encodeURIComponent(reportId)+'/improvements/'+encodeURIComponent(id)+'/run',{confirmExecution:true});location.reload()}}catch(error){note(error.message)}}))})();</script>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1>${escapeHtml(report.task)}</h1>${sourceNote}${cards}<div class="panel"><div class="label">Artifact directory</div><code>${escapeHtml(report.artifactDir)}</code></div><h2>Phase timeline</h2>${stepRows ? `<table><thead><tr><th>Phase</th><th>Attempt</th><th>Agent</th><th>Verdict</th><th>Summary</th></tr></thead><tbody>${stepRows}</tbody></table>` : `<div class="panel muted">No structured steps available.</div>`}<h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul><div class="grid"><div class="card"><h2>Accepted risks</h2>${risksHtml}</div><div class="card"><h2>Pending issue</h2>${pendingHtml}</div></div>${improvementPanel}${runsPanel}<details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details>${script}`, config);
+	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1>${escapeHtml(report.task)}</h1>${sourceNote}${cards}<div class="panel"><div class="label">Artifact directory</div><code>${escapeHtml(report.artifactDir)}</code></div><h2>Phases</h2>${phaseCards}<h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul><div class="grid"><div class="card"><h2>Accepted risks</h2>${risksHtml}</div><div class="card"><h2>Pending issue</h2>${pendingHtml}</div></div>${improvementPanel}${runsPanel}<details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details>${script}`, config);
 }
 
 function artifactHtml(config: ReportViewerConfig, viewerReportId: string, artifactPath: string): string {

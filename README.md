@@ -30,6 +30,12 @@ Optional local dashboard for delivery reports. It scans `~/.pi/delivery-run` by 
 npm run report-viewer
 ```
 
+To expose the viewer on your tailnet:
+
+```bash
+npm run report-viewer:tailscale -- start
+```
+
 Details and future approval/execution workflow are tracked in [docs/plans/report-viewer-and-structured-reports.md](docs/plans/report-viewer-and-structured-reports.md).
 
 ## Installation

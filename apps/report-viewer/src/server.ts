@@ -221,13 +221,24 @@ function reportDirForId(config: Pick<ReportViewerConfig, "reportRoots">, viewerR
 	return { root: rootReal, dir: candidateReal };
 }
 
+function stepArtifactLabel(step: any): string {
+	const phase = String(step?.phase ?? "artifact");
+	const attempt = step?.attempt ? ` #${step.attempt}` : "";
+	if (step?.agent === "aggregate") return `${phase}${attempt} aggregate`;
+	if (step?.childIndex !== undefined) {
+		const child = Number(step.childIndex) + 1;
+		const total = step.childCount ? `/${step.childCount}` : "";
+		return `${phase}${attempt} reviewer ${child}${total}`;
+	}
+	return `${phase}${attempt}`;
+}
+
 function artifactListFromStructured(structured: any): Array<{ label: string; path: string; external: boolean }> {
 	const artifacts = new Map<string, { label: string; path: string; external: boolean }>();
 	for (const step of Array.isArray(structured?.steps) ? structured.steps : []) {
 		if (!step?.artifact || typeof step.artifact !== "string") continue;
 		const external = isExternalUrl(step.artifact);
-		const label = `${step.phase ?? "artifact"}${step.attempt ? ` #${step.attempt}` : ""}`;
-		artifacts.set(step.artifact, { label, path: step.artifact, external });
+		artifacts.set(step.artifact, { label: stepArtifactLabel(step), path: step.artifact, external });
 	}
 	return [...artifacts.values()];
 }
@@ -245,6 +256,14 @@ function conventionalArtifacts(dir: string): Array<{ label: string; path: string
 		.map((name) => ({ label: name, path: name, external: false }));
 }
 
+function mergeArtifacts(...artifactLists: Array<Array<{ label: string; path: string; external: boolean }>>): Array<{ label: string; path: string; external: boolean }> {
+	const artifacts = new Map<string, { label: string; path: string; external: boolean }>();
+	for (const artifact of artifactLists.flat()) {
+		if (!artifacts.has(artifact.path)) artifacts.set(artifact.path, artifact);
+	}
+	return [...artifacts.values()];
+}
+
 export function loadReport(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string): LoadedReport {
 	const { root, dir } = reportDirForId(config, viewerReportId);
 	const summary = summaryFromDir(Number(parseViewerReportId(viewerReportId).rootIndex), root, dir);
@@ -257,7 +276,7 @@ export function loadReport(config: Pick<ReportViewerConfig, "reportRoots">, view
 		structuredReport,
 		summaryMarkdown,
 		summaryHtml: summaryMarkdown ? renderMarkdownSafe(summaryMarkdown) : undefined,
-		artifacts: [...artifactListFromStructured(structuredReport), ...conventionalArtifacts(dir)],
+		artifacts: mergeArtifacts(artifactListFromStructured(structuredReport), conventionalArtifacts(dir)),
 	};
 }
 
@@ -567,8 +586,23 @@ function stepPhase(step: any): string {
 	return String(step?.phase ?? "").toUpperCase();
 }
 
-function stepVerdict(step: any): string {
-	return String(step?.verdict ?? step?.status ?? "unknown");
+function artifactResultVerdict(reportDir: string | undefined, artifact: unknown): string | undefined {
+	if (!reportDir || typeof artifact !== "string" || isExternalUrl(artifact) || containsTraversal(artifact)) return undefined;
+	try {
+		const realReportDir = fs.realpathSync(reportDir);
+		const candidate = path.isAbsolute(artifact) ? artifact : path.resolve(reportDir, artifact);
+		if (!fs.existsSync(candidate)) return undefined;
+		const realCandidate = fs.realpathSync(candidate);
+		if (!isPathInside(realCandidate, realReportDir) || !fs.statSync(realCandidate).isFile()) return undefined;
+		const firstLine = fs.readFileSync(realCandidate, "utf8").split(/\r?\n/, 1)[0] ?? "";
+		return /^RESULT:\s*([A-Z_]+)/i.exec(firstLine)?.[1]?.toUpperCase() ?? /^\s*(PASS_WITH_NON_BLOCKING_NOTES|PASS|FAIL|INCONCLUSIVE|DONE|MR_CREATED)\b/i.exec(firstLine)?.[1]?.toUpperCase();
+	} catch {
+		return undefined;
+	}
+}
+
+function stepVerdict(step: any, reportDir?: string): string {
+	return String(step?.verdict ?? artifactResultVerdict(reportDir, step?.artifact) ?? step?.status ?? "unknown");
 }
 
 function retroCandidatesFromArtifact(reportDir: string, artifactPath = "05-retro.md"): RetroCandidate[] {
@@ -644,13 +678,13 @@ function artifactHref(viewerReportId: string, artifact: string): string {
 	return `/reports/${encodeURIComponent(viewerReportId)}/artifacts/${encodeURIComponent(artifact)}`;
 }
 
-function phaseStepCardHtml(viewerReportId: string, step: any): string {
-	const verdict = stepVerdict(step);
+function phaseStepCardHtml(viewerReportId: string, step: any, reportDir: string): string {
+	const verdict = stepVerdict(step, reportDir);
 	const artifact = typeof step.artifact === "string" ? step.artifact : "";
-	return `<article class="phase-card"><div><strong>${escapeHtml(String(step.phase ?? ""))} #${escapeHtml(String(step.attempt ?? ""))}</strong> <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="muted">Agent: ${escapeHtml(String(step.agent ?? "default"))}</div><div class="summary">${escapeHtml(shortSummary(step.summary)) || `<span class="muted">No summary recorded.</span>`}</div><div class="muted">Cost: ${escapeHtml(phaseCost(step))}</div>${artifact ? `<a href="${artifactHref(viewerReportId, artifact)}">Open artifact/detail</a>` : `<span class="muted">No artifact link</span>`}</article>`;
+	return `<article class="phase-card"><div><strong>${escapeHtml(stepArtifactLabel(step))}</strong> <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="muted">Agent: ${escapeHtml(String(step.agent ?? "default"))}</div><div class="summary">${escapeHtml(shortSummary(step.summary)) || `<span class="muted">No summary recorded.</span>`}</div><div class="muted">Cost: ${escapeHtml(phaseCost(step))}</div>${artifact ? `<a href="${artifactHref(viewerReportId, artifact)}">Open artifact/detail</a>` : `<span class="muted">No artifact link</span>`}</article>`;
 }
 
-function phaseJourneyHtml(viewerReportId: string, steps: any[]): string {
+function phaseJourneyHtml(viewerReportId: string, steps: any[], reportDir: string): string {
 	if (!steps.length) return `<div class="panel muted">No structured steps available.</div>`;
 	const groupedSteps = new Map<string, any[]>();
 	for (const step of steps) {
@@ -661,15 +695,18 @@ function phaseJourneyHtml(viewerReportId: string, steps: any[]): string {
 	}
 	const groups = [...groupedSteps.entries()].map(([phase, phaseSteps]) => {
 		const repairNote = phaseSteps.length > 1 ? `<p class="muted">Repair loop: ${phaseSteps.length} attempts recorded.</p>` : "";
-		return `<section class="section-card phase-group"><h3>${escapeHtml(phase)} attempts (${phaseSteps.length})</h3>${repairNote}<div class="phase-grid">${phaseSteps.map((step) => phaseStepCardHtml(viewerReportId, step)).join("")}</div></section>`;
+		return `<section class="section-card phase-group"><h3>${escapeHtml(phase)} attempts (${phaseSteps.length})</h3>${repairNote}<div class="phase-grid">${phaseSteps.map((step) => phaseStepCardHtml(viewerReportId, step, reportDir)).join("")}</div></section>`;
 	}).join("");
 	return `<div class="section-grid phase-groups">${groups}</div>`;
 }
 
-function failureRepairHtml(steps: any[]): string {
-	const failures = steps.filter((step) => String(step.verdict ?? "").includes("FAIL") || String(step.summary ?? "").toLowerCase().includes("repair"));
+function failureRepairHtml(steps: any[], reportDir: string): string {
+	const failures = steps.filter((step) => stepVerdict(step, reportDir).includes("FAIL") || String(step.summary ?? "").toLowerCase().includes("repair"));
 	if (!failures.length) return `<p class="muted">No failed verification/review or repair loop is recorded.</p>`;
-	return `<ul>${failures.map((step) => `<li><strong>${escapeHtml(String(step.phase ?? ""))} #${escapeHtml(String(step.attempt ?? ""))}</strong>: <span class="badge ${badgeClass(String(step.verdict ?? step.status ?? ""))}">${escapeHtml(String(step.verdict ?? step.status ?? ""))}</span> ${escapeHtml(shortSummary(step.summary))}</li>`).join("")}</ul>`;
+	return `<ul>${failures.map((step) => {
+		const verdict = stepVerdict(step, reportDir);
+		return `<li><strong>${escapeHtml(stepArtifactLabel(step))}</strong>: <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span> ${escapeHtml(shortSummary(step.summary))}</li>`;
+	}).join("")}</ul>`;
 }
 
 function reportHtml(config: ReportViewerConfig, viewerReportId: string): string {
@@ -693,7 +730,7 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 	const retroCandidatesHtml = retroArtifact && retroCandidates.length ? retroCandidateHtml(viewerReportId, retroArtifact.path, retroCandidates) : `<p class="muted">No unsaved retro candidate rows found.</p>`;
 	const pendingHtml = pendingIssue ? `<pre>${escapeHtml(JSON.stringify(pendingIssue, null, 2))}</pre>` : `<p class="muted">No pending issue.</p>`;
 	const usageHtml = usage ? `<pre>${escapeHtml(JSON.stringify(usage, null, 2))}</pre>` : `<p class="muted">No structured usage data.</p>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1>${escapeHtml(report.task)}</h1>${sourceNote}${cards}<section id="phase-journey"><h2>Phase journey</h2>${phaseJourneyHtml(viewerReportId, steps)}</section><section id="failures-and-repairs" class="panel"><h2>Failures and repairs</h2>${failureRepairHtml(steps)}${pendingHtml}</section><section id="retro-follow-ups" class="panel"><h2>Retro / follow-ups</h2>${retroArtifact ? `<p><a href="${artifactHref(viewerReportId, retroArtifact.path)}">Open retro artifact</a></p>` : `<p class="muted">No retro artifact found.</p>`}${improvementsHtml}${retroCandidatesHtml}<h3>Accepted risks</h3>${risksHtml}</section><section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
+	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1>${escapeHtml(report.task)}</h1>${sourceNote}${cards}<section id="phase-journey"><h2>Phase journey</h2>${phaseJourneyHtml(viewerReportId, steps, report.artifactDir)}</section><section id="failures-and-repairs" class="panel"><h2>Failures and repairs</h2>${failureRepairHtml(steps, report.artifactDir)}${pendingHtml}</section><section id="retro-follow-ups" class="panel"><h2>Retro / follow-ups</h2>${retroArtifact ? `<p><a href="${artifactHref(viewerReportId, retroArtifact.path)}">Open retro artifact</a></p>` : `<p class="muted">No retro artifact found.</p>`}${improvementsHtml}${retroCandidatesHtml}<h3>Accepted risks</h3>${risksHtml}</section><section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
 }
 
 function sectionBodyHtml(body: string): string {

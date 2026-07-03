@@ -151,6 +151,7 @@ interface DeliveryState {
 
 interface ChildLaunch extends LaunchConfig {
 	childPrompt: string;
+	acceptance: false;
 }
 
 interface NextAction {
@@ -159,6 +160,7 @@ interface NextAction {
 	model?: string;
 	thinking?: string;
 	context?: string;
+	acceptance?: false;
 	parallel?: ChildLaunch[];
 	prompt: string;
 	childPrompt: string;
@@ -540,6 +542,29 @@ function isFail(verdict?: Verdict): boolean {
 	return verdict === "FAIL" || verdict === "INCONCLUSIVE";
 }
 
+function normalizeVerdict(value: string | undefined): Verdict | undefined {
+	const normalized = value?.trim().toUpperCase();
+	if (
+		normalized === "PASS" ||
+		normalized === "PASS_WITH_NON_BLOCKING_NOTES" ||
+		normalized === "FAIL" ||
+		normalized === "INCONCLUSIVE" ||
+		normalized === "DONE" ||
+		normalized === "MR_CREATED"
+	) return normalized;
+	return undefined;
+}
+
+function artifactVerdict(artifact?: string): Verdict | undefined {
+	if (!artifact || !fs.existsSync(artifact) || !fs.statSync(artifact).isFile()) return undefined;
+	try {
+		const firstLine = fs.readFileSync(artifact, "utf8").split(/\r?\n/, 1)[0] ?? "";
+		return normalizeVerdict(/^RESULT:\s*([A-Z_]+)/i.exec(firstLine)?.[1] ?? /^\s*(PASS_WITH_NON_BLOCKING_NOTES|PASS|FAIL|INCONCLUSIVE|DONE|MR_CREATED)\b/i.exec(firstLine)?.[1]);
+	} catch {
+		return undefined;
+	}
+}
+
 function completedImplementationReports(state: DeliveryState): number {
 	return state.history.filter((entry) => entry.event === "report" && entry.phase === "IMPLEMENT").length;
 }
@@ -653,7 +678,8 @@ Parallel phase instruction:
 function reportInstructionForPhase(phase: RunnablePhase, parallelCount = 1): string {
 	const verdictGuidance = phase === "VERIFY" ? " and verdict PASS/FAIL/INCONCLUSIVE" : "";
 	if (parallelCount > 1) {
-		return `After all ${parallelCount} children complete, parent/orchestrator aggregates their findings and calls delivery_report once with phase ${phase}${verdictGuidance}. For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding.`;
+		const aggregateName = PHASE_ARTIFACT_STEMS[phase];
+		return `After all ${parallelCount} children complete, parent/orchestrator preserves every child artifact, writes a clean aggregate phase artifact such as ${aggregateName}.md with links/summaries for each child, then calls delivery_report once with phase ${phase}${verdictGuidance} and artifact set to only that aggregate artifact path. For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding.`;
 	}
 	return `After the child completes, parent/orchestrator calls delivery_report with phase ${phase}${verdictGuidance}.`;
 }
@@ -695,6 +721,7 @@ function nextAction(state: DeliveryState): NextAction {
 	const parallel = launches.length > 1
 		? launches.map((launch, index, allLaunches) => ({
 			...launch,
+			acceptance: false as const,
 			childPrompt: parallelChildPrompt(childPrompt, state, launch, index, allLaunches.length),
 		}))
 		: undefined;
@@ -706,6 +733,7 @@ function nextAction(state: DeliveryState): NextAction {
 		model: primaryLaunch.model,
 		thinking: primaryLaunch.thinking,
 		context: primaryLaunch.context,
+		acceptance: false,
 		parallel,
 		prompt: childPrompt,
 		childPrompt,
@@ -745,7 +773,7 @@ function recordPlannedSteps(state: DeliveryState, ctx: ExtensionContext, action:
 	const fallbackLaunch = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot)[phase].launches[0];
 	const launches = action.parallel?.length
 		? action.parallel
-		: [{ agent: action.agent ?? fallbackLaunch.agent, model: action.model, thinking: action.thinking, context: action.context }];
+		: [{ agent: action.agent ?? fallbackLaunch.agent, model: action.model, thinking: action.thinking, context: action.context, acceptance: action.acceptance }];
 	launches.forEach((launch, index) => {
 		const childCount = launches.length;
 		const childIndex = childCount > 1 ? index : undefined;
@@ -791,17 +819,73 @@ function usageAttributionForStep(step: DeliveryStep, usageAfter: UsageTotals | u
 	return parallel ? "phase-aggregate" : "best-effort";
 }
 
-function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params: { phase: Phase; verdict?: Verdict; summary: string; artifact?: string }) {
-	if (!isRunnablePhase(params.phase)) return;
+function aggregateArtifactPath(state: DeliveryState, phase: RunnablePhase, attempt: number): string | undefined {
+	if (!state.artifactDir) return undefined;
+	const stem = PHASE_ARTIFACT_STEMS[phase];
+	return path.join(state.artifactDir, attempt > 1 ? `${stem}-${attempt}.md` : `${stem}.md`);
+}
+
+function splitArtifactRefs(artifact?: string): string[] {
+	return (artifact ?? "")
+		.split(/[;\n]+/)
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+function isSameArtifactPath(a: string, b: string): boolean {
+	return path.resolve(a) === path.resolve(b);
+}
+
+function markdownLinkForArtifact(state: DeliveryState, artifact: string): string {
+	const relative = state.artifactDir && path.isAbsolute(artifact) ? path.relative(state.artifactDir, artifact) : artifact;
+	return `[${mdEscape(path.basename(relative) || relative)}](${relative.replace(/ /g, "%20")})`;
+}
+
+function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string }, steps: DeliveryStep[]): string {
+	const verdict = params.verdict ?? "INCONCLUSIVE";
+	const childLines = steps
+		.filter((step) => step.childIndex !== undefined)
+		.sort((a, b) => (a.childIndex ?? 0) - (b.childIndex ?? 0))
+		.map((step) => {
+			const childNumber = (step.childIndex ?? 0) + 1;
+			const total = step.childCount ?? steps.length;
+			const childVerdict = artifactVerdict(step.artifact) ?? step.verdict;
+			const agent = [step.agent, step.model].filter(Boolean).join(" / ") || "unknown";
+			const link = step.artifact ? markdownLinkForArtifact(state, step.artifact) : "missing artifact";
+			return `- Reviewer ${childNumber}/${total} (${agent}): ${childVerdict ?? "artifact verdict unavailable"} — ${link}`;
+		})
+		.join("\n") || "none";
+	if (params.phase === "REVIEW") {
+		return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Must-fix findings\n${isFail(verdict) ? params.summary : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none"}\n\n## Evidence reviewed\n${childLines}\n\n## Risk checks\n- Aggregate review verdict derived from preserved parallel reviewer artifacts.\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n`;
+	}
+	return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Evidence\n${childLines}\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n`;
+}
+
+function ensureAggregateArtifactForParallelReport(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string; artifact?: string }, steps: DeliveryStep[]): string | undefined {
+	const aggregatePath = aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase));
+	if (!aggregatePath) return params.artifact;
+	const refs = splitArtifactRefs(params.artifact);
+	if (refs.length === 1) {
+		const candidate = path.isAbsolute(refs[0]!) ? refs[0]! : path.join(state.artifactDir!, refs[0]!);
+		if (isSameArtifactPath(candidate, aggregatePath) && fs.existsSync(candidate)) return candidate;
+	}
+	if (fs.existsSync(aggregatePath)) return aggregatePath;
+	fs.writeFileSync(aggregatePath, aggregateArtifactMarkdown(state, params, steps), "utf8");
+	return aggregatePath;
+}
+
+function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params: { phase: Phase; verdict?: Verdict; summary: string; artifact?: string }): string | undefined {
+	if (!isRunnablePhase(params.phase)) return params.artifact;
 	const steps = ensurePlannedStepsForReport(state, ctx, params.phase);
 	const usageAfter = collectSessionUsage(ctx);
 	const parallel = steps.length > 1;
+	const reportArtifact = parallel ? ensureAggregateArtifactForParallelReport(state, { ...params, phase: params.phase }, steps) : params.artifact;
 	const endedAt = Date.now();
 	for (const step of steps) {
 		step.status = "reported";
-		step.verdict = parallel ? undefined : params.verdict;
+		step.verdict = parallel ? artifactVerdict(step.artifact) : params.verdict;
 		step.summary = parallel ? undefined : truncate(params.summary, 800);
-		if (params.artifact && steps.length === 1) step.artifact = params.artifact;
+		if (reportArtifact && steps.length === 1) step.artifact = reportArtifact;
 		step.endedAt = endedAt;
 		step.usageAfter = usageAfter;
 		step.usageAttribution = usageAttributionForStep(step, usageAfter, parallel);
@@ -826,7 +910,7 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 		aggregate.status = "reported";
 		aggregate.verdict = params.verdict;
 		aggregate.summary = truncate(params.summary, 800);
-		if (params.artifact) aggregate.artifact = params.artifact;
+		if (reportArtifact) aggregate.artifact = reportArtifact;
 		aggregate.endedAt = endedAt;
 		aggregate.usageAfter = usageAfter;
 		aggregate.usageAttribution = usageAttributionForStep(aggregate, usageAfter, true);
@@ -836,16 +920,18 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 		if (!existing) state.steps.push(aggregate);
 	}
 	state.updatedAt = Date.now();
+	return reportArtifact;
 }
 
 function formatNextAction(state: DeliveryState): string {
 	const action = nextAction(state);
 	if (!isRunnablePhase(state.phase)) return action.orchestratorInstruction;
-	const launchOne = (launch: { agent?: string; model?: string; thinking?: string; context?: string }) => [
+	const launchOne = (launch: { agent?: string; model?: string; thinking?: string; context?: string; acceptance?: false }) => [
 		`agent=${launch.agent}`,
 		launch.model ? `model=${launch.model}` : undefined,
 		launch.thinking ? `thinking=${launch.thinking}` : undefined,
 		launch.context ? `context=${launch.context}` : undefined,
+		launch.acceptance === false ? "acceptance=false" : undefined,
 	].filter(Boolean).join(", ");
 	const launch = action.parallel?.length
 		? `parallel (${action.parallel.length}): ${action.parallel.map(launchOne).join(" | ")}`
@@ -1196,7 +1282,19 @@ function reportUsageSnapshot(state: DeliveryState, ctx: ExtensionContext): Repor
 function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageSnapshot = reportUsageSnapshot(state, ctx)): string {
 	refreshGitInfo(ctx, state);
 	const steps = journeySteps(state);
-	steps.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+	const groupStartedAt = (step: DeliveryStep) => Math.min(
+		...steps
+			.filter((candidate) => candidate.phase === step.phase && candidate.attempt === step.attempt)
+			.map((candidate) => candidate.startedAt),
+	);
+	const groupRank = (step: DeliveryStep) => step.childIndex ?? (step.agent === "aggregate" ? Number.MAX_SAFE_INTEGER : 0);
+	steps.sort((a, b) => {
+		const groupOrder = groupStartedAt(a) - groupStartedAt(b);
+		if (groupOrder !== 0) return groupOrder;
+		const sameGroup = a.phase === b.phase && a.attempt === b.attempt;
+		if (sameGroup) return groupRank(a) - groupRank(b) || a.startedAt - b.startedAt || a.id.localeCompare(b.id);
+		return a.startedAt - b.startedAt || a.id.localeCompare(b.id);
+	});
 	const currentUsage = usageSnapshot.currentSessionTotals;
 	const usableCurrentUsage = usageSnapshot.usableCurrentSessionTotals;
 	const usableSinceStart = usageSnapshot.usableSinceDeliveryStart;
@@ -1486,6 +1584,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			"Before implementation, unless this is the same task or an amended requirement, ensure repo work happens in a dedicated git worktree created from latest main; for non-git/non-repo tasks, record why this is not applicable.",
 			"After delivery_start, use delivery_next before launching each subagent and delivery_report after each subagent returns.",
 			"Pass only details.next.childPrompt to subagents; parent-only launch/report instructions stay with the orchestrator.",
+			"When launching delivery subagents, pass details.next.acceptance/details.next.parallel[].acceptance when present; delivery owns artifact/verdict gates and disables pi-subagents acceptance.",
 		],
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1517,6 +1616,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use delivery_next before launching any delivery workflow subagent.",
 			"Launch the returned agent/model/thinking/context and pass only details.next.childPrompt to the subagent.",
+			"Pass details.next.acceptance or details.next.parallel[].acceptance when present so pi-subagents acceptance is disabled for delivery-managed artifact contracts.",
 			"Keep details.next.orchestratorInstruction and details.next.reportInstruction for the parent/orchestrator.",
 			"Follow delivery_next exactly; do not skip verification/review/close gates.",
 		],
@@ -1546,8 +1646,9 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			if (!state.active && state.phase !== "RETRO") {
 				return { content: [{ type: "text", text: "No active delivery. Use delivery_start or /deliver first." }], details: { state: cloneState(state) } };
 			}
-			recordReportedSteps(state, ctx, params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string });
-			transitionAfterReport(state, params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string; recommendedDecision?: Decision });
+			const reportParams = { ...(params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string; recommendedDecision?: Decision }) };
+			reportParams.artifact = recordReportedSteps(state, ctx, reportParams) ?? reportParams.artifact;
+			transitionAfterReport(state, reportParams);
 			persist();
 			updateUi(ctx, state);
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);

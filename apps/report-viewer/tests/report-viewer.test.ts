@@ -231,6 +231,76 @@ await runTest("UI routes render report list, report detail, and artifact content
 	}
 });
 
+await runTest("report detail shows aggregate and individual parallel reviewer artifacts", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-parallel-review-"));
+	try {
+		const dir = path.join(root, "run");
+		writeJsonReport(dir, "parallel reviewer task", {
+			steps: [
+				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented", startedAt: 1 },
+				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified", startedAt: 2 },
+				{ id: "REVIEW-1-0", phase: "REVIEW", attempt: 1, childIndex: 0, childCount: 2, agent: "reviewer", model: "default", status: "reported", artifact: "03-review-1-01-reviewer.md", startedAt: 3 },
+				{ id: "REVIEW-1-1", phase: "REVIEW", attempt: 1, childIndex: 1, childCount: 2, agent: "reviewer", model: "openai/gpt-5.5", status: "reported", artifact: "03-review-1-02-reviewer-openai-gpt-5-5.md", startedAt: 3 },
+				{ id: "REVIEW-1-aggregate", phase: "REVIEW", attempt: 1, agent: "aggregate", model: "parent", status: "reported", verdict: "FAIL", artifact: "03-review.md", summary: "Reviewer 1 found a blocker; reviewer 2 passed.", startedAt: 3 },
+			],
+		});
+		fs.writeFileSync(path.join(dir, "03-review-1-01-reviewer.md"), "RESULT: FAIL\n\n## Summary\nReviewer 1 found a blocker.\n\n## Must-fix findings\n- blocker\n\n## Non-blocking notes\nnone\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- failed\n\n## Recommendation\nrepair\n", "utf8");
+		fs.writeFileSync(path.join(dir, "03-review-1-02-reviewer-openai-gpt-5-5.md"), "RESULT: PASS\n\n## Summary\nReviewer 2 passed.\n\n## Must-fix findings\nnone\n\n## Non-blocking notes\nnone\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- passed\n\n## Recommendation\nnone\n", "utf8");
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, /REVIEW #1 reviewer 1\/2/);
+			assert.match(html, /REVIEW #1 reviewer 2\/2/);
+			assert.match(html, /REVIEW #1 aggregate/);
+			assert.match(html, /03-review-1-01-reviewer\.md/);
+			assert.match(html, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+			assert.match(html, /03-review\.md/);
+			assert.match(html, /<span class="badge bad">FAIL<\/span>/);
+			assert.match(html, /<span class="badge ok">PASS<\/span>/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("artifact verdict detection ignores out-of-report artifact paths", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-unsafe-verdict-root-"));
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-unsafe-verdict-outside-"));
+	try {
+		const dir = path.join(root, "run");
+		const secretPath = path.join(outside, "secret-review.md");
+		writeJsonReport(dir, "unsafe artifact verdict task", {
+			steps: [
+				{ id: "REVIEW-absolute", phase: "REVIEW", attempt: 1, agent: "reviewer", status: "reported", artifact: secretPath, summary: "absolute out-of-report artifact", startedAt: 1 },
+				{ id: "REVIEW-symlink", phase: "REVIEW", attempt: 1, agent: "reviewer", status: "reported", artifact: "secret-review-link.md", summary: "symlink out-of-report artifact", startedAt: 2 },
+			],
+		});
+		fs.writeFileSync(secretPath, "RESULT: FAIL\n\n## Summary\nOut-of-report secret verdict.\n", "utf8");
+		fs.symlinkSync(secretPath, path.join(dir, "secret-review-link.md"));
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const list = await fetch(`${baseUrl}/reports?task=unsafe`);
+			assert.equal(list.status, 200);
+			const listHtml = await list.text();
+			assert.doesNotMatch(listHtml, /Failed verify\/review/);
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, /absolute out-of-report artifact/);
+			assert.match(html, /symlink out-of-report artifact/);
+			assert.doesNotMatch(html, /<span class="badge bad">FAIL<\/span>/);
+			assert.match(html, /<span class="badge ">reported<\/span>/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(outside, { recursive: true, force: true });
+	}
+});
+
 await runTest("report detail groups repeated phase attempts and report list highlights risks", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-signals-"));
 	try {

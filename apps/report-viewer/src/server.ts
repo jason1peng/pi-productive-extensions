@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { URL } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 import { parseArtifactContract, type ParsedArtifact, type RetroCandidate } from "./artifact-contract.ts";
 import { escapeHtml, renderMarkdownSafe } from "./markdown-renderer.ts";
 import { badgeClass, page } from "./report-renderer.ts";
@@ -73,6 +73,26 @@ export interface AgentRunRecord {
 }
 
 const DEFAULT_PORT = 8765;
+const DELIVERY_PHASES = ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"] as const;
+const DELIVERY_EXTENSION_NAME = "delivery-state-machine";
+
+type DeliveryPhase = (typeof DELIVERY_PHASES)[number];
+type DeliveryProfileDefinitions = Record<string, Record<DeliveryPhase, unknown>>;
+
+interface DeliveryProfileState {
+	profiles: string[];
+	profileDefinitions: DeliveryProfileDefinitions;
+	defaultProfile?: string;
+	definitionSource: "global-phase-launches" | "built-in-phase-launches";
+	activeProfile: string;
+	activeSource: "env" | "global-active-profile" | "global-default-profile" | "global-first-profile" | "built-in-default-profile" | "built-in-first-profile";
+	envOverride: boolean;
+	envProfile?: string;
+	savedActiveProfile?: string;
+	activeProfilePath: string;
+	globalConfigPath: string;
+	builtInConfigPath: string;
+}
 
 export function expandHome(value: string): string {
 	return value
@@ -83,6 +103,26 @@ export function expandHome(value: string): string {
 function splitEnvList(value: string | undefined): string[] | undefined {
 	const items = value?.split(",").map((item) => item.trim()).filter(Boolean);
 	return items?.length ? items : undefined;
+}
+
+export function deliveryAgentDir(env: NodeJS.ProcessEnv = process.env): string {
+	return env.PI_CODING_AGENT_DIR ? path.resolve(expandHome(env.PI_CODING_AGENT_DIR)) : path.join(os.homedir(), ".pi", "agent");
+}
+
+function deliveryExtensionConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(deliveryAgentDir(env), "extensions", DELIVERY_EXTENSION_NAME);
+}
+
+function activeProfilePath(env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(deliveryExtensionConfigDir(env), "active-profile.json");
+}
+
+function globalPhaseLaunchesPath(env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(deliveryExtensionConfigDir(env), "phase-launches.json");
+}
+
+function builtInPhaseLaunchesPath(): string {
+	return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "extensions", DELIVERY_EXTENSION_NAME, "phase-launches.json");
 }
 
 export function defaultConfigPath(): string {
@@ -143,6 +183,103 @@ function isDirectory(filePath: string): boolean {
 function readJsonIfPresent(filePath: string): any | undefined {
 	if (!fs.existsSync(filePath)) return undefined;
 	return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function validateDeliveryProfileConfig(raw: unknown, filePath: string): { defaultProfile?: string; profiles: string[]; profileDefinitions: DeliveryProfileDefinitions } {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Delivery profile config ${filePath} must be an object.`);
+	const config = raw as { defaultProfile?: unknown; profiles?: unknown };
+	if (config.defaultProfile !== undefined && (typeof config.defaultProfile !== "string" || !config.defaultProfile.trim())) {
+		throw new Error(`Delivery profile config ${filePath} has invalid defaultProfile.`);
+	}
+	if (!config.profiles || typeof config.profiles !== "object" || Array.isArray(config.profiles)) {
+		throw new Error(`Delivery profile config ${filePath} must define profiles.`);
+	}
+	const profileDefinitions: DeliveryProfileDefinitions = {};
+	const profiles = Object.entries(config.profiles as Record<string, unknown>).map(([name, value]) => {
+		const profileName = name.trim();
+		if (!profileName) throw new Error(`Delivery profile config ${filePath} has an empty profile name.`);
+		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Delivery profile config ${filePath} profile ${name} must be an object keyed by phase.`);
+		const phaseConfig = value as Record<string, unknown>;
+		for (const phase of Object.keys(phaseConfig)) {
+			if (!DELIVERY_PHASES.includes(phase as DeliveryPhase)) throw new Error(`Delivery profile config ${filePath} profile ${name} has unknown phase ${phase}.`);
+		}
+		for (const phase of DELIVERY_PHASES) {
+			if (!(phase in phaseConfig)) throw new Error(`Delivery profile config ${filePath} profile ${name} is missing required phase ${phase}.`);
+		}
+		profileDefinitions[profileName] = Object.fromEntries(DELIVERY_PHASES.map((phase) => [phase, phaseConfig[phase]])) as Record<DeliveryPhase, unknown>;
+		return profileName;
+	});
+	if (!profiles.length) throw new Error(`Delivery profile config ${filePath} must define at least one profile.`);
+	const defaultProfile = config.defaultProfile?.trim();
+	if (defaultProfile && !profiles.includes(defaultProfile)) throw new Error(`Delivery profile config ${filePath} defaultProfile=${defaultProfile} is not defined in profiles.`);
+	return { ...(defaultProfile ? { defaultProfile } : {}), profiles, profileDefinitions };
+}
+
+function readDeliveryProfileConfig(env: NodeJS.ProcessEnv = process.env): { defaultProfile?: string; profiles: string[]; profileDefinitions: DeliveryProfileDefinitions; definitionSource: DeliveryProfileState["definitionSource"]; globalConfigPath: string; builtInConfigPath: string } {
+	const globalConfigPath = globalPhaseLaunchesPath(env);
+	const builtInConfigPath = builtInPhaseLaunchesPath();
+	if (fs.existsSync(globalConfigPath)) {
+		return { ...validateDeliveryProfileConfig(readJsonIfPresent(globalConfigPath), globalConfigPath), definitionSource: "global-phase-launches", globalConfigPath, builtInConfigPath };
+	}
+	return { ...validateDeliveryProfileConfig(readJsonIfPresent(builtInConfigPath), builtInConfigPath), definitionSource: "built-in-phase-launches", globalConfigPath, builtInConfigPath };
+}
+
+function readSavedActiveProfile(filePath: string): string | undefined {
+	if (!fs.existsSync(filePath)) return undefined;
+	const parsed = readJsonIfPresent(filePath);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Active profile config ${filePath} must be an object with activeProfile.`);
+	const activeProfile = (parsed as { activeProfile?: unknown }).activeProfile;
+	if (typeof activeProfile !== "string" || !activeProfile.trim()) throw new Error(`Active profile config ${filePath} has invalid activeProfile.`);
+	return activeProfile.trim();
+}
+
+export function loadDeliveryProfileState(env: NodeJS.ProcessEnv = process.env): DeliveryProfileState {
+	const config = readDeliveryProfileConfig(env);
+	const activePath = activeProfilePath(env);
+	const envProfile = env.PI_DELIVERY_PROFILE?.trim() || undefined;
+	const savedActiveProfile = readSavedActiveProfile(activePath);
+	const activeProfile = envProfile ?? savedActiveProfile ?? config.defaultProfile ?? config.profiles[0];
+	if (!config.profiles.includes(activeProfile)) throw new Error(`Delivery profile ${activeProfile} is not defined in ${config.definitionSource}.`);
+	const activeSource: DeliveryProfileState["activeSource"] = envProfile
+		? "env"
+		: savedActiveProfile
+			? "global-active-profile"
+			: config.defaultProfile
+				? config.definitionSource === "global-phase-launches" ? "global-default-profile" : "built-in-default-profile"
+				: config.definitionSource === "global-phase-launches" ? "global-first-profile" : "built-in-first-profile";
+	return {
+		profiles: config.profiles,
+		profileDefinitions: config.profileDefinitions,
+		...(config.defaultProfile ? { defaultProfile: config.defaultProfile } : {}),
+		definitionSource: config.definitionSource,
+		activeProfile,
+		activeSource,
+		envOverride: Boolean(envProfile),
+		...(envProfile ? { envProfile } : {}),
+		...(savedActiveProfile ? { savedActiveProfile } : {}),
+		activeProfilePath: activePath,
+		globalConfigPath: config.globalConfigPath,
+		builtInConfigPath: config.builtInConfigPath,
+	};
+}
+
+function writeActiveProfileAtomic(profileName: string, env: NodeJS.ProcessEnv = process.env): string {
+	const state = loadDeliveryProfileState(env);
+	if (!state.profiles.includes(profileName)) throw new Error(`Delivery profile ${profileName} is not defined in ${state.definitionSource}.`);
+	const destination = activeProfilePath(env);
+	const expectedDir = deliveryExtensionConfigDir(env);
+	const resolvedDestination = path.resolve(destination);
+	if (resolvedDestination !== path.join(path.resolve(expectedDir), "active-profile.json")) throw new Error("Invalid active profile destination");
+	fs.mkdirSync(expectedDir, { recursive: true });
+	const tempPath = path.join(expectedDir, `.active-profile.json.tmp-${process.pid}-${Date.now()}-${randomBytes(6).toString("hex")}`);
+	try {
+		fs.writeFileSync(tempPath, `${JSON.stringify({ activeProfile: profileName }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(tempPath, resolvedDestination);
+	} catch (error) {
+		try { if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true }); } catch { /* ignore cleanup errors */ }
+		throw error;
+	}
+	return resolvedDestination;
 }
 
 function reportSourceForDir(dir: string): ReportSource | undefined {
@@ -672,12 +809,23 @@ function reportSignalsHtml(report: ReportSummary): string {
 	return `<div class="signal-list" aria-label="Report highlights">${signals.map((signal) => `<span class="badge ${signal.badge}">${escapeHtml(signal.label)}</span>`).join(" ")}</div>`;
 }
 
+function deliveryProfilePanelHtml(): string {
+	try {
+		const state = loadDeliveryProfileState();
+		const options = state.profiles.map((profile) => `<option value="${escapeHtml(profile)}" ${profile === state.activeProfile ? "selected" : ""}>${escapeHtml(profile)}</option>`).join("");
+		const override = state.envOverride ? `<p><span class="badge warn">Environment override active</span> <span class="muted"><code>PI_DELIVERY_PROFILE=${escapeHtml(state.envProfile ?? "")}</code> is effective; saving here changes the global default for future runs without that env override.</span></p>` : "";
+		return `<section class="panel" id="delivery-profile"><h2>Delivery model profile</h2><p>Active global profile: <span class="badge">${escapeHtml(state.activeProfile)}</span></p>${override}<form class="filters" id="delivery-profile-form"><label>Profile <select name="activeProfile">${options}</select></label><button type="submit">Switch global profile</button></form><p class="muted">Profiles are read from ${escapeHtml(state.definitionSource === "global-phase-launches" ? "global config" : "built-in defaults")}. This writes only <code>active-profile.json</code> under the pi agent directory; project files are never edited.</p><div class="muted" id="delivery-profile-message"></div><script>document.getElementById('delivery-profile-form')?.addEventListener('submit',async(event)=>{event.preventDefault();const form=event.currentTarget;const message=document.getElementById('delivery-profile-message');const token=document.querySelector('meta[name="report-viewer-csrf-token"]').content;const activeProfile=form.elements.activeProfile.value;message.textContent='Saving…';const response=await fetch('/api/delivery-profiles/global/active',{method:'POST',headers:{'content-type':'application/json','x-report-viewer-token':token},body:JSON.stringify({activeProfile})});if(response.ok){const body=await response.json();message.textContent='Saved global profile: '+body.savedActiveProfile+(body.envOverride?' (environment override is still effective)':'');}else{const body=await response.json().catch(()=>({error:'Save failed'}));message.textContent='Save failed: '+body.error;}});</script></section>`;
+	} catch (error) {
+		return `<section class="panel" id="delivery-profile"><h2>Delivery model profile</h2><p><span class="badge bad">Unavailable</span></p><p class="muted">${escapeHtml(error instanceof Error ? error.message : String(error))}</p></section>`;
+	}
+}
+
 function reportsHtml(config: ReportViewerConfig, query = new URLSearchParams()): string {
 	const reports = filterReports(scanReports(config), query);
 	const source = query.get("source") ?? "";
 	const filterForm = `<form class="panel filters" method="get" action="/reports"><label>Status <input name="status" value="${escapeHtml(query.get("status") ?? "")}" placeholder="DONE, FAIL, REVIEW"></label><label>Source <select name="source"><option value="">Any</option><option value="json" ${source === "json" ? "selected" : ""}>JSON</option><option value="legacy-markdown" ${source === "legacy-markdown" ? "selected" : ""}>Legacy Markdown</option></select></label><label>Task search <input name="task" value="${escapeHtml(query.get("task") ?? "")}" placeholder="task text"></label><label>Recent days <input name="recentDays" type="number" min="1" value="${escapeHtml(query.get("recentDays") ?? "")}"></label><button type="submit">Apply filters</button><a class="button secondary" href="/reports">Reset</a></form>`;
 	const cards = reports.map((report) => `<article class="phase-card"><div><a class="task-link" href="/reports/${encodeURIComponent(report.viewerReportId)}">${escapeHtml(report.task)}</a><div class="muted"><code>${escapeHtml(report.extensionReportId)}</code></div></div><div><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span> <span class="source-${escapeHtml(report.source)}">${escapeHtml(report.source === "json" ? "structured JSON" : "legacy Markdown")}</span></div>${reportSignalsHtml(report)}<div class="muted">${escapeHtml(new Date(report.updatedAt).toISOString())}</div><details><summary>Artifact directory</summary><code>${escapeHtml(report.artifactDir)}</code></details></article>`).join("");
-	return page("Pi delivery reports", `<h1>Pi delivery reports</h1><p class="muted">Find reports by status, source, recency, or task text. Cards avoid wide table-heavy reading on mobile.</p>${filterForm}<div class="phase-grid">${cards || `<div class="panel">No reports found.</div>`}</div>`, config);
+	return page("Pi delivery reports", `<h1>Pi delivery reports</h1><p class="muted">Find reports by status, source, recency, or task text. Cards avoid wide table-heavy reading on mobile.</p>${deliveryProfilePanelHtml()}${filterForm}<div class="phase-grid">${cards || `<div class="panel">No reports found.</div>`}</div>`, config);
 }
 
 function phaseCost(step: any): string {
@@ -814,6 +962,18 @@ export function createServer(config = loadConfig()): http.Server {
 			const segments = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
 			if (request.method === "GET" && url.pathname === "/") return sendHtml(response, indexHtml(config));
 			if (request.method === "GET" && url.pathname === "/reports") return sendHtml(response, reportsHtml(config, url.searchParams));
+			if (segments[0] === "api" && segments[1] === "delivery-profiles" && segments[2] === "global") {
+				if (request.method === "GET" && segments.length === 3) return sendJson(response, 200, loadDeliveryProfileState());
+				if (request.method === "POST" && segments[3] === "active") {
+					requireCsrfToken(request, config);
+					const body = await readRequestJson(request);
+					if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.activeProfile !== "string" || !body.activeProfile.trim()) {
+						throw new Error("Request body must include activeProfile string.");
+					}
+					writeActiveProfileAtomic(body.activeProfile.trim());
+					return sendJson(response, 200, loadDeliveryProfileState());
+				}
+			}
 			if (segments[0] === "reports" && segments[1]) {
 				const reportId = segments[1];
 				if (request.method === "GET" && segments.length === 2) return sendHtml(response, reportHtml(config, reportId));

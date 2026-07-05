@@ -33,6 +33,8 @@ export interface ReportSummary {
 	status: string;
 	phase?: string;
 	artifactDir: string;
+	projectId?: string;
+	projectName?: string;
 	updatedAt: number;
 }
 
@@ -161,7 +163,7 @@ function legacyTaskFromMarkdown(markdown: string, fallback: string): string {
 	return match?.[1]?.trim() || fallback;
 }
 
-function summaryFromDir(rootIndex: number, root: string, dir: string): ReportSummary | undefined {
+function summaryFromDir(rootIndex: number, root: string, dir: string, projectMetadata?: any): ReportSummary | undefined {
 	const source = reportSourceForDir(dir);
 	if (!source) return undefined;
 	const relative = path.relative(root, dir) || ".";
@@ -169,6 +171,7 @@ function summaryFromDir(rootIndex: number, root: string, dir: string): ReportSum
 	const fallbackTask = path.basename(dir);
 	if (source === "json") {
 		const structured = readJsonIfPresent(path.join(dir, "delivery-report.json"));
+		const project = structured?.project ?? projectMetadata;
 		return {
 			viewerReportId,
 			extensionReportId: String(structured?.id ?? fallbackTask),
@@ -177,6 +180,8 @@ function summaryFromDir(rootIndex: number, root: string, dir: string): ReportSum
 			status: String(structured?.status ?? structured?.phase ?? "unknown"),
 			phase: structured?.phase ? String(structured.phase) : undefined,
 			artifactDir: dir,
+			...(project?.projectId ? { projectId: String(project.projectId) } : {}),
+			...(project?.name ? { projectName: String(project.name) } : {}),
 			updatedAt: Number(structured?.updatedAt ?? reportMtime(dir)),
 		};
 	}
@@ -190,6 +195,8 @@ function summaryFromDir(rootIndex: number, root: string, dir: string): ReportSum
 		task: legacyTaskFromMarkdown(markdown, fallbackTask),
 		status,
 		artifactDir: dir,
+		...(projectMetadata?.projectId ? { projectId: String(projectMetadata.projectId) } : {}),
+		...(projectMetadata?.name ? { projectName: String(projectMetadata.name) } : {}),
 		updatedAt: reportMtime(dir),
 	};
 }
@@ -199,11 +206,20 @@ export function scanReports(config: Pick<ReportViewerConfig, "reportRoots">): Re
 	config.reportRoots.forEach((configuredRoot, rootIndex) => {
 		const root = path.resolve(expandHome(configuredRoot));
 		if (!isDirectory(root)) return;
-		for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-			if (!entry.isDirectory()) continue;
-			const dir = path.join(root, entry.name);
-			const summary = summaryFromDir(rootIndex, root, dir);
-			if (summary) reports.push(summary);
+		const projectsDir = path.join(root, "projects");
+		if (!isDirectory(projectsDir)) return;
+		for (const projectEntry of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+			if (!projectEntry.isDirectory()) continue;
+			const projectDir = path.join(projectsDir, projectEntry.name);
+			const projectMetadata = readJsonIfPresent(path.join(projectDir, "project.json"));
+			const runsDir = path.join(projectDir, "runs");
+			if (!isDirectory(runsDir)) continue;
+			for (const runEntry of fs.readdirSync(runsDir, { withFileTypes: true })) {
+				if (!runEntry.isDirectory()) continue;
+				const dir = path.join(runsDir, runEntry.name);
+				const summary = summaryFromDir(rootIndex, root, dir, projectMetadata);
+				if (summary) reports.push(summary);
+			}
 		}
 	});
 	return reports.sort((a, b) => b.updatedAt - a.updatedAt || a.viewerReportId.localeCompare(b.viewerReportId));

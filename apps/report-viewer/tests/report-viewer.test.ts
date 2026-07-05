@@ -16,6 +16,7 @@ import {
 	type ReportViewerConfig,
 } from "../src/server.ts";
 import { parseArtifactContract } from "../src/artifact-contract.ts";
+import { migrateDeliveryReports } from "../scripts/migrate-delivery-reports.ts";
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
 	try {
@@ -27,10 +28,25 @@ async function runTest(name: string, fn: () => Promise<void> | void) {
 	}
 }
 
+function projectRunDir(root: string, projectId = "project-a-12345678", runId = "run"): string {
+	const projectDir = path.join(root, "projects", projectId);
+	fs.mkdirSync(projectDir, { recursive: true });
+	fs.writeFileSync(path.join(projectDir, "project.json"), `${JSON.stringify({
+		schemaVersion: 1,
+		projectId,
+		name: projectId.replace(/-[a-f0-9]{8}$/, ""),
+		root: path.join(os.tmpdir(), projectId),
+		createdAt: "2026-07-05T12:00:00.000Z",
+		lastSeenAt: "2026-07-05T12:00:00.000Z",
+	}, null, 2)}\n`, "utf8");
+	return path.join(projectDir, "runs", runId);
+}
+
 function writeJsonReport(dir: string, task: string, overrides: Record<string, unknown> = {}) {
 	fs.mkdirSync(dir, { recursive: true });
+	const projectId = dir.split(path.sep).at(-3);
 	const report = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		source: "delivery-state-machine",
 		id: path.basename(dir),
 		task,
@@ -39,6 +55,8 @@ function writeJsonReport(dir: string, task: string, overrides: Record<string, un
 		artifactDir: dir,
 		cwd: dir,
 		gitRoot: dir,
+		...(projectId ? { project: { schemaVersion: 1, projectId, name: projectId.replace(/-[a-f0-9]{8}$/, ""), root: dir, createdAt: "2026-07-05T12:00:00.000Z", lastSeenAt: "2026-07-05T12:00:00.000Z" } } : {}),
+		launchProfile: { selectedProfile: "default", source: "built-in-default-profile", definitionSource: "built-in-phase-launches", envOverride: false },
 		updatedAt: 1234,
 		generatedAt: 1235,
 		summaryMarkdownPath: path.join(dir, "00-delivery-summary.md"),
@@ -101,12 +119,53 @@ await runTest("config defaults to the extension delivery artifact root", () => {
 	assert.ok(config.csrfToken.length > 20);
 });
 
+await runTest("scanReports ignores old flat report directories", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-flat-"));
+	try {
+		fs.mkdirSync(path.join(root, "flat-run"), { recursive: true });
+		fs.writeFileSync(path.join(root, "flat-run", "delivery-report.json"), JSON.stringify({ task: "flat task", status: "DONE" }), "utf8");
+		fs.writeFileSync(path.join(root, "flat-run", "00-delivery-summary.md"), "# Delivery summary\n\nTask: flat task\nStatus: DONE\n", "utf8");
+		assert.deepEqual(scanReports(configFor([root])), []);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("migration helper copies a legacy flat report into project layout", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-migrate-"));
+	try {
+		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-project-"));
+		const legacyDir = path.join(root, "legacy-run");
+		fs.mkdirSync(path.join(legacyDir, ".report-viewer"), { recursive: true });
+		fs.writeFileSync(path.join(legacyDir, "delivery-report.json"), JSON.stringify({ schemaVersion: 1, id: "legacy-run", task: "flat task", status: "DONE", cwd: projectRoot, gitRoot: projectRoot }, null, 2), "utf8");
+		fs.writeFileSync(path.join(legacyDir, "00-delivery-summary.md"), "# Delivery summary\n\nTask: flat task\nStatus: DONE\n", "utf8");
+		fs.writeFileSync(path.join(legacyDir, ".report-viewer", "improvements.json"), "[]\n", "utf8");
+		assert.deepEqual(scanReports(configFor([root])), []);
+		const dryRun = migrateDeliveryReports(root, { dryRun: true, now: new Date("2026-07-05T12:00:00.000Z") });
+		assert.equal(dryRun.entries.length, 1);
+		assert.equal(fs.existsSync(dryRun.entries[0].destinationPath), false);
+		const manifest = migrateDeliveryReports(root, { dryRun: false, now: new Date("2026-07-05T12:00:00.000Z") });
+		assert.equal(manifest.entries.length, 1);
+		const destination = manifest.entries[0].destinationPath;
+		assert.equal(fs.existsSync(path.join(destination, ".report-viewer", "improvements.json")), true);
+		const migrated = JSON.parse(fs.readFileSync(path.join(destination, "delivery-report.json"), "utf8"));
+		assert.equal(migrated.schemaVersion, 2);
+		assert.equal(migrated.project.projectId, manifest.entries[0].projectId);
+		const reports = scanReports(configFor([root]));
+		assert.equal(reports.length, 1);
+		assert.equal(reports[0].task, "flat task");
+		assert.equal(reports[0].projectId, manifest.entries[0].projectId);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("scanReports prefers JSON and keeps IDs unique across roots", () => {
 	const rootA = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-a-"));
 	const rootB = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-b-"));
 	try {
-		writeJsonReport(path.join(rootA, "same-name"), "json-backed task");
-		writeLegacyReport(path.join(rootB, "same-name"), "legacy task");
+		writeJsonReport(projectRunDir(rootA, "same-name-aaaaaaaa"), "json-backed task");
+		writeLegacyReport(projectRunDir(rootB, "same-name-aaaaaaaa"), "legacy task");
 		const reports = scanReports(configFor([rootA, rootB]));
 		assert.equal(reports.length, 2);
 		assert.notEqual(reports[0].viewerReportId, reports[1].viewerReportId);
@@ -121,7 +180,7 @@ await runTest("scanReports prefers JSON and keeps IDs unique across roots", () =
 await runTest("loadReport reads structured JSON and renders escaped Markdown", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-load-"));
 	try {
-		writeLegacyReport(path.join(root, "legacy"), "legacy <unsafe> task");
+		writeLegacyReport(projectRunDir(root, "legacy-project-11111111", "legacy"), "legacy <unsafe> task");
 		const [reportSummary] = scanReports(configFor([root]));
 		const report = loadReport(configFor([root]), reportSummary.viewerReportId);
 		assert.equal(report.source, "legacy-markdown");
@@ -144,7 +203,7 @@ await runTest("renderMarkdownSafe supports safe basic Markdown", () => {
 await runTest("artifact contract parser handles phase fixtures and legacy fallback", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-parser-"));
 	try {
-		const dir = path.join(root, "run");
+		const dir = projectRunDir(root);
 		writeJsonReport(dir, "parser task");
 		for (const name of ["01-implementation.md", "02-verification.md", "03-review.md", "04-close.md", "05-retro.md"]) {
 			const parsed = parseArtifactContract(fs.readFileSync(path.join(dir, name), "utf8"), { artifactPath: name });
@@ -175,7 +234,7 @@ await runTest("artifact contract parser handles phase fixtures and legacy fallba
 await runTest("UI routes render report list, report detail, and artifact content", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-ui-"));
 	try {
-		writeJsonReport(path.join(root, "run"), "ui route task");
+		writeJsonReport(projectRunDir(root), "ui route task");
 		const config = configFor([root]);
 		const [summary] = scanReports(config);
 		await withServer(config, async (baseUrl) => {
@@ -234,7 +293,7 @@ await runTest("UI routes render report list, report detail, and artifact content
 await runTest("report detail shows aggregate and individual parallel reviewer artifacts", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-parallel-review-"));
 	try {
-		const dir = path.join(root, "run");
+		const dir = projectRunDir(root);
 		writeJsonReport(dir, "parallel reviewer task", {
 			steps: [
 				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented", startedAt: 1 },
@@ -270,7 +329,7 @@ await runTest("artifact verdict detection ignores out-of-report artifact paths",
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-unsafe-verdict-root-"));
 	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-unsafe-verdict-outside-"));
 	try {
-		const dir = path.join(root, "run");
+		const dir = projectRunDir(root);
 		const secretPath = path.join(outside, "secret-review.md");
 		writeJsonReport(dir, "unsafe artifact verdict task", {
 			steps: [
@@ -304,7 +363,7 @@ await runTest("artifact verdict detection ignores out-of-report artifact paths",
 await runTest("report detail groups repeated phase attempts and report list highlights risks", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-signals-"));
 	try {
-		const reportDir = path.join(root, "run");
+		const reportDir = projectRunDir(root);
 		writeJsonReport(reportDir, "signals task", {
 			acceptedRisks: ["accepted launch risk"],
 			steps: [
@@ -347,7 +406,7 @@ await runTest("report detail groups repeated phase attempts and report list high
 await runTest("state-changing API routes require the local CSRF token", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-csrf-"));
 	try {
-		writeJsonReport(path.join(root, "run"), "csrf task");
+		writeJsonReport(projectRunDir(root), "csrf task");
 		const config = configFor([root]);
 		const [summary] = scanReports(config);
 		await withServer(config, async (baseUrl) => {
@@ -372,7 +431,7 @@ await runTest("resolveArtifactPath allows report artifacts and rejects traversal
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-paths-"));
 	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-outside-"));
 	try {
-		const reportDir = path.join(root, "run");
+		const reportDir = projectRunDir(root);
 		writeJsonReport(reportDir, "path safety task");
 		fs.writeFileSync(path.join(outside, "secret.md"), "secret", "utf8");
 		fs.symlinkSync(path.join(outside, "secret.md"), path.join(reportDir, "secret-link.md"));
@@ -392,7 +451,7 @@ await runTest("resolveArtifactPath allows report artifacts and rejects traversal
 await runTest("improvement approval metadata is stored separately and unapproved runs are rejected", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-improvements-"));
 	try {
-		const reportDir = path.join(root, "run");
+		const reportDir = projectRunDir(root);
 		writeJsonReport(reportDir, "approval task");
 		const [summary] = scanReports(configFor([root]));
 		const improvement = createImprovement(configFor([root]), summary.viewerReportId, {
@@ -414,7 +473,7 @@ await runTest("improvement approval metadata is stored separately and unapproved
 await runTest("approved run requires explicit confirmation and enabled non-interactive prompt mode", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-run-gates-"));
 	try {
-		const reportDir = path.join(root, "run");
+		const reportDir = projectRunDir(root);
 		writeJsonReport(reportDir, "run gate task");
 		const enabledConfig = configFor([root], { agentCommand: { bin: "/bin/cat", args: [], promptMode: "stdin" } });
 		const [summary] = scanReports(enabledConfig);
@@ -448,7 +507,7 @@ await runTest("approved run requires explicit confirmation and enabled non-inter
 await runTest("stale running records are reconciled on startup", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-stale-"));
 	try {
-		const reportDir = path.join(root, "run");
+		const reportDir = projectRunDir(root);
 		writeJsonReport(reportDir, "stale run task");
 		const config = configFor([root]);
 		const [summary] = scanReports(config);

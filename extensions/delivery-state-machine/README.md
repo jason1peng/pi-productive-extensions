@@ -100,19 +100,23 @@ Delivery state-machine tools are hardcoded in `index.ts` and are intended for th
 
 The `/deliver` bootstrap prompt lives in `prompts/deliver.md` so parent/orchestrator instructions are easy to review and edit. It supports placeholders such as `{{task}}` and `{{artifactDir}}`.
 
-Phase prompts live in `phases/*.md`, similar to pi agent-style config files. Launch settings live separately in `phase-launches.json`. `phase-config.ts` layers built-in defaults, user/global overrides, and project overrides. Common child workflow instructions, such as returning results to the parent and not calling `delivery_report`, are appended centrally from `index.ts`. Parent `delivery_report` instructions are hardcoded state-machine behavior in `index.ts`.
+Phase prompts live in `phases/*.md`, similar to pi agent-style config files. Launch settings live separately in profile-based `phase-launches.json`. `phase-config.ts` layers built-in defaults and user/global overrides only; project-local phase prompt and launch overrides are not read. Common child workflow instructions, such as returning results to the parent and not calling `delivery_report`, are appended centrally from `index.ts`. Parent `delivery_report` instructions are hardcoded state-machine behavior in `index.ts`.
 
 Prompt override paths, from lowest to highest precedence:
 
 - Built-in: `extensions/delivery-state-machine/phases/*.md`
 - User/global: `~/.pi/agent/extensions/delivery-state-machine/phases/*.md`
-- Project-local: `<repo>/.pi/delivery-state-machine/phases/*.md`
 
-Launch override paths, from lowest to highest precedence:
+Launch/profile config paths, from lowest to highest precedence:
 
 - Built-in: `extensions/delivery-state-machine/phase-launches.json`
 - User/global: `~/.pi/agent/extensions/delivery-state-machine/phase-launches.json`
-- Project-local: `<repo>/.pi/delivery-state-machine/phase-launches.json`
+
+Active profile selection path:
+
+- User/global: `~/.pi/agent/extensions/delivery-state-machine/active-profile.json`
+
+`PI_DELIVERY_PROFILE` overrides the saved active profile for the current process. Profile resolution is pinned at `delivery_start`, so changing `active-profile.json` affects future deliveries, not phases already planned for an active delivery.
 
 Phase files do not configure subagent launch settings or tools. Frontmatter may only declare `phase`; `agent`, `model`, `thinking`, `context`, `tools`, and `parallel` are rejected there. Subagent tool availability comes from the actual agent definition used by the subagent launcher. Verification phases use the `fresh-verifier` agent, installed from `agents/fresh-verifier.md` into `~/.pi/agent/agents/fresh-verifier.md`. If another child should not have delivery tools, configure that in the child agent definition, for example with dedicated delivery agents such as `delivery-worker` or `delivery-verifier`.
 
@@ -137,33 +141,34 @@ Prompt passed to the subagent. Supports placeholders such as `{{task}}`, `{{arti
 
 Prompt overrides are partial by section: an override file can provide only `## Child prompt` or only `## Orchestrator instruction`, and missing sections fall back to lower-precedence files. If frontmatter is omitted, the phase is inferred from the filename; if frontmatter is present and includes `phase`, it must match the filename's phase.
 
-Launch config format (`phase-launches.json`):
+Launch profile config format (`phase-launches.json`):
 
 ```json
 {
-  "IMPLEMENT": {
-    "agent": "worker",
-    "model": "openai/gpt-5.5"
-  },
-  "VERIFY": {
-    "agent": "fresh-verifier",
-    "model": "openai/gpt-5.5",
-    "thinking": "low",
-    "context": "fresh"
-  },
-  "REVIEW": [
-    {
-      "agent": "reviewer"
+  "defaultProfile": "premium",
+  "profiles": {
+    "premium": {
+      "IMPLEMENT": { "agent": "worker", "model": "openai/gpt-5.5" },
+      "VERIFY": { "agent": "fresh-verifier", "model": "openai/gpt-5.5", "thinking": "low", "context": "fresh" },
+      "REVIEW": [
+        { "agent": "reviewer" },
+        { "agent": "reviewer", "model": "openai/gpt-5.5" }
+      ],
+      "CLOSE": { "agent": "delegate", "thinking": "low" },
+      "RETRO": { "agent": "delegate", "thinking": "high" }
     },
-    {
-      "agent": "reviewer",
-      "model": "openai/gpt-5.5"
+    "quota-saving": {
+      "IMPLEMENT": { "agent": "worker", "model": "openai/gpt-5-mini" },
+      "VERIFY": { "agent": "fresh-verifier", "model": "openai/gpt-5-mini", "thinking": "low", "context": "fresh" },
+      "REVIEW": { "agent": "reviewer", "model": "openai/gpt-5-mini" },
+      "CLOSE": { "agent": "delegate", "model": "openai/gpt-5-mini", "thinking": "low" },
+      "RETRO": { "agent": "delegate", "model": "openai/gpt-5-mini", "thinking": "high" }
     }
-  ]
+  }
 }
 ```
 
-A phase value may be one launch object or an array of launch objects. Arrays mean parallel children for that phase. Higher-precedence `phase-launches.json` files replace launch config per phase key; they do not deep-merge individual launch objects. Entries support `agent`, `model`, `thinking`, and `context`. To force GPT-only or Claude-only execution, define all phases in user/global `phase-launches.json` with the model names available to your subscription.
+Each profile must define every runnable phase: `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`. A phase value may be one launch object or an array of launch objects. Arrays mean parallel children for that phase. Entries support `agent`, `model`, `thinking`, and `context`. To force GPT-only or Claude-only execution, define profiles in user/global `phase-launches.json` with the model names available to your subscription, then select one with `active-profile.json` or `PI_DELIVERY_PROFILE`.
 
 The phase prompts ask subagents to keep artifacts scan-friendly:
 

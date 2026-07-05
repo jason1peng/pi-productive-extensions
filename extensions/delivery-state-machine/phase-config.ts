@@ -26,15 +26,33 @@ export interface LaunchConfig {
 	context?: "fresh" | "fork";
 }
 
+export interface ProfileResolution {
+	selectedProfile: string;
+	source: "env" | "global-active-profile" | "global-default-profile" | "global-first-profile" | "built-in-default-profile" | "built-in-first-profile";
+	definitionSource: "global-phase-launches" | "built-in-phase-launches";
+	envOverride: boolean;
+}
+
 export interface PhaseConfig {
 	launches: LaunchConfig[];
 	orchestratorInstruction: (context: PhasePromptContext) => string;
 	childPrompt: (context: PhasePromptContext) => string;
 }
 
+export interface PhaseConfigBundle {
+	phases: Record<RunnablePhase, PhaseConfig>;
+	launches: Record<RunnablePhase, LaunchConfig[]>;
+	profileResolution: ProfileResolution;
+}
+
 interface PromptConfig {
 	orchestratorInstruction?: string;
 	childPrompt?: string;
+}
+
+interface ProfileLaunchConfig {
+	defaultProfile?: string;
+	profiles: Record<string, Record<RunnablePhase, LaunchConfig[]>>;
 }
 
 const PHASE_FILES: Record<RunnablePhase, string> = {
@@ -46,8 +64,10 @@ const PHASE_FILES: Record<RunnablePhase, string> = {
 };
 
 const PHASE_LAUNCHES_FILE = "phase-launches.json";
+const ACTIVE_PROFILE_FILE = "active-profile.json";
 const PROMPT_FRONTMATTER_KEYS = new Set(["phase"]);
 const LAUNCH_KEYS = new Set(["agent", "model", "thinking", "context"]);
+const PROFILE_KEYS = new Set(["defaultProfile", "profiles"]);
 const VALID_THINKING = new Set(["low", "medium", "high"]);
 const VALID_CONTEXT = new Set(["fresh", "fork"]);
 
@@ -59,16 +79,12 @@ function builtinPhasesDir(): string {
 	return path.join(extensionDir(), "phases");
 }
 
-function agentDir(): string {
+export function agentDir(): string {
 	return process.env.PI_CODING_AGENT_DIR?.replace(/^~(?=$|\/)/, os.homedir()) ?? path.join(os.homedir(), ".pi", "agent");
 }
 
-function userConfigDir(): string {
+export function userConfigDir(): string {
 	return path.join(agentDir(), "extensions", "delivery-state-machine");
-}
-
-function projectConfigDir(cwd: string, projectRoot?: string): string {
-	return path.join(projectRoot || cwd, ".pi", "delivery-state-machine");
 }
 
 function parseFrontmatter(markdown: string, filename: string): { data: Record<string, string>; body: string } {
@@ -131,10 +147,10 @@ function mergePromptConfig(base: PromptConfig, override?: PromptConfig): PromptC
 	};
 }
 
-function promptConfigForPhase(phase: RunnablePhase, cwd: string, projectRoot?: string): Required<PromptConfig> {
+function promptConfigForPhase(phase: RunnablePhase): Required<PromptConfig> {
 	const filename = PHASE_FILES[phase];
 	let config: PromptConfig = {};
-	for (const dir of [builtinPhasesDir(), path.join(userConfigDir(), "phases"), path.join(projectConfigDir(cwd, projectRoot), "phases")]) {
+	for (const dir of [builtinPhasesDir(), path.join(userConfigDir(), "phases")]) {
 		config = mergePromptConfig(config, readPromptConfig(phase, path.join(dir, filename)));
 	}
 	if (!config.orchestratorInstruction) throw new Error(`Phase config ${filename} is missing section: ## Orchestrator instruction`);
@@ -165,47 +181,98 @@ function validateLaunchConfig(config: unknown, filename: string, label: string):
 	return launch;
 }
 
-function validateLaunches(value: unknown, filename: string, phase: RunnablePhase): LaunchConfig[] {
+function validateLaunches(value: unknown, filename: string, phase: RunnablePhase, profileName: string): LaunchConfig[] {
 	const values = Array.isArray(value) ? value : [value];
-	if (!values.length) throw new Error(`Launch config ${filename} phase ${phase} must include at least one launch.`);
-	return values.map((launch, index) => validateLaunchConfig(launch, filename, `${phase}[${index}]`));
+	if (!values.length) throw new Error(`Launch config ${filename} profile ${profileName} phase ${phase} must include at least one launch.`);
+	return values.map((launch, index) => validateLaunchConfig(launch, filename, `profiles.${profileName}.${phase}[${index}]`));
 }
 
-function readLaunchConfig(filePath: string): Partial<Record<RunnablePhase, LaunchConfig[]>> {
-	if (!fs.existsSync(filePath)) return {};
+function readJsonFile(filePath: string): unknown {
+	try {
+		return JSON.parse(fs.readFileSync(filePath, "utf8"));
+	} catch (error) {
+		const filename = path.relative(extensionDir(), filePath).replace(/^\.\.\//, filePath);
+		throw new Error(`Launch config ${filename} is invalid JSON: ${(error as Error).message}`);
+	}
+}
+
+function readProfileLaunchConfig(filePath: string): ProfileLaunchConfig | undefined {
+	if (!fs.existsSync(filePath)) return undefined;
 	const filename = path.relative(extensionDir(), filePath).replace(/^\.\.\//, filePath);
+	const parsed = readJsonFile(filePath);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Launch config ${filename} must be an object with defaultProfile and profiles.`);
+	const raw = parsed as Record<string, unknown>;
+	for (const key of Object.keys(raw)) {
+		if (!PROFILE_KEYS.has(key)) throw new Error(`Launch config ${filename} must use profile-aware shape with defaultProfile and profiles; unexpected key: ${key}.`);
+	}
+	if (raw.defaultProfile !== undefined && (typeof raw.defaultProfile !== "string" || !raw.defaultProfile.trim())) {
+		throw new Error(`Launch config ${filename} has invalid defaultProfile.`);
+	}
+	if (!raw.profiles || typeof raw.profiles !== "object" || Array.isArray(raw.profiles)) throw new Error(`Launch config ${filename} must define profiles.`);
+	const profiles: Record<string, Record<RunnablePhase, LaunchConfig[]>> = {};
+	for (const [profileName, profileValue] of Object.entries(raw.profiles as Record<string, unknown>)) {
+		if (!profileName.trim()) throw new Error(`Launch config ${filename} has an empty profile name.`);
+		if (!profileValue || typeof profileValue !== "object" || Array.isArray(profileValue)) throw new Error(`Launch config ${filename} has invalid profile ${profileName}; expected object keyed by phase.`);
+		const profileRaw = profileValue as Record<string, unknown>;
+		for (const phase of Object.keys(profileRaw)) {
+			if (!(phase in PHASE_FILES)) throw new Error(`Launch config ${filename} profile ${profileName} has unknown phase: ${phase}`);
+		}
+		const profileConfig: Partial<Record<RunnablePhase, LaunchConfig[]>> = {};
+		for (const phase of Object.keys(PHASE_FILES) as RunnablePhase[]) {
+			if (!(phase in profileRaw)) throw new Error(`Launch config ${filename} profile ${profileName} is missing required phase: ${phase}`);
+			profileConfig[phase] = validateLaunches(profileRaw[phase], filename, phase, profileName);
+		}
+		profiles[profileName.trim()] = profileConfig as Record<RunnablePhase, LaunchConfig[]>;
+	}
+	const names = Object.keys(profiles);
+	if (!names.length) throw new Error(`Launch config ${filename} must define at least one profile.`);
+	const defaultProfile = raw.defaultProfile?.toString().trim();
+	if (defaultProfile && !profiles[defaultProfile]) throw new Error(`Launch config ${filename} defaultProfile=${defaultProfile} is not defined in profiles.`);
+	return { ...(defaultProfile ? { defaultProfile } : {}), profiles };
+}
+
+function readActiveProfile(): string | undefined {
+	const filePath = path.join(userConfigDir(), ACTIVE_PROFILE_FILE);
+	if (!fs.existsSync(filePath)) return undefined;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
 	} catch (error) {
-		throw new Error(`Launch config ${filename} is invalid JSON: ${(error as Error).message}`);
+		throw new Error(`Active profile config ${filePath} is invalid JSON: ${(error as Error).message}`);
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Launch config ${filename} must be an object keyed by phase.`);
-	const config: Partial<Record<RunnablePhase, LaunchConfig[]>> = {};
-	for (const [phase, launches] of Object.entries(parsed as Record<string, unknown>)) {
-		if (!(phase in PHASE_FILES)) throw new Error(`Launch config ${filename} has unknown phase: ${phase}`);
-		config[phase as RunnablePhase] = validateLaunches(launches, filename, phase as RunnablePhase);
-	}
-	return config;
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Active profile config ${filePath} must be an object with activeProfile.`);
+	const activeProfile = (parsed as { activeProfile?: unknown }).activeProfile;
+	if (activeProfile === undefined) return undefined;
+	if (typeof activeProfile !== "string" || !activeProfile.trim()) throw new Error(`Active profile config ${filePath} has invalid activeProfile.`);
+	return activeProfile.trim();
 }
 
-function mergeLaunchConfigs(base: Partial<Record<RunnablePhase, LaunchConfig[]>>, override: Partial<Record<RunnablePhase, LaunchConfig[]>>): Partial<Record<RunnablePhase, LaunchConfig[]>> {
-	return { ...base, ...override };
+function selectProfile(config: ProfileLaunchConfig, definitionSource: ProfileResolution["definitionSource"]): ProfileResolution {
+	const envProfile = process.env.PI_DELIVERY_PROFILE?.trim();
+	const activeProfile = readActiveProfile();
+	const profileNames = Object.keys(config.profiles);
+	const selectedProfile = envProfile || activeProfile || config.defaultProfile || profileNames[0];
+	if (!selectedProfile || !config.profiles[selectedProfile]) {
+		throw new Error(`Launch profile ${selectedProfile || "<none>"} is not defined in ${definitionSource}.`);
+	}
+	const source: ProfileResolution["source"] = envProfile
+		? "env"
+		: activeProfile
+			? "global-active-profile"
+			: config.defaultProfile
+				? definitionSource === "global-phase-launches" ? "global-default-profile" : "built-in-default-profile"
+				: definitionSource === "global-phase-launches" ? "global-first-profile" : "built-in-first-profile";
+	return { selectedProfile, source, definitionSource, envOverride: Boolean(envProfile) };
 }
 
-function loadLaunchConfigs(cwd: string, projectRoot?: string): Record<RunnablePhase, LaunchConfig[]> {
-	let config: Partial<Record<RunnablePhase, LaunchConfig[]>> = {};
-	for (const filePath of [
-		path.join(extensionDir(), PHASE_LAUNCHES_FILE),
-		path.join(userConfigDir(), PHASE_LAUNCHES_FILE),
-		path.join(projectConfigDir(cwd, projectRoot), PHASE_LAUNCHES_FILE),
-	]) {
-		config = mergeLaunchConfigs(config, readLaunchConfig(filePath));
-	}
-	for (const phase of Object.keys(PHASE_FILES) as RunnablePhase[]) {
-		if (!config[phase]?.length) throw new Error(`Launch config is missing required phase: ${phase}`);
-	}
-	return config as Record<RunnablePhase, LaunchConfig[]>;
+function loadLaunchConfigBundle(): { launches: Record<RunnablePhase, LaunchConfig[]>; profileResolution: ProfileResolution } {
+	const globalPath = path.join(userConfigDir(), PHASE_LAUNCHES_FILE);
+	const globalConfig = readProfileLaunchConfig(globalPath);
+	const definitionSource: ProfileResolution["definitionSource"] = globalConfig ? "global-phase-launches" : "built-in-phase-launches";
+	const config = globalConfig ?? readProfileLaunchConfig(path.join(extensionDir(), PHASE_LAUNCHES_FILE));
+	if (!config) throw new Error("Built-in launch config is missing.");
+	const profileResolution = selectProfile(config, definitionSource);
+	return { launches: config.profiles[profileResolution.selectedProfile], profileResolution };
 }
 
 function materializeConfig(prompt: Required<PromptConfig>, launches: LaunchConfig[]): PhaseConfig {
@@ -216,11 +283,21 @@ function materializeConfig(prompt: Required<PromptConfig>, launches: LaunchConfi
 	};
 }
 
-export function loadPhaseConfigs(cwd = process.cwd(), projectRoot?: string): Record<RunnablePhase, PhaseConfig> {
-	const launchConfig = loadLaunchConfigs(cwd, projectRoot);
+export function materializePhaseConfigs(launchConfig: Record<RunnablePhase, LaunchConfig[]>): Record<RunnablePhase, PhaseConfig> {
 	return Object.fromEntries(
-		(Object.keys(PHASE_FILES) as RunnablePhase[]).map((phase) => [phase, materializeConfig(promptConfigForPhase(phase, cwd, projectRoot), launchConfig[phase])]),
+		(Object.keys(PHASE_FILES) as RunnablePhase[]).map((phase) => [phase, materializeConfig(promptConfigForPhase(phase), launchConfig[phase])]),
 	) as Record<RunnablePhase, PhaseConfig>;
 }
 
-export const PHASE_CONFIG: Record<RunnablePhase, PhaseConfig> = loadPhaseConfigs();
+export function loadPhaseConfigBundle(): PhaseConfigBundle {
+	const { launches, profileResolution } = loadLaunchConfigBundle();
+	return {
+		launches,
+		profileResolution,
+		phases: materializePhaseConfigs(launches),
+	};
+}
+
+export function loadPhaseConfigs(_cwd = process.cwd(), _projectRoot?: string, launchConfig?: Record<RunnablePhase, LaunchConfig[]>): Record<RunnablePhase, PhaseConfig> {
+	return materializePhaseConfigs(launchConfig ?? loadLaunchConfigBundle().launches);
+}

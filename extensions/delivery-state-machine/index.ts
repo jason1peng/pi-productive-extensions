@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadPhaseConfigs, type LaunchConfig, type RunnablePhase } from "./phase-config";
+import { loadPhaseConfigBundle, loadPhaseConfigs, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
 type Phase =
 	| "IDLE"
@@ -146,6 +146,8 @@ interface DeliveryState {
 	acceptedRisks: string[];
 	history: HistoryEntry[];
 	steps: DeliveryStep[];
+	phaseLaunches?: Record<RunnablePhase, LaunchConfig[]>;
+	launchProfile?: ProfileResolution;
 	updatedAt: number;
 }
 
@@ -713,7 +715,7 @@ function nextAction(state: DeliveryState): NextAction {
 		};
 	}
 
-	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot)[state.phase];
+	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
 	const childPrompt = `${config.childPrompt(context)}${CHILD_PROMPT_FOOTER}`;
 	const launches = config.launches;
@@ -770,7 +772,7 @@ function recordPlannedSteps(state: DeliveryState, ctx: ExtensionContext, action:
 	const phase = action.phase;
 	const attempt = phaseAttemptForStep(state, phase);
 	const usageBefore = collectSessionUsage(ctx);
-	const fallbackLaunch = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot)[phase].launches[0];
+	const fallbackLaunch = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[phase].launches[0];
 	const launches = action.parallel?.length
 		? action.parallel
 		: [{ agent: action.agent ?? fallbackLaunch.agent, model: action.model, thinking: action.thinking, context: action.context, acceptance: action.acceptance }];
@@ -1533,6 +1535,9 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state.task = task;
 			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd));
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
+			const phaseConfigBundle = loadPhaseConfigBundle();
+			state.phaseLaunches = phaseConfigBundle.launches;
+			state.launchProfile = phaseConfigBundle.profileResolution;
 			state.artifactDir = createArtifactDir(ctx.cwd, task);
 			state.usageAtStart = collectSessionUsage(ctx);
 			refreshGitInfo(ctx, state);
@@ -1593,6 +1598,9 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state.task = params.task;
 			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd), params.maxRepairRounds, params.maxRounds);
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
+			const phaseConfigBundle = loadPhaseConfigBundle();
+			state.phaseLaunches = phaseConfigBundle.launches;
+			state.launchProfile = phaseConfigBundle.profileResolution;
 			state.artifactDir = createArtifactDir(ctx.cwd, params.task);
 			state.usageAtStart = collectSessionUsage(ctx);
 			refreshGitInfo(ctx, state);

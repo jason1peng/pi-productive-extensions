@@ -162,21 +162,42 @@ await runTest("/deliver reaches review with exactly the configured parallel revi
 	assert.match(action.reportInstruction, /artifact set to only that aggregate artifact path/);
 });
 
-await runTest("user launch override can force GPT-only models", async () => {
-	await withTemporaryUserExtensionFile("phase-launches.json", JSON.stringify({
-		IMPLEMENT: { agent: "worker", model: "openai/gpt-5.5" },
-		VERIFY: { agent: "fresh-verifier", model: "openai/gpt-5.5", thinking: "low", context: "fresh" },
+function profileLaunches(profiles: Record<string, Record<string, unknown>>, defaultProfile = Object.keys(profiles)[0]): string {
+	return JSON.stringify({ defaultProfile, profiles });
+}
+
+function fullProfile(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		IMPLEMENT: { agent: "worker", model: "profile/implement" },
+		VERIFY: { agent: "fresh-verifier", model: "profile/verify", thinking: "low", context: "fresh" },
 		REVIEW: [
-			{ agent: "reviewer", model: "openai/gpt-5.5" },
-			{ agent: "reviewer", model: "openai/gpt-5.5" },
+			{ agent: "reviewer", model: "profile/review-a" },
+			{ agent: "reviewer", model: "profile/review-b" },
 		],
-		CLOSE: { agent: "delegate", model: "openai/gpt-5.5", thinking: "low" },
-		RETRO: { agent: "delegate", model: "openai/gpt-5.5", thinking: "high" },
+		CLOSE: { agent: "delegate", model: "profile/close", thinking: "low" },
+		RETRO: { agent: "delegate", model: "profile/retro", thinking: "high" },
+		...overrides,
+	};
+}
+
+await runTest("global profile config can force GPT-only models", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		"gpt-only": fullProfile({
+			IMPLEMENT: { agent: "worker", model: "openai/gpt-5.5" },
+			VERIFY: { agent: "fresh-verifier", model: "openai/gpt-5.5", thinking: "low", context: "fresh" },
+			REVIEW: [
+				{ agent: "reviewer", model: "openai/gpt-5.5" },
+				{ agent: "reviewer", model: "openai/gpt-5.5" },
+			],
+			CLOSE: { agent: "delegate", model: "openai/gpt-5.5", thinking: "low" },
+			RETRO: { agent: "delegate", model: "openai/gpt-5.5", thinking: "high" },
+		}),
 	}), async () => {
 		const harness = createHarness();
 		await harness.tool("delivery_start", { task: "gpt-only launch override smoke" });
 		let next = await harness.tool("delivery_next");
 		assert.equal(next.details.next.model, "openai/gpt-5.5");
+		assert.equal(next.details.state.launchProfile.selectedProfile, "gpt-only");
 
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
@@ -185,7 +206,51 @@ await runTest("user launch override can force GPT-only models", async () => {
 	});
 });
 
-await runTest("project phase prompt override wins over user prompt and can replace one section", async () => {
+await runTest("active profile and env override select global profiles", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		cheap: fullProfile({ IMPLEMENT: { agent: "worker", model: "cheap/model" } }),
+		premium: fullProfile({ IMPLEMENT: { agent: "worker", model: "premium/model" } }),
+	}, "cheap"), async () => {
+		await withTemporaryUserExtensionFile("active-profile.json", JSON.stringify({ activeProfile: "premium" }), async () => {
+			let harness = createHarness();
+			let result = await harness.tool("delivery_start", { task: "active profile smoke" });
+			assert.equal(result.details.next.model, "premium/model");
+			assert.equal(result.details.state.launchProfile.source, "global-active-profile");
+
+			process.env.PI_DELIVERY_PROFILE = "cheap";
+			try {
+				harness = createHarness();
+				result = await harness.tool("delivery_start", { task: "env profile smoke" });
+				assert.equal(result.details.next.model, "cheap/model");
+				assert.equal(result.details.state.launchProfile.source, "env");
+				assert.equal(result.details.state.launchProfile.envOverride, true);
+			} finally {
+				delete process.env.PI_DELIVERY_PROFILE;
+			}
+		});
+	});
+});
+
+await runTest("delivery run pins profile selected at start", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		alpha: fullProfile({ IMPLEMENT: { agent: "worker", model: "alpha/implement" }, VERIFY: { agent: "fresh-verifier", model: "alpha/verify", thinking: "low", context: "fresh" } }),
+		beta: fullProfile({ IMPLEMENT: { agent: "worker", model: "beta/implement" }, VERIFY: { agent: "fresh-verifier", model: "beta/verify", thinking: "low", context: "fresh" } }),
+	}, "alpha"), async () => {
+		const harness = createHarness();
+		const started = await harness.tool("delivery_start", { task: "profile pinning smoke" });
+		assert.equal(started.details.next.model, "alpha/implement");
+
+		await withTemporaryUserExtensionFile("active-profile.json", JSON.stringify({ activeProfile: "beta" }), async () => {
+			await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+			const next = await harness.tool("delivery_next");
+			assert.equal(next.details.next.phase, "VERIFY");
+			assert.equal(next.details.next.model, "alpha/verify");
+			assert.equal(next.details.state.launchProfile.selectedProfile, "alpha");
+		});
+	});
+});
+
+await runTest("user phase prompt override wins and project prompt override is ignored", async () => {
 	await withTemporaryUserExtensionFile("phases/verify.md", `---\nphase: VERIFY\n---\n\n## Child prompt\n\nUSER VERIFY PROMPT {{task}}\n`, async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-prompt-"));
 		try {
@@ -198,8 +263,8 @@ await runTest("project phase prompt override wins over user prompt and can repla
 			await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 			const next = await harness.tool("delivery_next");
 
-			assert.match(next.details.next.childPrompt, /PROJECT VERIFY PROMPT prompt override smoke/);
-			assert.doesNotMatch(next.details.next.childPrompt, /USER VERIFY PROMPT/);
+			assert.match(next.details.next.childPrompt, /USER VERIFY PROMPT prompt override smoke/);
+			assert.doesNotMatch(next.details.next.childPrompt, /PROJECT VERIFY PROMPT/);
 			assert.match(next.details.next.orchestratorInstruction, /Launch the configured verifier/);
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
@@ -207,9 +272,9 @@ await runTest("project phase prompt override wins over user prompt and can repla
 	});
 });
 
-await runTest("project launch override wins over user launch override", async () => {
-	await withTemporaryUserExtensionFile("phase-launches.json", JSON.stringify({
-		IMPLEMENT: { agent: "worker", model: "user/model" },
+await runTest("project launch override is ignored in favor of global profile config", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		global: fullProfile({ IMPLEMENT: { agent: "worker", model: "global/model" } }),
 	}), async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-launch-"));
 		try {
@@ -221,14 +286,14 @@ await runTest("project launch override wins over user launch override", async ()
 
 			const harness = createHarness({ cwd });
 			const result = await harness.tool("delivery_start", { task: "launch precedence smoke" });
-			assert.equal(result.details.next.model, "project/model");
+			assert.equal(result.details.next.model, "global/model");
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 });
 
-await runTest("project prompt and launch overrides are discovered from git root when cwd is a subdirectory", async () => {
+await runTest("project prompt and launch overrides are ignored when cwd is a git subdirectory", async () => {
 	const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-git-root-"));
 	try {
 		execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
@@ -244,40 +309,42 @@ await runTest("project prompt and launch overrides are discovered from git root 
 		const harness = createHarness({ cwd });
 		let result = await harness.tool("delivery_start", { task: "subdirectory override smoke" });
 		assert.equal(result.details.state.gitRoot, fs.realpathSync(repoRoot));
-		assert.equal(result.details.next.model, "repo-root/model");
+		assert.notEqual(result.details.next.model, "repo-root/model");
 
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		result = await harness.tool("delivery_next");
-		assert.match(result.details.next.childPrompt, /REPO ROOT VERIFY PROMPT subdirectory override smoke/);
+		assert.doesNotMatch(result.details.next.childPrompt, /REPO ROOT VERIFY PROMPT/);
 	} finally {
 		fs.rmSync(repoRoot, { recursive: true, force: true });
 	}
 });
 
-await runTest("phase markdown launch fields are rejected", async () => {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-invalid-phase-"));
-	try {
-		const projectPhasesDir = path.join(cwd, ".pi", "delivery-state-machine", "phases");
-		fs.mkdirSync(projectPhasesDir, { recursive: true });
-		fs.writeFileSync(path.join(projectPhasesDir, "implement.md"), `---\nphase: IMPLEMENT\nmodel: openai/gpt-5.5\n---\n`, "utf8");
-		const harness = createHarness({ cwd });
+await runTest("phase markdown launch fields are rejected for user prompt overrides", async () => {
+	await withTemporaryUserExtensionFile("phases/implement.md", `---\nphase: IMPLEMENT\nmodel: openai/gpt-5.5\n---\n`, async () => {
+		const harness = createHarness();
 		await assert.rejects(() => harness.tool("delivery_start", { task: "invalid phase frontmatter smoke" }), /must not declare model/);
-	} finally {
-		fs.rmSync(cwd, { recursive: true, force: true });
-	}
+	});
 });
 
-await runTest("invalid launch config is rejected", async () => {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-invalid-launch-"));
-	try {
-		const projectConfigDir = path.join(cwd, ".pi", "delivery-state-machine");
-		fs.mkdirSync(projectConfigDir, { recursive: true });
-		fs.writeFileSync(path.join(projectConfigDir, "phase-launches.json"), JSON.stringify({ VERIFY: { agent: "fresh-verifier", thinking: "extreme" } }), "utf8");
-		const harness = createHarness({ cwd });
-		await assert.rejects(() => harness.tool("delivery_start", { task: "invalid launch config smoke" }), /invalid VERIFY\[0\]\.thinking=extreme/);
-	} finally {
-		fs.rmSync(cwd, { recursive: true, force: true });
-	}
+await runTest("legacy non-profile global launch config is rejected", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", JSON.stringify({ VERIFY: { agent: "fresh-verifier", thinking: "extreme" } }), async () => {
+		const harness = createHarness();
+		await assert.rejects(() => harness.tool("delivery_start", { task: "invalid launch config smoke" }), /must use profile-aware shape/);
+	});
+});
+
+await runTest("profile launch config missing a phase is rejected", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", JSON.stringify({
+		defaultProfile: "broken",
+		profiles: {
+			broken: {
+				IMPLEMENT: { agent: "worker" },
+			},
+		},
+	}), async () => {
+		const harness = createHarness();
+		await assert.rejects(() => harness.tool("delivery_start", { task: "missing phase smoke" }), /missing required phase: VERIFY/);
+	});
 });
 
 await runTest("artifact root can be configured from project .pi config", async () => {

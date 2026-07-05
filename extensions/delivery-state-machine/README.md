@@ -39,7 +39,7 @@ The bundled verifier is instructed to be read-only for project/source files. It 
 
 ## Delivery configuration
 
-Delivery run artifacts are stored under `~/.pi/delivery-run` by default, and runnable phases default to 3 max rounds. Override those defaults with either config file:
+Delivery run artifacts are stored under `~/.pi/delivery-run/projects/<project-id>/runs/<run-id>` by default, and runnable phases default to 3 max rounds. Override the artifact root and round defaults with either config file:
 
 - Global: `~/.pi/agent/extensions/delivery-state-machine.json`
 - Project-local: `<repo>/.pi/delivery-state-machine.json` (overrides global)
@@ -57,7 +57,7 @@ Delivery run artifacts are stored under `~/.pi/delivery-run` by default, and run
 }
 ```
 
-`artifactRoot` supports `~`, `${home}`, and `${cwd}`. Relative paths in project config resolve against the project cwd; relative paths in global config resolve against `~/.pi/agent`. For one-off runs, `PI_DELIVERY_ARTIFACT_ROOT` overrides both config files and resolves relative paths against the current cwd.
+`artifactRoot` supports `~`, `${home}`, and `${cwd}`. Relative paths in project config resolve against the project cwd; relative paths in global config resolve against `~/.pi/agent`. For one-off runs, `PI_DELIVERY_ARTIFACT_ROOT` overrides both config files and resolves relative paths against the current cwd. Every artifact root uses the same project layout: `<artifactRoot>/projects/<project-id>/runs/<run-id>`. The extension writes `<artifactRoot>/projects/<project-id>/project.json` with local project metadata for the report viewer.
 
 `maxRounds` supports `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`. `IMPLEMENT`, `VERIFY`, and `REVIEW` currently bound repair loops; `CLOSE` and `RETRO` are recorded for phase-specific defaults and future loop support. The legacy `maxRepairRounds` key is still accepted as a config or `delivery_start` parameter and applies the same value to every phase.
 
@@ -122,7 +122,7 @@ Phase files do not configure subagent launch settings or tools. Frontmatter may 
 
 `delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. When `phase-launches.json` configures multiple launches for a phase, `delivery_next` also returns `details.next.parallel` containing exactly those configured launches. Each parallel entry has a unique child prompt and artifact path instruction. The parent should launch all entries concurrently, save child artifacts separately, and call `delivery_report` once with the aggregate result.
 
-`delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. The report lists every planned/reported phase step in order, including parallel reviewer rows, agent/model, verdict, artifact link, best-effort cost attribution, failure overview, repair action, retro critical fixes, phase counts, and usage totals. It estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. When a delivery was started after usage baseline tracking existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. Cost attribution is explicitly labeled as best-effort, phase-aggregate, or unavailable; zero cost is not inferred when no usage-bearing session data exists. When a delivery reaches `DONE`, final `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically and refresh `00-delivery-summary.md`.
+`delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. The report lists every planned/reported phase step in order, including parallel reviewer rows, agent/model, verdict, artifact link, best-effort cost attribution, failure overview, repair action, retro critical fixes, phase counts, and usage totals. It estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. When a delivery was started after usage baseline tracking existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. Cost attribution is explicitly labeled as best-effort, phase-aggregate, or unavailable; zero cost is not inferred when no usage-bearing session data exists. When a delivery reaches `DONE`, final `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically and refresh `00-delivery-summary.md`. Structured reports now use `schemaVersion: 2` and include project metadata plus the pinned launch profile used for the run.
 
 Phase markdown format:
 

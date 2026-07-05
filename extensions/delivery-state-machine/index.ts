@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -71,8 +72,19 @@ interface ReportUsageSnapshot {
 	attribution: UsageAttribution;
 }
 
-interface DeliveryReportJsonV1 {
+interface ProjectMetadata {
 	schemaVersion: 1;
+	projectId: string;
+	name: string;
+	root: string;
+	gitRoot?: string;
+	gitRemote?: string;
+	createdAt: string;
+	lastSeenAt: string;
+}
+
+interface DeliveryReportJsonV2 {
+	schemaVersion: 2;
 	source: "delivery-state-machine";
 	id: string;
 	task: string | null;
@@ -82,6 +94,8 @@ interface DeliveryReportJsonV1 {
 	cwd?: string;
 	gitBranch?: string;
 	gitRoot?: string;
+	project?: ProjectMetadata;
+	launchProfile?: ProfileResolution;
 	createdAt?: number;
 	updatedAt: number;
 	generatedAt: number;
@@ -148,6 +162,7 @@ interface DeliveryState {
 	steps: DeliveryStep[];
 	phaseLaunches?: Record<RunnablePhase, LaunchConfig[]>;
 	launchProfile?: ProfileResolution;
+	project?: ProjectMetadata;
 	updatedAt: number;
 }
 
@@ -403,6 +418,19 @@ function slugifyTask(task: string): string {
 	return slug || "task";
 }
 
+function slugifyPathSegment(value: string, fallback: string): string {
+	const slug = value
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 80);
+	return slug || fallback;
+}
+
+function shortHash(value: string): string {
+	return createHash("sha256").update(value).digest("hex").slice(0, 8);
+}
+
 function datePrefix(now = new Date()): string {
 	const dd = String(now.getDate()).padStart(2, "0");
 	const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -500,13 +528,55 @@ function resolveMaxPhaseRounds(config: DeliveryConfig, maxRepairRounds?: unknown
 	};
 }
 
-function createArtifactDir(cwd: string, task: string): string {
+function projectRootForState(cwd: string, gitRoot?: string): string {
+	return gitRoot || cwd;
+}
+
+function createProjectMetadata(cwd: string, gitRoot?: string): ProjectMetadata {
+	const root = projectRootForState(cwd, gitRoot);
+	const normalizedRoot = fs.existsSync(root) ? fs.realpathSync(root) : path.resolve(root);
+	const name = path.basename(normalizedRoot) || "project";
+	const projectId = `${slugifyPathSegment(name, "project")}-${shortHash(normalizedRoot)}`;
+	const gitRemote = gitRoot ? gitOutput(cwd, ["config", "--get", "remote.origin.url"]) : undefined;
+	const now = new Date().toISOString();
+	return {
+		schemaVersion: 1,
+		projectId,
+		name,
+		root: normalizedRoot,
+		...(gitRoot ? { gitRoot: normalizedRoot } : {}),
+		...(gitRemote ? { gitRemote } : {}),
+		createdAt: now,
+		lastSeenAt: now,
+	};
+}
+
+function writeProjectMetadata(projectDir: string, metadata: ProjectMetadata) {
+	fs.mkdirSync(projectDir, { recursive: true });
+	const projectJsonPath = path.join(projectDir, "project.json");
+	let existing: ProjectMetadata | undefined;
+	if (fs.existsSync(projectJsonPath)) {
+		try {
+			existing = JSON.parse(fs.readFileSync(projectJsonPath, "utf8")) as ProjectMetadata;
+		} catch {
+			// Replace malformed project metadata with the current deterministic metadata.
+		}
+	}
+	const written = { ...metadata, createdAt: existing?.createdAt ?? metadata.createdAt, lastSeenAt: metadata.lastSeenAt };
+	Object.assign(metadata, written);
+	writeJsonAtomic(projectJsonPath, written);
+}
+
+function createArtifactDir(cwd: string, task: string, project: ProjectMetadata): string {
 	const root = resolveArtifactRoot(cwd, loadDeliveryConfig(cwd));
+	const projectDir = path.join(root, "projects", project.projectId);
+	writeProjectMetadata(projectDir, project);
+	const runsDir = path.join(projectDir, "runs");
 	const baseName = `${datePrefix()}-${slugifyTask(task)}`;
-	let candidate = path.join(root, baseName);
+	let candidate = path.join(runsDir, baseName);
 	let suffix = 2;
 	while (fs.existsSync(candidate)) {
-		candidate = path.join(root, `${baseName}-${suffix++}`);
+		candidate = path.join(runsDir, `${baseName}-${suffix++}`);
 	}
 	fs.mkdirSync(candidate, { recursive: true });
 	return candidate;
@@ -1378,13 +1448,13 @@ function buildStructuredReport(
 	summaryMarkdownPath: string,
 	generatedAt: number,
 	usageSnapshot: ReportUsageSnapshot,
-): DeliveryReportJsonV1 {
+): DeliveryReportJsonV2 {
 	const plainState = cloneState(state);
 	const firstHistoryTimestamp = plainState.history.length
 		? Math.min(...plainState.history.map((entry) => entry.timestamp).filter((timestamp) => Number.isFinite(timestamp)))
 		: undefined;
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		source: "delivery-state-machine",
 		id: path.basename(plainState.artifactDir ?? path.dirname(summaryMarkdownPath)),
 		task: plainState.task ?? null,
@@ -1394,6 +1464,8 @@ function buildStructuredReport(
 		...(plainState.cwd ? { cwd: plainState.cwd } : {}),
 		...(plainState.gitBranch ? { gitBranch: plainState.gitBranch } : {}),
 		...(plainState.gitRoot ? { gitRoot: plainState.gitRoot } : {}),
+		...(plainState.project ? { project: plainState.project } : {}),
+		...(plainState.launchProfile ? { launchProfile: plainState.launchProfile } : {}),
 		...(firstHistoryTimestamp !== undefined ? { createdAt: firstHistoryTimestamp } : {}),
 		updatedAt: plainState.updatedAt,
 		generatedAt,
@@ -1538,9 +1610,10 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			const phaseConfigBundle = loadPhaseConfigBundle();
 			state.phaseLaunches = phaseConfigBundle.launches;
 			state.launchProfile = phaseConfigBundle.profileResolution;
-			state.artifactDir = createArtifactDir(ctx.cwd, task);
-			state.usageAtStart = collectSessionUsage(ctx);
 			refreshGitInfo(ctx, state);
+			state.project = createProjectMetadata(ctx.cwd, state.gitRoot);
+			state.artifactDir = createArtifactDir(ctx.cwd, task, state.project);
+			state.usageAtStart = collectSessionUsage(ctx);
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
 			state.reviewRound = 1;
@@ -1601,9 +1674,10 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			const phaseConfigBundle = loadPhaseConfigBundle();
 			state.phaseLaunches = phaseConfigBundle.launches;
 			state.launchProfile = phaseConfigBundle.profileResolution;
-			state.artifactDir = createArtifactDir(ctx.cwd, params.task);
-			state.usageAtStart = collectSessionUsage(ctx);
 			refreshGitInfo(ctx, state);
+			state.project = createProjectMetadata(ctx.cwd, state.gitRoot);
+			state.artifactDir = createArtifactDir(ctx.cwd, params.task, state.project);
+			state.usageAtStart = collectSessionUsage(ctx);
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
 			state.reviewRound = 1;

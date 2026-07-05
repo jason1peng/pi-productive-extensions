@@ -357,10 +357,45 @@ await runTest("artifact root can be configured from project .pi config", async (
 		const harness = createHarness({ cwd });
 		const result = await harness.tool("delivery_start", { task: "custom artifact root smoke" });
 		const artifactDir = result.details.state.artifactDir as string;
-		assert.equal(path.dirname(artifactDir), configuredRoot);
+		const project = result.details.state.project;
+		assert.ok(project.projectId);
+		assert.equal(path.relative(configuredRoot, artifactDir).startsWith(path.join("projects", project.projectId, "runs")), true);
 		assert.equal(fs.existsSync(artifactDir), true);
+		assert.equal(fs.existsSync(path.join(configuredRoot, "projects", project.projectId, "project.json")), true);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("project layout uses env artifact root and avoids same-folder-name collisions", async () => {
+	const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-artifacts-"));
+	const parentA = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-parent-a-"));
+	const parentB = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-parent-b-"));
+	const cwdA = path.join(parentA, "app");
+	const cwdB = path.join(parentB, "app");
+	fs.mkdirSync(cwdA, { recursive: true });
+	fs.mkdirSync(cwdB, { recursive: true });
+	process.env.PI_DELIVERY_ARTIFACT_ROOT = sharedRoot;
+	try {
+		const harnessA = createHarness({ cwd: cwdA });
+		const resultA = await harnessA.tool("delivery_start", { task: "env root project layout a" });
+		const harnessB = createHarness({ cwd: cwdB });
+		const resultB = await harnessB.tool("delivery_start", { task: "env root project layout b" });
+
+		const projectA = resultA.details.state.project;
+		const projectB = resultB.details.state.project;
+		assert.equal(projectA.name, "app");
+		assert.equal(projectB.name, "app");
+		assert.notEqual(projectA.projectId, projectB.projectId);
+		assert.equal(path.relative(sharedRoot, resultA.details.state.artifactDir).startsWith(path.join("projects", projectA.projectId, "runs")), true);
+		assert.equal(path.relative(sharedRoot, resultB.details.state.artifactDir).startsWith(path.join("projects", projectB.projectId, "runs")), true);
+		assert.equal(fs.existsSync(path.join(sharedRoot, "projects", projectA.projectId, "project.json")), true);
+		assert.equal(fs.existsSync(path.join(sharedRoot, "projects", projectB.projectId, "project.json")), true);
+	} finally {
+		delete process.env.PI_DELIVERY_ARTIFACT_ROOT;
+		fs.rmSync(sharedRoot, { recursive: true, force: true });
+		fs.rmSync(parentA, { recursive: true, force: true });
+		fs.rmSync(parentB, { recursive: true, force: true });
 	}
 });
 
@@ -453,7 +488,7 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	assert.match(report, /added regression coverage/);
 	assert.match(report, /## Failure overview/);
 	assert.match(report, /unavailable/);
-	assert.equal(structuredReport.schemaVersion, 1);
+	assert.equal(structuredReport.schemaVersion, 2);
 	assert.equal(structuredReport.source, "delivery-state-machine");
 	assert.equal(structuredReport.id, path.basename(artifactDir));
 	assert.equal(structuredReport.task, "journey report failure repair smoke");
@@ -461,6 +496,9 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	assert.equal(structuredReport.status, "DONE");
 	assert.equal(structuredReport.artifactDir, artifactDir);
 	assert.equal(structuredReport.summaryMarkdownPath, reportPath);
+	assert.equal(structuredReport.project.projectId, result.details.state.project.projectId);
+	assert.equal(structuredReport.project.name, result.details.state.project.name);
+	assert.equal(structuredReport.launchProfile.selectedProfile, result.details.state.launchProfile.selectedProfile);
 	assert.ok(Array.isArray(structuredReport.steps));
 	assert.ok(structuredReport.steps.some((step: any) => step.phase === "VERIFY" && step.verdict === "FAIL"));
 	assert.ok(Array.isArray(structuredReport.history));

@@ -97,8 +97,17 @@ If no CSRF token is configured, the server generates one at startup and exposes 
 
 ## Behavior
 
+- Scans project-layout report roots: `<reportRoot>/projects/<project-id>/runs/<run-id>`.
+- Does not scan old flat report directories directly. Migrate them once with:
+
+  ```bash
+  npm run report-viewer:migrate -- ~/.pi/delivery-run          # dry-run
+  npm run report-viewer:migrate -- ~/.pi/delivery-run --apply  # copy into project layout
+  ```
+
+  The helper preserves all run files, including `.report-viewer/` metadata, and upgrades copied `delivery-report.json` files to schemaVersion 2 when possible.
 - Reads extension-owned `delivery-report.json` first.
-- Falls back to legacy `00-delivery-summary.md` when JSON is missing.
+- Falls back to `00-delivery-summary.md` when JSON is missing inside a project-layout run directory.
 - Stores app-owned metadata under each report directory in `.report-viewer/`.
 - Rejects artifact path traversal and symlink escapes.
 - Requires `x-report-viewer-token` for POST API routes.

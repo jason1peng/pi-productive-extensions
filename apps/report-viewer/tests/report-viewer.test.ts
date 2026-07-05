@@ -303,6 +303,10 @@ await runTest("reports page renders delivery profile selector", async () => {
 				assert.match(html, /Environment override active/);
 				assert.match(html, /<option value="premium"/);
 				assert.match(html, /<option value="cheap" selected/);
+				assert.match(html, /Selected profile setup/);
+				assert.match(html, /IMPLEMENT/);
+				assert.match(html, /cheap-impl/);
+				assert.match(html, /cheap-verify/);
 			});
 		});
 	} finally {

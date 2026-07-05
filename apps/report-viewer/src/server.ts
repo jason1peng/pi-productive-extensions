@@ -809,12 +809,34 @@ function reportSignalsHtml(report: ReportSummary): string {
 	return `<div class="signal-list" aria-label="Report highlights">${signals.map((signal) => `<span class="badge ${signal.badge}">${escapeHtml(signal.label)}</span>`).join(" ")}</div>`;
 }
 
+function launchSummaryHtml(launch: unknown): string {
+	if (!launch || typeof launch !== "object" || Array.isArray(launch)) return `<code>${escapeHtml(JSON.stringify(launch))}</code>`;
+	const record = launch as Record<string, unknown>;
+	const parts = ["agent", "model", "thinking", "context"]
+		.filter((key) => record[key] !== undefined)
+		.map((key) => `<span><span class="label">${escapeHtml(key)}</span> <code>${escapeHtml(String(record[key]))}</code></span>`);
+	return parts.length ? parts.join("<br>") : `<code>${escapeHtml(JSON.stringify(record))}</code>`;
+}
+
+function selectedProfileSetupHtml(state: DeliveryProfileState): string {
+	const definition = state.profileDefinitions[state.activeProfile];
+	if (!definition) return `<p class="muted">No setup details available for selected profile.</p>`;
+	const rows = DELIVERY_PHASES.map((phase) => {
+		const phaseLaunch = definition[phase];
+		const launchHtml = Array.isArray(phaseLaunch)
+			? phaseLaunch.map((launch, index) => `<div><strong>${index + 1}.</strong> ${launchSummaryHtml(launch)}</div>`).join("")
+			: launchSummaryHtml(phaseLaunch);
+		return `<tr><th>${escapeHtml(phase)}</th><td>${launchHtml}</td></tr>`;
+	}).join("");
+	return `<details open><summary>Selected profile setup</summary><div class="wide-table"><table><tbody>${rows}</tbody></table></div></details>`;
+}
+
 function deliveryProfilePanelHtml(): string {
 	try {
 		const state = loadDeliveryProfileState();
 		const options = state.profiles.map((profile) => `<option value="${escapeHtml(profile)}" ${profile === state.activeProfile ? "selected" : ""}>${escapeHtml(profile)}</option>`).join("");
 		const override = state.envOverride ? `<p><span class="badge warn">Environment override active</span> <span class="muted"><code>PI_DELIVERY_PROFILE=${escapeHtml(state.envProfile ?? "")}</code> is effective; saving here changes the global default for future runs without that env override.</span></p>` : "";
-		return `<section class="panel" id="delivery-profile"><h2>Delivery model profile</h2><p>Active global profile: <span class="badge">${escapeHtml(state.activeProfile)}</span></p>${override}<form class="filters" id="delivery-profile-form"><label>Profile <select name="activeProfile">${options}</select></label><button type="submit">Switch global profile</button></form><p class="muted">Profiles are read from ${escapeHtml(state.definitionSource === "global-phase-launches" ? "global config" : "built-in defaults")}. This writes only <code>active-profile.json</code> under the pi agent directory; project files are never edited.</p><div class="muted" id="delivery-profile-message"></div><script>document.getElementById('delivery-profile-form')?.addEventListener('submit',async(event)=>{event.preventDefault();const form=event.currentTarget;const message=document.getElementById('delivery-profile-message');const token=document.querySelector('meta[name="report-viewer-csrf-token"]').content;const activeProfile=form.elements.activeProfile.value;message.textContent='Saving…';const response=await fetch('/api/delivery-profiles/global/active',{method:'POST',headers:{'content-type':'application/json','x-report-viewer-token':token},body:JSON.stringify({activeProfile})});if(response.ok){const body=await response.json();message.textContent='Saved global profile: '+body.savedActiveProfile+(body.envOverride?' (environment override is still effective)':'');}else{const body=await response.json().catch(()=>({error:'Save failed'}));message.textContent='Save failed: '+body.error;}});</script></section>`;
+		return `<section class="panel" id="delivery-profile"><h2>Delivery model profile</h2><p>Active global profile: <span class="badge">${escapeHtml(state.activeProfile)}</span></p>${override}<form class="filters" id="delivery-profile-form"><label>Profile <select name="activeProfile">${options}</select></label><button type="submit">Switch global profile</button></form>${selectedProfileSetupHtml(state)}<p class="muted">Profiles are read from ${escapeHtml(state.definitionSource === "global-phase-launches" ? "global config" : "built-in defaults")}. This writes only <code>active-profile.json</code> under the pi agent directory; project files are never edited.</p><div class="muted" id="delivery-profile-message"></div><script>document.getElementById('delivery-profile-form')?.addEventListener('submit',async(event)=>{event.preventDefault();const form=event.currentTarget;const message=document.getElementById('delivery-profile-message');const token=document.querySelector('meta[name="report-viewer-csrf-token"]').content;const activeProfile=form.elements.activeProfile.value;message.textContent='Saving…';const response=await fetch('/api/delivery-profiles/global/active',{method:'POST',headers:{'content-type':'application/json','x-report-viewer-token':token},body:JSON.stringify({activeProfile})});if(response.ok){const body=await response.json();message.textContent='Saved global profile: '+body.savedActiveProfile+(body.envOverride?' (environment override is still effective)':'');}else{const body=await response.json().catch(()=>({error:'Save failed'}));message.textContent='Save failed: '+body.error;}});</script></section>`;
 	} catch (error) {
 		return `<section class="panel" id="delivery-profile"><h2>Delivery model profile</h2><p><span class="badge bad">Unavailable</span></p><p class="muted">${escapeHtml(error instanceof Error ? error.message : String(error))}</p></section>`;
 	}

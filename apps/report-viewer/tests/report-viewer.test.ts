@@ -7,6 +7,7 @@ import {
 	createServer,
 	decideImprovement,
 	deliveryAgentDir,
+	groupReportsByProject,
 	loadConfig,
 	loadDeliveryProfileState,
 	loadReport,
@@ -38,6 +39,8 @@ function projectRunDir(root: string, projectId = "project-a-12345678", runId = "
 		projectId,
 		name: projectId.replace(/-[a-f0-9]{8}$/, ""),
 		root: path.join(os.tmpdir(), projectId),
+		gitRoot: path.join(os.tmpdir(), projectId),
+		gitRemote: `git@example.com:${projectId}.git`,
 		createdAt: "2026-07-05T12:00:00.000Z",
 		lastSeenAt: "2026-07-05T12:00:00.000Z",
 	}, null, 2)}\n`, "utf8");
@@ -373,6 +376,70 @@ await runTest("scanReports prefers JSON and keeps IDs unique across roots", () =
 	}
 });
 
+await runTest("groupReportsByProject groups runs by project and sorts by latest run", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-grouping-"));
+	try {
+		writeJsonReport(projectRunDir(root, "project-alpha-11111111", "old"), "alpha old task", { updatedAt: 1000 });
+		writeJsonReport(projectRunDir(root, "project-alpha-11111111", "new"), "alpha new task", { updatedAt: 3000 });
+		writeJsonReport(projectRunDir(root, "project-beta-22222222", "latest"), "beta latest task", { updatedAt: 5000 });
+		const groups = groupReportsByProject(scanReports(configFor([root])));
+		assert.deepEqual(groups.map((group) => group.projectId), ["project-beta-22222222", "project-alpha-11111111"]);
+		assert.equal(groups[0].runCount, 1);
+		assert.equal(groups[1].runCount, 2);
+		assert.deepEqual(groups[1].reports.map((report) => report.task), ["alpha new task", "alpha old task"]);
+		assert.equal(groups[1].projectName, "project-alpha");
+		assert.equal(groups[1].gitRemote, "git@example.com:project-alpha-11111111.git");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("reports page groups after applying filters", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-filtered-groups-"));
+	try {
+		writeJsonReport(projectRunDir(root, "project-alpha-11111111", "alpha"), "alpha visible task", { updatedAt: 1000 });
+		writeJsonReport(projectRunDir(root, "project-beta-22222222", "beta"), "beta hidden task", { updatedAt: 2000 });
+		await withServer(configFor([root]), async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports?task=alpha`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.match(html, /class="section-card project-group"/);
+			assert.match(html, /project-alpha/);
+			assert.match(html, /alpha visible task/);
+			assert.doesNotMatch(html, /project-beta/);
+			assert.doesNotMatch(html, /beta hidden task/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("reports page renders malformed unknown project metadata safely", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-malformed-project-"));
+	try {
+		const projectId = "unknown-project-33333333";
+		const runDir = path.join(root, "projects", projectId, "runs", "run");
+		fs.mkdirSync(runDir, { recursive: true });
+		fs.writeFileSync(path.join(root, "projects", projectId, "project.json"), "{not-json", "utf8");
+		writeJsonReport(runDir, "unknown project task", { project: undefined, updatedAt: 1234 });
+		const reports = scanReports(configFor([root]));
+		assert.equal(reports.length, 1);
+		assert.equal(reports[0].projectId, projectId);
+		assert.equal(reports[0].projectMetadataSource, "inferred");
+		await withServer(configFor([root]), async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.match(html, /Unknown project/);
+			assert.match(html, /Project id: <code>unknown-project-33333333<\/code>/);
+			assert.match(html, /Metadata incomplete/);
+			assert.match(html, /unknown project task/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("loadReport reads structured JSON and renders escaped Markdown", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-load-"));
 	try {
@@ -439,6 +506,9 @@ await runTest("UI routes render report list, report detail, and artifact content
 			const listHtml = await list.text();
 			assert.match(listHtml, /ui route task/);
 			assert.match(listHtml, /Apply filters/);
+			assert.match(listHtml, /class="section-card project-group"/);
+			assert.match(listHtml, /Project id: <code>project-a-12345678<\/code>/);
+			assert.match(listHtml, /Remote: git@example.com:project-a-12345678\.git/);
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
 			const detailHtml = await detail.text();

@@ -92,7 +92,7 @@ If no CSRF token is configured, the server generates one at startup and exposes 
 
 ## Routes
 
-- `/reports` — local report list UI, including the global delivery profile selector.
+- `/reports` — local report list UI, including the global delivery profile selector and read-only project-grouped report sections.
 - `/api/delivery-profiles/global` — effective built-in/global delivery profile definitions and active selection.
 - `/api/delivery-profiles/global/active` — CSRF-protected POST endpoint that atomically writes the global `active-profile.json` selection.
 - `/reports/:viewerReportId` — local report detail UI.
@@ -101,7 +101,10 @@ If no CSRF token is configured, the server generates one at startup and exposes 
 
 ## Behavior
 
-- Scans project-layout report roots: `<reportRoot>/projects/<project-id>/runs/<run-id>`.
+- Scans project-layout report roots: `<reportRoot>/projects/<project-id>/runs/<run-id>` and reads `<reportRoot>/projects/<project-id>/project.json` when available.
+- Groups `/reports` by project after applying filters, with each group showing project name/id, root or git root, git remote, visible run count, and latest run timestamp when that metadata is available.
+- Treats project grouping as read-only UI organization; it does not add project-level profile/model setup or write to project roots.
+- Shows incomplete or malformed project metadata as an explicit unknown/inferred project group instead of failing the report list. These buckets commonly come from migrated legacy flat reports.
 - Does not scan old flat report directories directly. Migrate them once with:
 
   ```bash

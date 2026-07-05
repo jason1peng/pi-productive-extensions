@@ -4,9 +4,21 @@
 
 Add named delivery launch profiles and a report-viewer profile selector so users can switch model setup without editing JSON by hand. Profile selection and profile definitions are **global-only** for this implementation. Project metadata and project-grouped report folders are still introduced for report organization and future features, but not for project-level model/profile configuration.
 
+## Implementation status
+
+Status: **Complete** as of PR #13, with one small follow-up PR #14 opened for profile setup display polish.
+
+| Area | Status | PR | Notes |
+|---|---|---|---|
+| Checkpoint 1: Global profile resolver | Done | #11 | Global/built-in profile-only launch config, active profile/env override, and delivery-start profile pinning. |
+| Checkpoint 2: Project report layout, schema v2, viewer scan | Done | #12 | Project-scoped report layout, `project.json`, schemaVersion 2 report metadata, nested viewer scan/routing. |
+| Legacy flat report migration helper | Done | #12 | Implemented in Checkpoint 2 after verification required an upgrade path before removing flat-layout scanning. Existing local reports were copied into project layout on 2026-07-05. |
+| Checkpoint 3: Viewer global profile selector | Done | #13 | Global profile API/UI, CSRF-protected active-profile writes, env override display, built-in/global profile handling. |
+| Profile setup display polish | Open | #14 | Shows selected profile per-phase agent/model/thinking/context in the report viewer. |
+
 ## Current context
 
-- Delivery launch settings currently come from `phase-launches.json` layered as built-in, user/global, then project-local; this plan intentionally removes project-local launch/profile overrides to make global model setup the single source of truth.
+- Delivery launch settings previously came from `phase-launches.json` layered as built-in, user/global, then project-local; this plan intentionally removes project-local launch/profile overrides to make global model setup the single source of truth.
 - Delivery artifacts are stored globally under `~/.pi/delivery-run` by default.
 - The report viewer scans global report roots and already reads structured `delivery-report.json` with legacy Markdown fallback.
 - The viewer does not currently know all projects except through report data.
@@ -309,6 +321,8 @@ Implement this plan as independent delivery checkpoints so each PR can clearly r
 
 ### PR 1 / Checkpoint 1: Global profile resolver
 
+Status: **Done in PR #11**.
+
 Goal: make delivery launch/model setup global-profile-only and pin the resolved launches for each run.
 
 Scope:
@@ -331,6 +345,8 @@ Exit criteria:
 
 ### PR 2 / Checkpoint 2: Project report layout, schema v2, and viewer scan
 
+Status: **Done in PR #12**.
+
 Goal: organize reports by project without making reports disappear from the viewer.
 
 Scope:
@@ -351,6 +367,8 @@ Exit criteria:
 - Existing artifact path traversal protections still pass under nested layout.
 
 ### PR 3 / Checkpoint 3: Viewer global profile selector
+
+Status: **Done in PR #13**.
 
 Goal: let the report viewer switch the global active delivery profile safely.
 
@@ -373,6 +391,8 @@ Exit criteria:
 
 ### Optional PR 4 / Checkpoint 4: Legacy flat report migration helper
 
+Status: **Done in PR #12 instead of a separate PR**. The verifier required migration support before accepting the removal of normal flat-layout scanning.
+
 Goal: help users move old flat reports into the project layout without requiring permanent flat-layout scanning.
 
 Scope:
@@ -390,7 +410,7 @@ Exit criteria:
 - Unknown/stale project roots go to an explicit unknown-project bucket with warnings.
 - Existing destinations are skipped unless `--force` is passed.
 
-This checkpoint is optional. If it is too large or token-consuming, document manual migration steps instead and keep permanent legacy flat-layout scanning out of scope.
+This checkpoint was originally optional, but landed in PR #12 because removing flat-layout scanning without a migration path would strand existing reports.
 
 ### Detailed phase notes
 

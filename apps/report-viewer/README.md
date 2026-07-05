@@ -86,11 +86,15 @@ REPORT_VIEWER_PORT=8765
 REPORT_VIEWER_CSRF_TOKEN=<optional-fixed-local-token>
 ```
 
+The delivery profile selector reads delivery-state-machine config under the resolved pi agent directory. By default this is `~/.pi/agent`; set `PI_CODING_AGENT_DIR` to point the viewer at a different pi agent dir. If `PI_DELIVERY_PROFILE` is set, the viewer displays that environment override as the currently effective profile while still allowing the saved global default to be changed for future runs without the override.
+
 If no CSRF token is configured, the server generates one at startup and exposes it in a page meta tag for the local UI.
 
 ## Routes
 
-- `/reports` — local report list UI.
+- `/reports` — local report list UI, including the global delivery profile selector.
+- `/api/delivery-profiles/global` — effective built-in/global delivery profile definitions and active selection.
+- `/api/delivery-profiles/global/active` — CSRF-protected POST endpoint that atomically writes the global `active-profile.json` selection.
 - `/reports/:viewerReportId` — local report detail UI.
 - `/reports/:viewerReportId/artifacts/*artifactPath` — sanitized local artifact viewer.
 - `/api/reports` — report list API.
@@ -110,6 +114,9 @@ If no CSRF token is configured, the server generates one at startup and exposes 
 - Falls back to `00-delivery-summary.md` when JSON is missing inside a project-layout run directory.
 - Stores app-owned metadata under each report directory in `.report-viewer/`.
 - Rejects artifact path traversal and symlink escapes.
+- Lists built-in delivery profiles when no custom global `phase-launches.json` exists.
+- Switches only the global active delivery profile by writing `active-profile.json` under the resolved pi agent dir; project files are never edited for profile/model setup.
+- Uses atomic temp-file plus rename writes for profile selection.
 - Requires `x-report-viewer-token` for POST API routes.
 - Requires `{ "confirmExecution": true }` on the run endpoint.
 - Keeps agent execution disabled until `agentCommand.promptMode` / `REPORT_VIEWER_AGENT_PROMPT_MODE` is explicitly set to `stdin`.

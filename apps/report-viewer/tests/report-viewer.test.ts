@@ -6,7 +6,9 @@ import {
 	createImprovement,
 	createServer,
 	decideImprovement,
+	deliveryAgentDir,
 	loadConfig,
+	loadDeliveryProfileState,
 	loadReport,
 	reconcileStaleRunningRecords,
 	renderMarkdownSafe,
@@ -110,6 +112,45 @@ async function withServer(config: ReportViewerConfig, fn: (baseUrl: string) => P
 	}
 }
 
+async function withProfileEnv<T>(agentDir: string, fn: () => Promise<T> | T): Promise<T> {
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const previousProfile = process.env.PI_DELIVERY_PROFILE;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	delete process.env.PI_DELIVERY_PROFILE;
+	try {
+		return await fn();
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		if (previousProfile === undefined) delete process.env.PI_DELIVERY_PROFILE;
+		else process.env.PI_DELIVERY_PROFILE = previousProfile;
+	}
+}
+
+function writeProfileConfig(agentDir: string) {
+	const configDir = path.join(agentDir, "extensions", "delivery-state-machine");
+	fs.mkdirSync(configDir, { recursive: true });
+	fs.writeFileSync(path.join(configDir, "phase-launches.json"), JSON.stringify({
+		defaultProfile: "premium",
+		profiles: {
+			premium: {
+				IMPLEMENT: { agent: "worker", model: "premium-impl" },
+				VERIFY: { agent: "fresh-verifier", model: "premium-verify", context: "fresh" },
+				REVIEW: { agent: "reviewer", model: "premium-review" },
+				CLOSE: { agent: "delegate", model: "premium-close" },
+				RETRO: { agent: "delegate", model: "premium-retro" },
+			},
+			cheap: {
+				IMPLEMENT: { agent: "worker", model: "cheap-impl" },
+				VERIFY: { agent: "fresh-verifier", model: "cheap-verify", context: "fresh" },
+				REVIEW: { agent: "reviewer", model: "cheap-review" },
+				CLOSE: { agent: "delegate", model: "cheap-close" },
+				RETRO: { agent: "delegate", model: "cheap-retro" },
+			},
+		},
+	}, null, 2), "utf8");
+}
+
 await runTest("config defaults to the extension delivery artifact root", () => {
 	const config = loadConfig({}, path.join(os.tmpdir(), "missing-report-viewer-config.json"));
 	assert.deepEqual(config.reportRoots, [path.join(os.homedir(), ".pi", "delivery-run")]);
@@ -117,6 +158,157 @@ await runTest("config defaults to the extension delivery artifact root", () => {
 	assert.equal(config.agentCommand.promptMode, undefined);
 	assert.equal(config.host, "127.0.0.1");
 	assert.ok(config.csrfToken.length > 20);
+});
+
+await runTest("delivery profile state falls back to built-in definitions", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-built-in-"));
+	try {
+		await withProfileEnv(agentDir, () => {
+			const state = loadDeliveryProfileState();
+			assert.equal(deliveryAgentDir(), agentDir);
+			assert.equal(state.definitionSource, "built-in-phase-launches");
+			assert.ok(state.profiles.includes("default"));
+			assert.equal(typeof state.profileDefinitions.default.IMPLEMENT, "object");
+			assert.equal(state.activeProfile, "default");
+			assert.equal(state.activeSource, "built-in-default-profile");
+		});
+	} finally {
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+await runTest("delivery profile API lists and switches global active profile", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-api-root-"));
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-api-agent-"));
+	try {
+		writeJsonReport(projectRunDir(root), "profile api report");
+		writeProfileConfig(agentDir);
+		await withProfileEnv(agentDir, async () => {
+			await withServer(configFor([root]), async (baseUrl) => {
+				const listed = await fetch(`${baseUrl}/api/delivery-profiles/global`);
+				assert.equal(listed.status, 200);
+				const listedBody = await listed.json() as any;
+				assert.deepEqual(listedBody.profiles, ["premium", "cheap"]);
+				assert.equal(listedBody.profileDefinitions.premium.IMPLEMENT.model, "premium-impl");
+				assert.equal(listedBody.profileDefinitions.cheap.VERIFY.context, "fresh");
+				assert.equal(listedBody.activeProfile, "premium");
+				assert.equal(listedBody.definitionSource, "global-phase-launches");
+
+				const missingToken = await fetch(`${baseUrl}/api/delivery-profiles/global/active`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ activeProfile: "cheap" }),
+				});
+				assert.equal(missingToken.status, 400);
+
+				const invalid = await fetch(`${baseUrl}/api/delivery-profiles/global/active`, {
+					method: "POST",
+					headers: { "content-type": "application/json", "x-report-viewer-token": "test-token" },
+					body: JSON.stringify({ activeProfile: "unknown" }),
+				});
+				assert.equal(invalid.status, 400);
+
+				const malformed = await fetch(`${baseUrl}/api/delivery-profiles/global/active`, {
+					method: "POST",
+					headers: { "content-type": "application/json", "x-report-viewer-token": "test-token" },
+					body: JSON.stringify({ activeProfile: 42 }),
+				});
+				assert.equal(malformed.status, 400);
+
+				const saved = await fetch(`${baseUrl}/api/delivery-profiles/global/active`, {
+					method: "POST",
+					headers: { "content-type": "application/json", "x-report-viewer-token": "test-token" },
+					body: JSON.stringify({ activeProfile: "cheap" }),
+				});
+				assert.equal(saved.status, 200);
+				const savedBody = await saved.json() as any;
+				assert.equal(savedBody.activeProfile, "cheap");
+				assert.equal(savedBody.savedActiveProfile, "cheap");
+				assert.deepEqual(JSON.parse(fs.readFileSync(path.join(agentDir, "extensions", "delivery-state-machine", "active-profile.json"), "utf8")), { activeProfile: "cheap" });
+
+				process.env.PI_DELIVERY_PROFILE = "premium";
+				const overridden = await fetch(`${baseUrl}/api/delivery-profiles/global`);
+				assert.equal(overridden.status, 200);
+				const overriddenBody = await overridden.json() as any;
+				assert.equal(overriddenBody.activeProfile, "premium");
+				assert.equal(overriddenBody.envOverride, true);
+				assert.equal(overriddenBody.savedActiveProfile, "cheap");
+			});
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+await runTest("delivery profile API rejects malformed saved active profile config", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-malformed-root-"));
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-malformed-agent-"));
+	try {
+		writeJsonReport(projectRunDir(root), "profile malformed report");
+		writeProfileConfig(agentDir);
+		const configDir = path.join(agentDir, "extensions", "delivery-state-machine");
+		fs.writeFileSync(path.join(configDir, "active-profile.json"), JSON.stringify({}), "utf8");
+		await withProfileEnv(agentDir, async () => {
+			await withServer(configFor([root]), async (baseUrl) => {
+				const response = await fetch(`${baseUrl}/api/delivery-profiles/global`);
+				assert.equal(response.status, 400);
+				const body = await response.json() as any;
+				assert.match(body.error, /invalid activeProfile/);
+			});
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+await runTest("delivery profile API surfaces unwritable config directory errors", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-error-root-"));
+	const agentFile = path.join(os.tmpdir(), `report-viewer-agent-file-${process.pid}-${Date.now()}`);
+	try {
+		writeJsonReport(projectRunDir(root), "profile error report");
+		fs.writeFileSync(agentFile, "not a directory", "utf8");
+		await withProfileEnv(agentFile, async () => {
+			await withServer(configFor([root]), async (baseUrl) => {
+				const response = await fetch(`${baseUrl}/api/delivery-profiles/global/active`, {
+					method: "POST",
+					headers: { "content-type": "application/json", "x-report-viewer-token": "test-token" },
+					body: JSON.stringify({ activeProfile: "default" }),
+				});
+				assert.equal(response.status, 400);
+				const body = await response.json() as any;
+				assert.match(body.error, /ENOTDIR|not a directory|no such file/i);
+			});
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(agentFile, { force: true });
+	}
+});
+
+await runTest("reports page renders delivery profile selector", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-ui-root-"));
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-ui-agent-"));
+	try {
+		writeJsonReport(projectRunDir(root), "profile ui report");
+		writeProfileConfig(agentDir);
+		await withProfileEnv(agentDir, async () => {
+			process.env.PI_DELIVERY_PROFILE = "cheap";
+			await withServer(configFor([root]), async (baseUrl) => {
+				const response = await fetch(`${baseUrl}/reports`);
+				assert.equal(response.status, 200);
+				const html = await response.text();
+				assert.match(html, /Delivery model profile/);
+				assert.match(html, /Environment override active/);
+				assert.match(html, /<option value="premium"/);
+				assert.match(html, /<option value="cheap" selected/);
+			});
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	}
 });
 
 await runTest("scanReports ignores old flat report directories", () => {

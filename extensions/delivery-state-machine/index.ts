@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { collectSessionUsage as collectSharedSessionUsage, subtractUsageTotals, type UsageTotals } from "../../shared/session-usage.ts";
+import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportStep } from "../../shared/delivery-report.ts";
 import { loadPhaseConfigBundle, loadPhaseConfigs, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
 type Phase =
@@ -50,19 +52,10 @@ interface PendingIssue {
 	recommendedDecision?: Decision;
 }
 
-interface UsageTotals {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	totalTokens: number;
-	cost: number;
-	assistantMessages: number;
-	sessionFiles: number;
-}
-
 type PhaseRounds = Record<RunnablePhase, number>;
 type UsageAttribution = "exact" | "best-effort" | "phase-aggregate" | "unavailable";
+type ProjectMetadata = DeliveryProjectMetadataV1;
+type DeliveryStep = DeliveryReportStep;
 
 interface ReportUsageSnapshot {
 	currentSessionTotals?: UsageTotals;
@@ -72,72 +65,11 @@ interface ReportUsageSnapshot {
 	attribution: UsageAttribution;
 }
 
-interface ProjectMetadata {
-	schemaVersion: 1;
-	projectId: string;
-	name: string;
-	root: string;
-	gitRoot?: string;
-	gitRemote?: string;
-	createdAt: string;
-	lastSeenAt: string;
-}
-
-interface DeliveryReportJsonV2 {
-	schemaVersion: 2;
-	source: "delivery-state-machine";
-	id: string;
-	task: string | null;
-	status: Phase;
-	phase: Phase;
-	artifactDir: string;
-	cwd?: string;
-	gitBranch?: string;
-	gitRoot?: string;
-	project?: ProjectMetadata;
-	launchProfile?: ProfileResolution;
-	createdAt?: number;
-	updatedAt: number;
-	generatedAt: number;
-	summaryMarkdownPath: string;
-	history: HistoryEntry[];
-	steps: DeliveryStep[];
-	acceptedRisks: string[];
-	pendingIssue: PendingIssue | null;
-	usage: {
-		currentSessionTotals: UsageTotals | null;
-		sinceDeliveryStart: UsageTotals | null;
-		attribution: UsageAttribution;
-	};
-}
-
 interface ReportArtifacts {
 	markdownPath?: string;
 	jsonPath?: string;
 	markdown: string;
 	jsonWriteError?: string;
-}
-
-interface DeliveryStep {
-	id: string;
-	phase: RunnablePhase;
-	attempt: number;
-	childIndex?: number;
-	childCount?: number;
-	agent?: string;
-	model?: string;
-	thinking?: string;
-	context?: string;
-	status: "planned" | "reported";
-	verdict?: Verdict;
-	summary?: string;
-	artifact?: string;
-	startedAt: number;
-	endedAt?: number;
-	usageBefore?: UsageTotals;
-	usageAfter?: UsageTotals;
-	usageDelta?: UsageTotals;
-	usageAttribution?: UsageAttribution;
 }
 
 interface DeliveryState {
@@ -291,76 +223,9 @@ function maxRoundsForPhase(state: DeliveryState, phase: RunnablePhase): number {
 	return state.maxPhaseRounds?.[phase] ?? state.maxRepairRounds ?? DEFAULT_MAX_ROUNDS;
 }
 
-function emptyUsageTotals(): UsageTotals {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, assistantMessages: 0, sessionFiles: 0 };
-}
-
-function addUsage(into: UsageTotals, usage: Partial<UsageTotals>) {
-	into.input += usage.input ?? 0;
-	into.output += usage.output ?? 0;
-	into.cacheRead += usage.cacheRead ?? 0;
-	into.cacheWrite += usage.cacheWrite ?? 0;
-	into.totalTokens += usage.totalTokens ?? 0;
-	into.cost += usage.cost ?? 0;
-	into.assistantMessages += usage.assistantMessages ?? 0;
-	into.sessionFiles += usage.sessionFiles ?? 0;
-}
-
-function subtractUsage(current: UsageTotals, baseline: UsageTotals): UsageTotals {
-	return {
-		input: Math.max(0, current.input - baseline.input),
-		output: Math.max(0, current.output - baseline.output),
-		cacheRead: Math.max(0, current.cacheRead - baseline.cacheRead),
-		cacheWrite: Math.max(0, current.cacheWrite - baseline.cacheWrite),
-		totalTokens: Math.max(0, current.totalTokens - baseline.totalTokens),
-		cost: Math.max(0, current.cost - baseline.cost),
-		assistantMessages: Math.max(0, current.assistantMessages - baseline.assistantMessages),
-		sessionFiles: Math.max(0, current.sessionFiles - baseline.sessionFiles),
-	};
-}
-
-function collectJsonlFiles(dir: string, out: string[]) {
-	if (!fs.existsSync(dir)) return;
-	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-		const fullPath = path.join(dir, entry.name);
-		if (entry.isDirectory()) collectJsonlFiles(fullPath, out);
-		else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push(fullPath);
-	}
-}
-
-function collectUsageFromSessionFile(sessionFile: string): UsageTotals {
-	const totals = emptyUsageTotals();
-	if (!fs.existsSync(sessionFile)) return totals;
-	totals.sessionFiles = 1;
-	for (const line of fs.readFileSync(sessionFile, "utf8").split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		try {
-			const entry = JSON.parse(line) as { type?: string; message?: { role?: string; usage?: any } };
-			const usage = entry.type === "message" && entry.message?.role === "assistant" ? entry.message.usage : undefined;
-			if (!usage) continue;
-			const input = Number(usage.input ?? 0);
-			const output = Number(usage.output ?? 0);
-			const cacheRead = Number(usage.cacheRead ?? 0);
-			const cacheWrite = Number(usage.cacheWrite ?? 0);
-			const totalTokens = Number(usage.totalTokens ?? input + output + cacheRead + cacheWrite);
-			const cost = Number(usage.cost?.total ?? 0);
-			addUsage(totals, { input, output, cacheRead, cacheWrite, totalTokens, cost, assistantMessages: 1 });
-		} catch {
-			// Ignore malformed/non-JSON lines so one bad entry does not break summary reporting.
-		}
-	}
-	return totals;
-}
-
 function collectSessionUsage(ctx: ExtensionContext): UsageTotals | undefined {
 	const sessionFile = ctx.sessionManager.getSessionFile();
-	if (!sessionFile) return undefined;
-	const totals = collectUsageFromSessionFile(sessionFile);
-	const subagentDir = sessionFile.endsWith(".jsonl") ? sessionFile.slice(0, -".jsonl".length) : `${sessionFile}.d`;
-	const subagentFiles: string[] = [];
-	collectJsonlFiles(subagentDir, subagentFiles);
-	for (const file of subagentFiles) addUsage(totals, collectUsageFromSessionFile(file));
-	return totals;
+	return sessionFile ? collectSharedSessionUsage(sessionFile).total : undefined;
 }
 
 function formatNumber(n: number): string {
@@ -882,7 +747,7 @@ function ensurePlannedStepsForReport(state: DeliveryState, ctx: ExtensionContext
 
 function usageDeltaForStep(step: DeliveryStep, usageAfter: UsageTotals | undefined): UsageTotals | undefined {
 	if (!usageAfter || !step.usageBefore) return undefined;
-	return subtractUsage(usageAfter, step.usageBefore);
+	return subtractUsageTotals(usageAfter, step.usageBefore);
 }
 
 function usageAttributionForStep(step: DeliveryStep, usageAfter: UsageTotals | undefined, parallel: boolean): UsageAttribution {
@@ -962,7 +827,7 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 		step.usageAfter = usageAfter;
 		step.usageAttribution = usageAttributionForStep(step, usageAfter, parallel);
 		if (usageAfter && step.usageBefore && step.usageAttribution !== "unavailable") {
-			step.usageDelta = subtractUsage(usageAfter, step.usageBefore);
+			step.usageDelta = subtractUsageTotals(usageAfter, step.usageBefore);
 		}
 	}
 	if (parallel) {
@@ -987,7 +852,7 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 		aggregate.usageAfter = usageAfter;
 		aggregate.usageAttribution = usageAttributionForStep(aggregate, usageAfter, true);
 		if (usageAfter && aggregate.usageBefore && aggregate.usageAttribution !== "unavailable") {
-			aggregate.usageDelta = subtractUsage(usageAfter, aggregate.usageBefore);
+			aggregate.usageDelta = subtractUsageTotals(usageAfter, aggregate.usageBefore);
 		}
 		if (!existing) state.steps.push(aggregate);
 	}
@@ -1339,7 +1204,7 @@ function deliveryStatus(state: DeliveryState): Phase {
 
 function reportUsageSnapshot(state: DeliveryState, ctx: ExtensionContext): ReportUsageSnapshot {
 	const currentSessionTotals = collectSessionUsage(ctx);
-	const sinceDeliveryStart = currentSessionTotals && state.usageAtStart ? subtractUsage(currentSessionTotals, state.usageAtStart) : undefined;
+	const sinceDeliveryStart = currentSessionTotals && state.usageAtStart ? subtractUsageTotals(currentSessionTotals, state.usageAtStart) : undefined;
 	const usableCurrentSessionTotals = usageHasAssistantMessages(currentSessionTotals) ? currentSessionTotals : undefined;
 	const usableSinceDeliveryStart = usageHasAssistantMessages(sinceDeliveryStart) ? sinceDeliveryStart : undefined;
 	return {

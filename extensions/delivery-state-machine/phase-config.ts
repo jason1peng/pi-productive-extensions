@@ -2,13 +2,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DELIVERY_PHASES, profileConfigFromRaw, readActiveProfilePayload, selectDeliveryProfile, type DeliveryProfileDefinitionSource, type DeliveryProfileSelectionSource } from "../../shared/delivery-profile-config.ts";
 
-export type RunnablePhase =
-	| "IMPLEMENT"
-	| "VERIFY"
-	| "REVIEW"
-	| "CLOSE"
-	| "RETRO";
+export type RunnablePhase = (typeof DELIVERY_PHASES)[number];
 
 export interface PhasePromptContext {
 	task: string;
@@ -28,8 +24,8 @@ export interface LaunchConfig {
 
 export interface ProfileResolution {
 	selectedProfile: string;
-	source: "env" | "global-active-profile" | "global-default-profile" | "global-first-profile" | "built-in-default-profile" | "built-in-first-profile";
-	definitionSource: "global-phase-launches" | "built-in-phase-launches";
+	source: DeliveryProfileSelectionSource;
+	definitionSource: DeliveryProfileDefinitionSource;
 	envOverride: boolean;
 }
 
@@ -205,64 +201,39 @@ function readProfileLaunchConfig(filePath: string): ProfileLaunchConfig | undefi
 	for (const key of Object.keys(raw)) {
 		if (!PROFILE_KEYS.has(key)) throw new Error(`Launch config ${filename} must use profile-aware shape with defaultProfile and profiles; unexpected key: ${key}.`);
 	}
-	if (raw.defaultProfile !== undefined && (typeof raw.defaultProfile !== "string" || !raw.defaultProfile.trim())) {
-		throw new Error(`Launch config ${filename} has invalid defaultProfile.`);
-	}
-	if (!raw.profiles || typeof raw.profiles !== "object" || Array.isArray(raw.profiles)) throw new Error(`Launch config ${filename} must define profiles.`);
+	const shared = profileConfigFromRaw<unknown>(raw, filename);
 	const profiles: Record<string, Record<RunnablePhase, LaunchConfig[]>> = {};
-	for (const [profileName, profileValue] of Object.entries(raw.profiles as Record<string, unknown>)) {
-		if (!profileName.trim()) throw new Error(`Launch config ${filename} has an empty profile name.`);
-		if (!profileValue || typeof profileValue !== "object" || Array.isArray(profileValue)) throw new Error(`Launch config ${filename} has invalid profile ${profileName}; expected object keyed by phase.`);
-		const profileRaw = profileValue as Record<string, unknown>;
-		for (const phase of Object.keys(profileRaw)) {
-			if (!(phase in PHASE_FILES)) throw new Error(`Launch config ${filename} profile ${profileName} has unknown phase: ${phase}`);
-		}
+	for (const profileName of shared.profiles) {
+		const phaseDefinitions = shared.profileDefinitions[profileName];
 		const profileConfig: Partial<Record<RunnablePhase, LaunchConfig[]>> = {};
-		for (const phase of Object.keys(PHASE_FILES) as RunnablePhase[]) {
-			if (!(phase in profileRaw)) throw new Error(`Launch config ${filename} profile ${profileName} is missing required phase: ${phase}`);
-			profileConfig[phase] = validateLaunches(profileRaw[phase], filename, phase, profileName);
+		for (const phase of DELIVERY_PHASES) {
+			profileConfig[phase] = validateLaunches(phaseDefinitions[phase], filename, phase, profileName);
 		}
-		profiles[profileName.trim()] = profileConfig as Record<RunnablePhase, LaunchConfig[]>;
+		profiles[profileName] = profileConfig as Record<RunnablePhase, LaunchConfig[]>;
 	}
-	const names = Object.keys(profiles);
-	if (!names.length) throw new Error(`Launch config ${filename} must define at least one profile.`);
-	const defaultProfile = raw.defaultProfile?.toString().trim();
-	if (defaultProfile && !profiles[defaultProfile]) throw new Error(`Launch config ${filename} defaultProfile=${defaultProfile} is not defined in profiles.`);
-	return { ...(defaultProfile ? { defaultProfile } : {}), profiles };
+	return { ...(shared.defaultProfile ? { defaultProfile: shared.defaultProfile } : {}), profiles };
 }
 
 function readActiveProfile(): string | undefined {
 	const filePath = path.join(userConfigDir(), ACTIVE_PROFILE_FILE);
 	if (!fs.existsSync(filePath)) return undefined;
-	let parsed: unknown;
 	try {
-		parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+		return readActiveProfilePayload(JSON.parse(fs.readFileSync(filePath, "utf8")), filePath, { missingProperty: "undefined" });
 	} catch (error) {
-		throw new Error(`Active profile config ${filePath} is invalid JSON: ${(error as Error).message}`);
+		if (error instanceof SyntaxError) throw new Error(`Active profile config ${filePath} is invalid JSON: ${error.message}`);
+		throw error;
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Active profile config ${filePath} must be an object with activeProfile.`);
-	const activeProfile = (parsed as { activeProfile?: unknown }).activeProfile;
-	if (activeProfile === undefined) return undefined;
-	if (typeof activeProfile !== "string" || !activeProfile.trim()) throw new Error(`Active profile config ${filePath} has invalid activeProfile.`);
-	return activeProfile.trim();
 }
 
 function selectProfile(config: ProfileLaunchConfig, definitionSource: ProfileResolution["definitionSource"]): ProfileResolution {
-	const envProfile = process.env.PI_DELIVERY_PROFILE?.trim();
-	const activeProfile = readActiveProfile();
-	const profileNames = Object.keys(config.profiles);
-	const selectedProfile = envProfile || activeProfile || config.defaultProfile || profileNames[0];
-	if (!selectedProfile || !config.profiles[selectedProfile]) {
-		throw new Error(`Launch profile ${selectedProfile || "<none>"} is not defined in ${definitionSource}.`);
-	}
-	const source: ProfileResolution["source"] = envProfile
-		? "env"
-		: activeProfile
-			? "global-active-profile"
-			: config.defaultProfile
-				? definitionSource === "global-phase-launches" ? "global-default-profile" : "built-in-default-profile"
-				: definitionSource === "global-phase-launches" ? "global-first-profile" : "built-in-first-profile";
-	return { selectedProfile, source, definitionSource, envOverride: Boolean(envProfile) };
+	const selection = selectDeliveryProfile({
+		profiles: Object.keys(config.profiles),
+		defaultProfile: config.defaultProfile,
+		definitionSource,
+		envProfile: process.env.PI_DELIVERY_PROFILE,
+		savedActiveProfile: readActiveProfile(),
+	});
+	return { selectedProfile: selection.activeProfile, source: selection.activeSource, definitionSource, envOverride: selection.envOverride };
 }
 
 function loadLaunchConfigBundle(): { launches: Record<RunnablePhase, LaunchConfig[]>; profileResolution: ProfileResolution } {

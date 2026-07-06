@@ -89,6 +89,8 @@ While an active delivery is not in `CLOSE`/`RETRO`/`DONE`, the extension blocks 
 
 ## Artifact checklists
 
+Structured report JSON uses schema version 2. The stable contract is documented in [../../docs/delivery-report-schema-v2.md](../../docs/delivery-report-schema-v2.md), and shared report/usage types live under `../../shared/`.
+
 Delivery state-machine tools are hardcoded in `index.ts` and are intended for the parent/orchestrator session:
 
 - `delivery_start`
@@ -122,7 +124,7 @@ Phase files do not configure subagent launch settings or tools. Frontmatter may 
 
 `delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. When `phase-launches.json` configures multiple launches for a phase, `delivery_next` also returns `details.next.parallel` containing exactly those configured launches. Each parallel entry has a unique child prompt and artifact path instruction. The parent should launch all entries concurrently, save child artifacts separately, and call `delivery_report` once with the aggregate result.
 
-`delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. The report lists every planned/reported phase step in order, including parallel reviewer rows, agent/model, verdict, artifact link, best-effort cost attribution, failure overview, repair action, retro critical fixes, phase counts, and usage totals. It estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. When a delivery was started after usage baseline tracking existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. Cost attribution is explicitly labeled as best-effort, phase-aggregate, or unavailable; zero cost is not inferred when no usage-bearing session data exists. When a delivery reaches `DONE`, final `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically and refresh `00-delivery-summary.md`. Structured reports now use `schemaVersion: 2` and include project metadata plus the pinned launch profile used for the run.
+`delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. The report lists every planned/reported phase step in order, including parallel reviewer rows, agent/model, verdict, artifact link, best-effort cost attribution, failure overview, repair action, retro critical fixes, phase counts, and usage totals. It estimates usage by reading the current parent session JSONL plus subagent session JSONL files under the matching subagent session directory. Token totals use the shared policy documented in [../session-usage/README.md](../session-usage/README.md). When a delivery was started after usage baseline tracking existed, it also reports usage since `delivery_start`; otherwise it reports current session totals only. Cost attribution is explicitly labeled as best-effort, phase-aggregate, or unavailable; zero cost is not inferred when no usage-bearing session data exists. When a delivery reaches `DONE`, final `delivery_report`, `delivery_next`, and `delivery_status` show this summary automatically and refresh `00-delivery-summary.md`. Structured reports now use `schemaVersion: 2` and include project metadata plus the pinned launch profile used for the run.
 
 Phase markdown format:
 

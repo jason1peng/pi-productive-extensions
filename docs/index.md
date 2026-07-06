@@ -34,6 +34,7 @@ Start here when planning or implementing changes in this repository.
 - `docs/plans/delivery-profile-management.md` — delivery profile/model management plan.
 - `docs/plans/report-viewer-and-structured-reports.md` — report viewer and structured report plan.
 - `docs/plans/report-viewer-project-grouping.md` — project grouping behavior plan.
+- `docs/plans/report-viewer-readability-and-links.md` — report viewer grouped-list, title readability, and artifact/detail link reliability plan.
 - `docs/plans/report-viewer-ui-improvements.md` — report viewer UI improvement plan.
 - `extensions/delivery-state-machine/PLAN_QUALITY_CHECKLIST.md` — checklist embedded in the delivery workflow.
 - `extensions/delivery-state-machine/README.md` — commands, state machine behavior, artifact layout, phase/profile config, and report summary behavior.

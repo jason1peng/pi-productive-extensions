@@ -5,6 +5,8 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, URL } from "node:url";
+import { DELIVERY_PHASES, activeProfileFilePayload, profileConfigFromRaw, readActiveProfilePayload, selectDeliveryProfile, type DeliveryProfileDefinitionSource, type DeliveryProfileDefinitions, type DeliveryProfileSelectionSource } from "../../../shared/delivery-profile-config.ts";
+import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2 } from "../../../shared/delivery-report.ts";
 import { parseArtifactContract, type ParsedArtifact, type RetroCandidate } from "./artifact-contract.ts";
 import { escapeHtml, renderMarkdownSafe } from "./markdown-renderer.ts";
 import { badgeClass, page } from "./report-renderer.ts";
@@ -61,7 +63,7 @@ export interface ProjectReportGroup {
 }
 
 export interface LoadedReport extends ReportSummary {
-	structuredReport?: any;
+	structuredReport?: DeliveryReportJsonV2;
 	summaryMarkdown?: string;
 	summaryHtml?: string;
 	artifacts: Array<{ label: string; path: string; external: boolean }>;
@@ -95,19 +97,15 @@ export interface AgentRunRecord {
 }
 
 const DEFAULT_PORT = 8765;
-const DELIVERY_PHASES = ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"] as const;
 const DELIVERY_EXTENSION_NAME = "delivery-state-machine";
-
-type DeliveryPhase = (typeof DELIVERY_PHASES)[number];
-type DeliveryProfileDefinitions = Record<string, Record<DeliveryPhase, unknown>>;
 
 interface DeliveryProfileState {
 	profiles: string[];
 	profileDefinitions: DeliveryProfileDefinitions;
 	defaultProfile?: string;
-	definitionSource: "global-phase-launches" | "built-in-phase-launches";
+	definitionSource: DeliveryProfileDefinitionSource;
 	activeProfile: string;
-	activeSource: "env" | "global-active-profile" | "global-default-profile" | "global-first-profile" | "built-in-default-profile" | "built-in-first-profile";
+	activeSource: DeliveryProfileSelectionSource;
 	envOverride: boolean;
 	envProfile?: string;
 	savedActiveProfile?: string;
@@ -202,83 +200,45 @@ function isDirectory(filePath: string): boolean {
 	}
 }
 
-function readJsonIfPresent(filePath: string): any | undefined {
+function readJsonIfPresent<T = unknown>(filePath: string): T | undefined {
 	if (!fs.existsSync(filePath)) return undefined;
-	return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function validateDeliveryProfileConfig(raw: unknown, filePath: string): { defaultProfile?: string; profiles: string[]; profileDefinitions: DeliveryProfileDefinitions } {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Delivery profile config ${filePath} must be an object.`);
-	const config = raw as { defaultProfile?: unknown; profiles?: unknown };
-	if (config.defaultProfile !== undefined && (typeof config.defaultProfile !== "string" || !config.defaultProfile.trim())) {
-		throw new Error(`Delivery profile config ${filePath} has invalid defaultProfile.`);
-	}
-	if (!config.profiles || typeof config.profiles !== "object" || Array.isArray(config.profiles)) {
-		throw new Error(`Delivery profile config ${filePath} must define profiles.`);
-	}
-	const profileDefinitions: DeliveryProfileDefinitions = {};
-	const profiles = Object.entries(config.profiles as Record<string, unknown>).map(([name, value]) => {
-		const profileName = name.trim();
-		if (!profileName) throw new Error(`Delivery profile config ${filePath} has an empty profile name.`);
-		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Delivery profile config ${filePath} profile ${name} must be an object keyed by phase.`);
-		const phaseConfig = value as Record<string, unknown>;
-		for (const phase of Object.keys(phaseConfig)) {
-			if (!DELIVERY_PHASES.includes(phase as DeliveryPhase)) throw new Error(`Delivery profile config ${filePath} profile ${name} has unknown phase ${phase}.`);
-		}
-		for (const phase of DELIVERY_PHASES) {
-			if (!(phase in phaseConfig)) throw new Error(`Delivery profile config ${filePath} profile ${name} is missing required phase ${phase}.`);
-		}
-		profileDefinitions[profileName] = Object.fromEntries(DELIVERY_PHASES.map((phase) => [phase, phaseConfig[phase]])) as Record<DeliveryPhase, unknown>;
-		return profileName;
-	});
-	if (!profiles.length) throw new Error(`Delivery profile config ${filePath} must define at least one profile.`);
-	const defaultProfile = config.defaultProfile?.trim();
-	if (defaultProfile && !profiles.includes(defaultProfile)) throw new Error(`Delivery profile config ${filePath} defaultProfile=${defaultProfile} is not defined in profiles.`);
-	return { ...(defaultProfile ? { defaultProfile } : {}), profiles, profileDefinitions };
+	return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
 }
 
 function readDeliveryProfileConfig(env: NodeJS.ProcessEnv = process.env): { defaultProfile?: string; profiles: string[]; profileDefinitions: DeliveryProfileDefinitions; definitionSource: DeliveryProfileState["definitionSource"]; globalConfigPath: string; builtInConfigPath: string } {
 	const globalConfigPath = globalPhaseLaunchesPath(env);
 	const builtInConfigPath = builtInPhaseLaunchesPath();
 	if (fs.existsSync(globalConfigPath)) {
-		return { ...validateDeliveryProfileConfig(readJsonIfPresent(globalConfigPath), globalConfigPath), definitionSource: "global-phase-launches", globalConfigPath, builtInConfigPath };
+		return { ...profileConfigFromRaw(readJsonIfPresent(globalConfigPath), globalConfigPath), definitionSource: "global-phase-launches", globalConfigPath, builtInConfigPath };
 	}
-	return { ...validateDeliveryProfileConfig(readJsonIfPresent(builtInConfigPath), builtInConfigPath), definitionSource: "built-in-phase-launches", globalConfigPath, builtInConfigPath };
+	return { ...profileConfigFromRaw(readJsonIfPresent(builtInConfigPath), builtInConfigPath), definitionSource: "built-in-phase-launches", globalConfigPath, builtInConfigPath };
 }
 
 function readSavedActiveProfile(filePath: string): string | undefined {
 	if (!fs.existsSync(filePath)) return undefined;
-	const parsed = readJsonIfPresent(filePath);
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Active profile config ${filePath} must be an object with activeProfile.`);
-	const activeProfile = (parsed as { activeProfile?: unknown }).activeProfile;
-	if (typeof activeProfile !== "string" || !activeProfile.trim()) throw new Error(`Active profile config ${filePath} has invalid activeProfile.`);
-	return activeProfile.trim();
+	return readActiveProfilePayload(readJsonIfPresent(filePath), filePath);
 }
 
 export function loadDeliveryProfileState(env: NodeJS.ProcessEnv = process.env): DeliveryProfileState {
 	const config = readDeliveryProfileConfig(env);
 	const activePath = activeProfilePath(env);
-	const envProfile = env.PI_DELIVERY_PROFILE?.trim() || undefined;
-	const savedActiveProfile = readSavedActiveProfile(activePath);
-	const activeProfile = envProfile ?? savedActiveProfile ?? config.defaultProfile ?? config.profiles[0];
-	if (!config.profiles.includes(activeProfile)) throw new Error(`Delivery profile ${activeProfile} is not defined in ${config.definitionSource}.`);
-	const activeSource: DeliveryProfileState["activeSource"] = envProfile
-		? "env"
-		: savedActiveProfile
-			? "global-active-profile"
-			: config.defaultProfile
-				? config.definitionSource === "global-phase-launches" ? "global-default-profile" : "built-in-default-profile"
-				: config.definitionSource === "global-phase-launches" ? "global-first-profile" : "built-in-first-profile";
+	const selection = selectDeliveryProfile({
+		profiles: config.profiles,
+		defaultProfile: config.defaultProfile,
+		definitionSource: config.definitionSource,
+		envProfile: env.PI_DELIVERY_PROFILE,
+		savedActiveProfile: readSavedActiveProfile(activePath),
+	});
 	return {
 		profiles: config.profiles,
 		profileDefinitions: config.profileDefinitions,
 		...(config.defaultProfile ? { defaultProfile: config.defaultProfile } : {}),
 		definitionSource: config.definitionSource,
-		activeProfile,
-		activeSource,
-		envOverride: Boolean(envProfile),
-		...(envProfile ? { envProfile } : {}),
-		...(savedActiveProfile ? { savedActiveProfile } : {}),
+		activeProfile: selection.activeProfile,
+		activeSource: selection.activeSource,
+		envOverride: selection.envOverride,
+		...(selection.envProfile ? { envProfile: selection.envProfile } : {}),
+		...(selection.savedActiveProfile ? { savedActiveProfile: selection.savedActiveProfile } : {}),
 		activeProfilePath: activePath,
 		globalConfigPath: config.globalConfigPath,
 		builtInConfigPath: config.builtInConfigPath,
@@ -295,7 +255,7 @@ function writeActiveProfileAtomic(profileName: string, env: NodeJS.ProcessEnv = 
 	fs.mkdirSync(expectedDir, { recursive: true });
 	const tempPath = path.join(expectedDir, `.active-profile.json.tmp-${process.pid}-${Date.now()}-${randomBytes(6).toString("hex")}`);
 	try {
-		fs.writeFileSync(tempPath, `${JSON.stringify({ activeProfile: profileName }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		fs.writeFileSync(tempPath, `${JSON.stringify(activeProfileFilePayload(profileName), null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 		fs.renameSync(tempPath, resolvedDestination);
 	} catch (error) {
 		try { if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true }); } catch { /* ignore cleanup errors */ }
@@ -358,7 +318,7 @@ function readProjectMetadata(projectDir: string): ProjectMetadata {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(projectJsonPath, "utf8"));
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("project.json must contain an object");
-		const project = parsed as Record<string, unknown>;
+		const project = parsed as Partial<DeliveryProjectMetadataV1>;
 		const projectId = stringField(project.projectId) ?? projectDirectoryName;
 		const warnings = stringField(project.projectId) ? [] : ["Project metadata is incomplete; project.json has no projectId."];
 		return {
@@ -384,7 +344,7 @@ function projectMetadataForReportDir(root: string, dir: string): ProjectMetadata
 	return projectDirectoryName ? readProjectMetadata(path.join(root, "projects", projectDirectoryName)) : undefined;
 }
 
-function reportProjectMetadata(structured: any): ProjectMetadata | undefined {
+function reportProjectMetadata(structured: DeliveryReportJsonV2 | undefined): ProjectMetadata | undefined {
 	const project = structured?.project;
 	if (!project || typeof project !== "object" || Array.isArray(project)) return undefined;
 	return {
@@ -398,7 +358,7 @@ function reportProjectMetadata(structured: any): ProjectMetadata | undefined {
 	};
 }
 
-function resolvedProjectMetadata(rootIndex: number, root: string, dir: string, projectMetadata?: ProjectMetadata, structured?: any): Pick<ReportSummary, "viewerProjectId" | "projectId" | "projectName" | "projectRoot" | "gitRoot" | "gitRemote" | "projectMetadataSource" | "projectWarnings"> {
+function resolvedProjectMetadata(rootIndex: number, root: string, dir: string, projectMetadata?: ProjectMetadata, structured?: DeliveryReportJsonV2): Pick<ReportSummary, "viewerProjectId" | "projectId" | "projectName" | "projectRoot" | "gitRoot" | "gitRemote" | "projectMetadataSource" | "projectWarnings"> {
 	const projectDirectoryName = projectDirectoryNameFromRunDir(root, dir) ?? "unknown-project";
 	const reportProject = reportProjectMetadata(structured);
 	const projectJson = projectMetadata?.metadataSource === "project-json" ? projectMetadata : undefined;
@@ -429,7 +389,7 @@ function summaryFromDir(rootIndex: number, root: string, dir: string, projectMet
 	const viewerReportId = makeViewerReportId(rootIndex, relative);
 	const fallbackTask = path.basename(dir);
 	if (source === "json") {
-		const structured = readJsonIfPresent(path.join(dir, "delivery-report.json"));
+		const structured = readJsonIfPresent<DeliveryReportJsonV2>(path.join(dir, "delivery-report.json"));
 		return {
 			viewerReportId,
 			...resolvedProjectMetadata(rootIndex, root, dir, projectMetadata, structured),
@@ -505,7 +465,7 @@ function stepArtifactLabel(step: any): string {
 	return `${phase}${attempt}`;
 }
 
-function artifactListFromStructured(structured: any): Array<{ label: string; path: string; external: boolean }> {
+function artifactListFromStructured(structured: DeliveryReportJsonV2 | undefined): Array<{ label: string; path: string; external: boolean }> {
 	const artifacts = new Map<string, { label: string; path: string; external: boolean }>();
 	for (const step of Array.isArray(structured?.steps) ? structured.steps : []) {
 		if (!step?.artifact || typeof step.artifact !== "string") continue;
@@ -542,7 +502,7 @@ export function loadReport(config: Pick<ReportViewerConfig, "reportRoots">, view
 	if (!summary) throw new Error("Report not found");
 	const markdownPath = path.join(dir, "00-delivery-summary.md");
 	const summaryMarkdown = fs.existsSync(markdownPath) ? fs.readFileSync(markdownPath, "utf8") : undefined;
-	const structuredReport = readJsonIfPresent(path.join(dir, "delivery-report.json"));
+	const structuredReport = readJsonIfPresent<DeliveryReportJsonV2>(path.join(dir, "delivery-report.json"));
 	return {
 		...summary,
 		structuredReport,

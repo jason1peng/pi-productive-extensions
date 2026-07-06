@@ -2,6 +2,8 @@
 
 Personal pi extensions for productive coding workflows.
 
+Documentation starts at [docs/index.md](docs/index.md). Repo-wide change standards live in [docs/principles.md](docs/principles.md).
+
 ## Extensions
 
 ### delivery-state-machine
@@ -67,3 +69,5 @@ Git package usage is also supported:
 ```bash
 npm run verify
 ```
+
+`npm run verify` runs the delivery-state-machine, session-usage, and report-viewer test suites.

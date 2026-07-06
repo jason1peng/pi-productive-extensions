@@ -45,9 +45,11 @@ If child sessions are stored somewhere else, they are not included.
 - `usage.output`
 - `usage.cacheRead`
 - `usage.cacheWrite`
-- `usage.totalTokens`
+- token total using the shared fallback policy: numeric `usage.totalTokens`, then numeric `usage.total`, then `input + output + cacheRead + cacheWrite`
 - `usage.cost.total`
 - Assistant message count with usage
+
+The parser is shared with `delivery-state-machine` so session usage reports and delivery summaries account for tokens consistently.
 
 ## Limitations
 

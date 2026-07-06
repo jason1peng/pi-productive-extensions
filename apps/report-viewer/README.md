@@ -113,7 +113,7 @@ If no CSRF token is configured, the server generates one at startup and exposes 
   ```
 
   The helper preserves all run files, including `.report-viewer/` metadata, and upgrades copied `delivery-report.json` files to schemaVersion 2 when possible.
-- Reads extension-owned `delivery-report.json` first.
+- Reads extension-owned `delivery-report.json` first. The stable schema v2 contract is documented in [../../docs/delivery-report-schema-v2.md](../../docs/delivery-report-schema-v2.md).
 - Falls back to `00-delivery-summary.md` when JSON is missing inside a project-layout run directory.
 - Stores app-owned metadata under each report directory in `.report-viewer/`.
 - Rejects artifact path traversal and symlink escapes.

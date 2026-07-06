@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { collectSessionUsage, collectUsageFromJsonlContent, subtractUsageTotals } from "../../../shared/session-usage.ts";
 import deliveryStateMachine from "../index.ts";
 
 const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
@@ -134,6 +135,42 @@ await runTest("delivery child prompts include central RESULT artifact guidance",
 	assert.match(result.details.next.childPrompt, /Use the phase-specific headings/);
 });
 
+await runTest("delivery usage accounting uses the shared parser and token fallback", async () => {
+	const totals = collectUsageFromJsonlContent(`${JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 4, output: 6, cost: { total: 0.01 } } } })}\nnot-json\n`, { countSessionFile: true });
+	assert.equal(totals.totalTokens, 10);
+	assert.equal(totals.cost, 0.01);
+	assert.equal(totals.assistantMessages, 1);
+	assert.equal(totals.sessionFiles, 1);
+});
+
+await runTest("delivery usage accounting discovers subagent sessions and subtracts deltas", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-usage-shared-"));
+	try {
+		const parent = path.join(dir, "parent.jsonl");
+		const child = path.join(dir, "parent", "run-1", "run-0", "session.jsonl");
+		fs.writeFileSync(parent, `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 10, output: 5, totalTokens: 15 } } })}\n`, "utf8");
+		fs.mkdirSync(path.dirname(child), { recursive: true });
+		fs.writeFileSync(child, `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 2, output: 3, total: 9 } } })}\n`, "utf8");
+
+		const usage = collectSessionUsage(parent, { childFileName: "session.jsonl" });
+		assert.equal(usage.total.totalTokens, 24);
+		assert.equal(usage.total.sessionFiles, 2);
+		assert.equal(usage.rows[1].runId, "run-1");
+		assert.deepEqual(subtractUsageTotals(usage.total, { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: 0, assistantMessages: 1, sessionFiles: 1 }), {
+			input: 2,
+			output: 4,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 12,
+			cost: 0,
+			assistantMessages: 1,
+			sessionFiles: 1,
+		});
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 await runTest("/deliver reaches review with exactly the configured parallel reviewers", async () => {
 	const harness = createHarness();
 	const deliver = harness.commands.get("deliver");
@@ -203,6 +240,18 @@ await runTest("global profile config can force GPT-only models", async () => {
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
 		next = await harness.tool("delivery_next");
 		assert.deepEqual(next.details.next.parallel.map((launch: any) => launch.model), ["openai/gpt-5.5", "openai/gpt-5.5"]);
+	});
+});
+
+await runTest("global profile config trims profile names consistently", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		" premium ": fullProfile({ IMPLEMENT: { agent: "worker", model: "trimmed/model" } }),
+	}, " premium "), async () => {
+		const harness = createHarness();
+		const result = await harness.tool("delivery_start", { task: "trimmed profile smoke" });
+		assert.equal(result.details.next.model, "trimmed/model");
+		assert.equal(result.details.state.launchProfile.selectedProfile, "premium");
+		assert.equal(result.details.state.launchProfile.source, "global-default-profile");
 	});
 });
 

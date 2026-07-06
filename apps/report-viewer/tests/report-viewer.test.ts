@@ -180,6 +180,55 @@ await runTest("delivery profile state falls back to built-in definitions", async
 	}
 });
 
+await runTest("delivery profile state uses first global profile when no default is configured", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-first-"));
+	try {
+		writeProfileConfig(agentDir);
+		const configPath = path.join(agentDir, "extensions", "delivery-state-machine", "phase-launches.json");
+		const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+		delete config.defaultProfile;
+		fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
+		await withProfileEnv(agentDir, () => {
+			const state = loadDeliveryProfileState();
+			assert.equal(state.definitionSource, "global-phase-launches");
+			assert.deepEqual(state.profiles, ["premium", "cheap"]);
+			assert.equal(state.activeProfile, "premium");
+			assert.equal(state.activeSource, "global-first-profile");
+		});
+	} finally {
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+await runTest("delivery profile state trims global profile names consistently", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-trimmed-"));
+	try {
+		const configDir = path.join(agentDir, "extensions", "delivery-state-machine");
+		fs.mkdirSync(configDir, { recursive: true });
+		fs.writeFileSync(path.join(configDir, "phase-launches.json"), JSON.stringify({
+			defaultProfile: " premium ",
+			profiles: {
+				" premium ": {
+					IMPLEMENT: { agent: "worker", model: "trimmed-impl" },
+					VERIFY: { agent: "fresh-verifier", model: "trimmed-verify", context: "fresh" },
+					REVIEW: { agent: "reviewer", model: "trimmed-review" },
+					CLOSE: { agent: "delegate", model: "trimmed-close" },
+					RETRO: { agent: "delegate", model: "trimmed-retro" },
+				},
+			},
+		}, null, 2), "utf8");
+		await withProfileEnv(agentDir, () => {
+			const state = loadDeliveryProfileState();
+			assert.deepEqual(state.profiles, ["premium"]);
+			assert.equal(state.defaultProfile, "premium");
+			assert.equal(state.activeProfile, "premium");
+			assert.equal((state.profileDefinitions.premium.IMPLEMENT as any).model, "trimmed-impl");
+		});
+	} finally {
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
 await runTest("delivery profile API lists and switches global active profile", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-api-root-"));
 	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-profile-api-agent-"));

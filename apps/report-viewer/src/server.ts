@@ -25,17 +25,39 @@ export interface ReportViewerConfig {
 	csrfToken: string;
 }
 
+export type ProjectMetadataSource = "project-json" | "report-json" | "inferred";
+
 export interface ReportSummary {
 	viewerReportId: string;
+	viewerProjectId: string;
 	extensionReportId: string;
 	source: ReportSource;
 	task: string;
 	status: string;
 	phase?: string;
 	artifactDir: string;
-	projectId?: string;
+	projectId: string;
 	projectName?: string;
+	projectRoot?: string;
+	gitRoot?: string;
+	gitRemote?: string;
+	projectMetadataSource: ProjectMetadataSource;
+	projectWarnings: string[];
 	updatedAt: number;
+}
+
+export interface ProjectReportGroup {
+	viewerProjectId: string;
+	projectId: string;
+	projectName: string;
+	projectRoot?: string;
+	gitRoot?: string;
+	gitRemote?: string;
+	runCount: number;
+	latestUpdatedAt: number;
+	reports: ReportSummary[];
+	metadataSource: ProjectMetadataSource;
+	warnings: string[];
 }
 
 export interface LoadedReport extends ReportSummary {
@@ -300,7 +322,107 @@ function legacyTaskFromMarkdown(markdown: string, fallback: string): string {
 	return match?.[1]?.trim() || fallback;
 }
 
-function summaryFromDir(rootIndex: number, root: string, dir: string, projectMetadata?: any): ReportSummary | undefined {
+interface ProjectMetadata {
+	projectId?: string;
+	name?: string;
+	root?: string;
+	gitRoot?: string;
+	gitRemote?: string;
+	metadataSource: "project-json" | "inferred";
+	warnings: string[];
+}
+
+function stringField(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function makeViewerProjectId(rootIndex: number, projectDirectoryName: string): string {
+	return base64UrlEncode(`${rootIndex}:projects/${projectDirectoryName}`);
+}
+
+function projectDirectoryNameFromRunDir(root: string, dir: string): string | undefined {
+	const parts = path.relative(root, dir).split(path.sep);
+	return parts[0] === "projects" && parts[1] && parts[2] === "runs" ? parts[1] : undefined;
+}
+
+function readProjectMetadata(projectDir: string): ProjectMetadata {
+	const projectDirectoryName = path.basename(projectDir);
+	const projectJsonPath = path.join(projectDir, "project.json");
+	if (!fs.existsSync(projectJsonPath)) {
+		return {
+			projectId: projectDirectoryName,
+			metadataSource: "inferred",
+			warnings: ["Project metadata is incomplete; project.json is missing."],
+		};
+	}
+	try {
+		const parsed = JSON.parse(fs.readFileSync(projectJsonPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("project.json must contain an object");
+		const project = parsed as Record<string, unknown>;
+		const projectId = stringField(project.projectId) ?? projectDirectoryName;
+		const warnings = stringField(project.projectId) ? [] : ["Project metadata is incomplete; project.json has no projectId."];
+		return {
+			projectId,
+			name: stringField(project.name),
+			root: stringField(project.root),
+			gitRoot: stringField(project.gitRoot),
+			gitRemote: stringField(project.gitRemote),
+			metadataSource: "project-json",
+			warnings,
+		};
+	} catch (error) {
+		return {
+			projectId: projectDirectoryName,
+			metadataSource: "inferred",
+			warnings: [`Project metadata is incomplete; project.json could not be read: ${error instanceof Error ? error.message : String(error)}`],
+		};
+	}
+}
+
+function projectMetadataForReportDir(root: string, dir: string): ProjectMetadata | undefined {
+	const projectDirectoryName = projectDirectoryNameFromRunDir(root, dir);
+	return projectDirectoryName ? readProjectMetadata(path.join(root, "projects", projectDirectoryName)) : undefined;
+}
+
+function reportProjectMetadata(structured: any): ProjectMetadata | undefined {
+	const project = structured?.project;
+	if (!project || typeof project !== "object" || Array.isArray(project)) return undefined;
+	return {
+		projectId: stringField(project.projectId),
+		name: stringField(project.name),
+		root: stringField(project.root),
+		gitRoot: stringField(project.gitRoot),
+		gitRemote: stringField(project.gitRemote),
+		metadataSource: "project-json",
+		warnings: [],
+	};
+}
+
+function resolvedProjectMetadata(rootIndex: number, root: string, dir: string, projectMetadata?: ProjectMetadata, structured?: any): Pick<ReportSummary, "viewerProjectId" | "projectId" | "projectName" | "projectRoot" | "gitRoot" | "gitRemote" | "projectMetadataSource" | "projectWarnings"> {
+	const projectDirectoryName = projectDirectoryNameFromRunDir(root, dir) ?? "unknown-project";
+	const reportProject = reportProjectMetadata(structured);
+	const projectJson = projectMetadata?.metadataSource === "project-json" ? projectMetadata : undefined;
+	const metadataSource: ProjectMetadataSource = projectJson ? "project-json" : reportProject ? "report-json" : "inferred";
+	const projectId = projectJson?.projectId ?? reportProject?.projectId ?? projectMetadata?.projectId ?? projectDirectoryName;
+	const projectName = projectJson?.name ?? reportProject?.name;
+	const projectRoot = projectJson?.root ?? reportProject?.root;
+	const gitRoot = projectJson?.gitRoot ?? reportProject?.gitRoot ?? stringField(structured?.gitRoot);
+	const gitRemote = projectJson?.gitRemote ?? reportProject?.gitRemote;
+	const warnings = [...(projectMetadata?.warnings ?? [])];
+	if (metadataSource !== "project-json" && !warnings.length) warnings.push("Project metadata is incomplete; project.json is missing.");
+	return {
+		viewerProjectId: makeViewerProjectId(rootIndex, projectDirectoryName),
+		projectId,
+		...(projectName ? { projectName } : {}),
+		...(projectRoot ? { projectRoot } : {}),
+		...(gitRoot ? { gitRoot } : {}),
+		...(gitRemote ? { gitRemote } : {}),
+		projectMetadataSource: metadataSource,
+		projectWarnings: warnings,
+	};
+}
+
+function summaryFromDir(rootIndex: number, root: string, dir: string, projectMetadata?: ProjectMetadata): ReportSummary | undefined {
 	const source = reportSourceForDir(dir);
 	if (!source) return undefined;
 	const relative = path.relative(root, dir) || ".";
@@ -308,17 +430,15 @@ function summaryFromDir(rootIndex: number, root: string, dir: string, projectMet
 	const fallbackTask = path.basename(dir);
 	if (source === "json") {
 		const structured = readJsonIfPresent(path.join(dir, "delivery-report.json"));
-		const project = structured?.project ?? projectMetadata;
 		return {
 			viewerReportId,
+			...resolvedProjectMetadata(rootIndex, root, dir, projectMetadata, structured),
 			extensionReportId: String(structured?.id ?? fallbackTask),
 			source,
 			task: String(structured?.task ?? fallbackTask),
 			status: String(structured?.status ?? structured?.phase ?? "unknown"),
 			phase: structured?.phase ? String(structured.phase) : undefined,
 			artifactDir: dir,
-			...(project?.projectId ? { projectId: String(project.projectId) } : {}),
-			...(project?.name ? { projectName: String(project.name) } : {}),
 			updatedAt: Number(structured?.updatedAt ?? reportMtime(dir)),
 		};
 	}
@@ -327,13 +447,12 @@ function summaryFromDir(rootIndex: number, root: string, dir: string, projectMet
 	const status = /^Status:\s*(.+)$/m.exec(markdown)?.[1]?.trim() ?? "legacy";
 	return {
 		viewerReportId,
+		...resolvedProjectMetadata(rootIndex, root, dir, projectMetadata),
 		extensionReportId: fallbackTask,
 		source,
 		task: legacyTaskFromMarkdown(markdown, fallbackTask),
 		status,
 		artifactDir: dir,
-		...(projectMetadata?.projectId ? { projectId: String(projectMetadata.projectId) } : {}),
-		...(projectMetadata?.name ? { projectName: String(projectMetadata.name) } : {}),
 		updatedAt: reportMtime(dir),
 	};
 }
@@ -348,7 +467,7 @@ export function scanReports(config: Pick<ReportViewerConfig, "reportRoots">): Re
 		for (const projectEntry of fs.readdirSync(projectsDir, { withFileTypes: true })) {
 			if (!projectEntry.isDirectory()) continue;
 			const projectDir = path.join(projectsDir, projectEntry.name);
-			const projectMetadata = readJsonIfPresent(path.join(projectDir, "project.json"));
+			const projectMetadata = readProjectMetadata(projectDir);
 			const runsDir = path.join(projectDir, "runs");
 			if (!isDirectory(runsDir)) continue;
 			for (const runEntry of fs.readdirSync(runsDir, { withFileTypes: true })) {
@@ -419,7 +538,7 @@ function mergeArtifacts(...artifactLists: Array<Array<{ label: string; path: str
 
 export function loadReport(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string): LoadedReport {
 	const { root, dir } = reportDirForId(config, viewerReportId);
-	const summary = summaryFromDir(Number(parseViewerReportId(viewerReportId).rootIndex), root, dir);
+	const summary = summaryFromDir(Number(parseViewerReportId(viewerReportId).rootIndex), root, dir, projectMetadataForReportDir(root, dir));
 	if (!summary) throw new Error("Report not found");
 	const markdownPath = path.join(dir, "00-delivery-summary.md");
 	const summaryMarkdown = fs.existsSync(markdownPath) ? fs.readFileSync(markdownPath, "utf8") : undefined;
@@ -730,6 +849,62 @@ function filterReports(reports: ReportSummary[], query: URLSearchParams): Report
 	});
 }
 
+function projectNameForGroup(report: ReportSummary): string {
+	if (report.projectName) return report.projectName;
+	if (report.projectId.startsWith("unknown-")) return "Unknown project";
+	return report.projectId || "Unknown project";
+}
+
+function addWarning(warnings: Set<string>, warning: string | undefined) {
+	if (warning?.trim()) warnings.add(warning.trim());
+}
+
+export function groupReportsByProject(reports: ReportSummary[]): ProjectReportGroup[] {
+	const groups = new Map<string, ProjectReportGroup & { warningSet: Set<string> }>();
+	const sourceRank: Record<ProjectMetadataSource, number> = { "project-json": 3, "report-json": 2, inferred: 1 };
+	for (const report of reports) {
+		const key = report.viewerProjectId;
+		let group = groups.get(key);
+		if (!group) {
+			const warningSet = new Set<string>();
+			for (const warning of report.projectWarnings) addWarning(warningSet, warning);
+			if (report.projectId.startsWith("unknown-") && !report.projectName) addWarning(warningSet, "Metadata incomplete; likely migrated from a legacy flat report.");
+			group = {
+				viewerProjectId: report.viewerProjectId,
+				projectId: report.projectId,
+				projectName: projectNameForGroup(report),
+				...(report.projectRoot ? { projectRoot: report.projectRoot } : {}),
+				...(report.gitRoot ? { gitRoot: report.gitRoot } : {}),
+				...(report.gitRemote ? { gitRemote: report.gitRemote } : {}),
+				runCount: 0,
+				latestUpdatedAt: 0,
+				reports: [],
+				metadataSource: report.projectMetadataSource,
+				warnings: [],
+				warningSet,
+			};
+			groups.set(key, group);
+		} else {
+			for (const warning of report.projectWarnings) addWarning(group.warningSet, warning);
+			if (sourceRank[report.projectMetadataSource] > sourceRank[group.metadataSource]) group.metadataSource = report.projectMetadataSource;
+			if (!group.projectName || group.projectName === group.projectId || group.projectName === "Unknown project") group.projectName = projectNameForGroup(report);
+			if (!group.projectRoot && report.projectRoot) group.projectRoot = report.projectRoot;
+			if (!group.gitRoot && report.gitRoot) group.gitRoot = report.gitRoot;
+			if (!group.gitRemote && report.gitRemote) group.gitRemote = report.gitRemote;
+		}
+		group.runCount += 1;
+		group.latestUpdatedAt = Math.max(group.latestUpdatedAt, report.updatedAt);
+		group.reports.push(report);
+	}
+	return [...groups.values()]
+		.map(({ warningSet, ...group }) => ({
+			...group,
+			reports: group.reports.sort((a, b) => b.updatedAt - a.updatedAt || a.viewerReportId.localeCompare(b.viewerReportId)),
+			warnings: [...warningSet],
+		}))
+		.sort((a, b) => b.latestUpdatedAt - a.latestUpdatedAt || a.projectName.localeCompare(b.projectName));
+}
+
 interface ReportListSignal {
 	label: string;
 	badge: "ok" | "warn" | "bad" | "";
@@ -842,12 +1017,26 @@ function deliveryProfilePanelHtml(): string {
 	}
 }
 
+function reportCardHtml(report: ReportSummary): string {
+	return `<article class="phase-card"><div><a class="task-link" href="/reports/${encodeURIComponent(report.viewerReportId)}">${escapeHtml(report.task)}</a><div class="muted"><code>${escapeHtml(report.extensionReportId)}</code></div></div><div><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span> <span class="source-${escapeHtml(report.source)}">${escapeHtml(report.source === "json" ? "structured JSON" : "legacy Markdown")}</span></div>${reportSignalsHtml(report)}<div class="muted">${escapeHtml(new Date(report.updatedAt).toISOString())}</div><details><summary>Artifact directory</summary><code>${escapeHtml(report.artifactDir)}</code></details></article>`;
+}
+
+function projectGroupHtml(group: ProjectReportGroup): string {
+	const projectPath = group.projectRoot ?? group.gitRoot;
+	const pathHtml = projectPath ? `<div class="muted">${escapeHtml(projectPath)}</div>` : "";
+	const rootHtml = group.gitRoot && group.gitRoot !== projectPath ? `<div class="muted">Git root: ${escapeHtml(group.gitRoot)}</div>` : "";
+	const remoteHtml = group.gitRemote ? `<div class="muted">Remote: ${escapeHtml(group.gitRemote)}</div>` : "";
+	const warningsHtml = group.warnings.length ? `<p>${group.warnings.map((warning) => `<span class="badge warn">${escapeHtml(warning)}</span>`).join(" ")}</p>` : "";
+	const cards = group.reports.map(reportCardHtml).join("");
+	return `<section class="section-card project-group" id="project-${escapeHtml(group.viewerProjectId)}"><h2>${escapeHtml(group.projectName)}</h2>${pathHtml}<div class="muted">Project id: <code>${escapeHtml(group.projectId)}</code></div>${rootHtml}${remoteHtml}<div class="muted">Runs: ${group.runCount} · Latest: ${escapeHtml(new Date(group.latestUpdatedAt).toISOString())}</div>${warningsHtml}<div class="phase-grid">${cards}</div></section>`;
+}
+
 function reportsHtml(config: ReportViewerConfig, query = new URLSearchParams()): string {
 	const reports = filterReports(scanReports(config), query);
 	const source = query.get("source") ?? "";
 	const filterForm = `<form class="panel filters" method="get" action="/reports"><label>Status <input name="status" value="${escapeHtml(query.get("status") ?? "")}" placeholder="DONE, FAIL, REVIEW"></label><label>Source <select name="source"><option value="">Any</option><option value="json" ${source === "json" ? "selected" : ""}>JSON</option><option value="legacy-markdown" ${source === "legacy-markdown" ? "selected" : ""}>Legacy Markdown</option></select></label><label>Task search <input name="task" value="${escapeHtml(query.get("task") ?? "")}" placeholder="task text"></label><label>Recent days <input name="recentDays" type="number" min="1" value="${escapeHtml(query.get("recentDays") ?? "")}"></label><button type="submit">Apply filters</button><a class="button secondary" href="/reports">Reset</a></form>`;
-	const cards = reports.map((report) => `<article class="phase-card"><div><a class="task-link" href="/reports/${encodeURIComponent(report.viewerReportId)}">${escapeHtml(report.task)}</a><div class="muted"><code>${escapeHtml(report.extensionReportId)}</code></div></div><div><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span> <span class="source-${escapeHtml(report.source)}">${escapeHtml(report.source === "json" ? "structured JSON" : "legacy Markdown")}</span></div>${reportSignalsHtml(report)}<div class="muted">${escapeHtml(new Date(report.updatedAt).toISOString())}</div><details><summary>Artifact directory</summary><code>${escapeHtml(report.artifactDir)}</code></details></article>`).join("");
-	return page("Pi delivery reports", `<h1>Pi delivery reports</h1><p class="muted">Find reports by status, source, recency, or task text. Cards avoid wide table-heavy reading on mobile.</p>${deliveryProfilePanelHtml()}${filterForm}<div class="phase-grid">${cards || `<div class="panel">No reports found.</div>`}</div>`, config);
+	const groups = groupReportsByProject(reports).map(projectGroupHtml).join("");
+	return page("Pi delivery reports", `<h1>Pi delivery reports</h1><p class="muted">Find reports by status, source, recency, or task text. Cards avoid wide table-heavy reading on mobile.</p>${deliveryProfilePanelHtml()}${filterForm}<div class="section-grid project-groups">${groups || `<div class="panel">No reports found.</div>`}</div>`, config);
 }
 
 function phaseCost(step: any): string {

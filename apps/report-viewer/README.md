@@ -92,7 +92,7 @@ If no CSRF token is configured, the server generates one at startup and exposes 
 
 ## Routes
 
-- `/reports` — local report list UI, including the global delivery profile selector and read-only project-grouped report sections.
+- `/reports` — local report list UI, including the global delivery profile selector and read-only project-grouped report sections with compact report rows.
 - `/api/delivery-profiles/global` — effective built-in/global delivery profile definitions and active selection.
 - `/api/delivery-profiles/global/active` — CSRF-protected POST endpoint that atomically writes the global `active-profile.json` selection.
 - `/reports/:viewerReportId` — local report detail UI.
@@ -102,7 +102,9 @@ If no CSRF token is configured, the server generates one at startup and exposes 
 ## Behavior
 
 - Scans project-layout report roots: `<reportRoot>/projects/<project-id>/runs/<run-id>` and reads `<reportRoot>/projects/<project-id>/project.json` when available.
-- Groups `/reports` by project after applying filters, with each group showing project name/id, root or git root, git remote, visible run count, and latest run timestamp when that metadata is available.
+- Groups `/reports` by project after applying filters, with compact report rows that show a shortened display title, status/source badges, a concise structured report brief, follow-up/risk signals, and a details link.
+- Keeps full delivery task text available in link titles and on the report detail page behind a collapsed full-task disclosure when the task is shortened.
+- Shows project name, visible run count, latest run timestamp, and warnings first; longer project id/root/remote metadata is available in a collapsed metadata block when present.
 - Treats project grouping as read-only UI organization; it does not add project-level profile/model setup or write to project roots.
 - Shows incomplete or malformed project metadata as an explicit unknown/inferred project group instead of failing the report list. These buckets commonly come from migrated legacy flat reports.
 - Does not scan old flat report directories directly. Migrate them once with:
@@ -116,7 +118,9 @@ If no CSRF token is configured, the server generates one at startup and exposes 
 - Reads extension-owned `delivery-report.json` first. The stable schema v2 contract is documented in [../../docs/delivery-report-schema-v2.md](../../docs/delivery-report-schema-v2.md).
 - Falls back to `00-delivery-summary.md` when JSON is missing inside a project-layout run directory.
 - Stores app-owned metadata under each report directory in `.report-viewer/`.
-- Rejects artifact path traversal and symlink escapes.
+- Rejects artifact path traversal, relative symlink escapes, arbitrary absolute paths, unsafe URL schemes, and absolute artifact symlinks.
+- Opens exact absolute local artifact paths only when they are explicitly referenced by `delivery-report.json` step artifacts, exist as regular files, and pass the report-owned artifact checks.
+- Renders missing or blocked artifact references as unavailable states instead of broken links; external `http`/`https` artifacts are direct links and are not proxied by the API.
 - Lists built-in delivery profiles when no custom global `phase-launches.json` exists.
 - Switches only the global active delivery profile by writing `active-profile.json` under the resolved pi agent dir; project files are never edited for profile/model setup.
 - Uses atomic temp-file plus rename writes for profile selection.

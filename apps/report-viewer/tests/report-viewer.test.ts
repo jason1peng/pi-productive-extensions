@@ -557,12 +557,14 @@ await runTest("UI routes render report list, report detail, and artifact content
 			assert.match(listHtml, /Apply filters/);
 			assert.match(listHtml, /class="section-card project-group"/);
 			assert.match(listHtml, /Project id: <code>project-a-12345678<\/code>/);
-			assert.match(listHtml, /Remote: git@example.com:project-a-12345678\.git/);
+			assert.match(listHtml, /Remote: <code>git@example.com:project-a-12345678\.git<\/code>/);
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
 			const detailHtml = await detail.text();
 			assert.match(detailHtml, /Phase journey/);
 			assert.match(detailHtml, /phase-card/);
+			assert.match(detailHtml, /PASS verification evidence/);
+			assert.match(detailHtml, /class="phase-groups"/);
 			assert.match(detailHtml, /Failures and repairs/);
 			assert.match(detailHtml, /Raw structured JSON/);
 			const artifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("02-verification.md")}`);
@@ -587,6 +589,7 @@ await runTest("UI routes render report list, report detail, and artifact content
 			assert.equal(malformed.status, 200);
 			const malformedHtml = await malformed.text();
 			assert.match(malformedHtml, /Structured parsing unavailable for this artifact/);
+			assert.match(malformedHtml, /class="artifact-sections"/);
 			assert.match(malformedHtml, /Raw Markdown/);
 			assert.match(malformedHtml, /&lt;script&gt;alert\(&#39;owned&#39;\)&lt;\/script&gt;/);
 			assert.doesNotMatch(malformedHtml, /<script>alert\('owned'\)<\/script>/);
@@ -640,7 +643,133 @@ await runTest("report detail shows aggregate and individual parallel reviewer ar
 	}
 });
 
-await runTest("artifact verdict detection ignores out-of-report artifact paths", async () => {
+await runTest("report list compacts long titles and exposes full task on detail", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-long-title-"));
+	try {
+		const longTask = "Deliver the approved report viewer readability and artifact link reliability plan with a deliberately verbose title that should not dominate the dashboard rows";
+		writeJsonReport(projectRunDir(root), longTask);
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const list = await fetch(`${baseUrl}/reports?task=readability`);
+			assert.equal(list.status, 200);
+			const listHtml = await list.text();
+			assert.match(listHtml, /class="report-list"/);
+			assert.match(listHtml, /class="report-row"/);
+			assert.match(listHtml, /title="Deliver the approved report viewer readability/);
+			assert.match(listHtml, /Deliver the approved report viewer readability and artifact link reliability plan with a…/);
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const detailHtml = await detail.text();
+			assert.match(detailHtml, /Full delivery task/);
+			assert.match(detailHtml, /deliberately verbose title that should not dominate/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("artifact links handle referenced absolutes, externals, missing refs, and unsafe schemes", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-artifact-links-root-"));
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-artifact-links-outside-"));
+	try {
+		const dir = projectRunDir(root);
+		const absoluteArtifact = path.join(outside, "absolute implementation.md");
+		const unreferencedArtifact = path.join(outside, "unreferenced.md");
+		const absoluteSymlink = path.join(outside, "absolute-link.md");
+		const windowsArtifact = "C:/report-viewer/windows-artifact.md";
+		const windowsUnreferenced = "C:/report-viewer/unreferenced.md";
+		fs.writeFileSync(absoluteArtifact, "RESULT: PASS\n\n## Summary\nAbsolute artifact summary.\n", "utf8");
+		fs.writeFileSync(unreferencedArtifact, "RESULT: PASS\n\n## Summary\nUnreferenced artifact.\n", "utf8");
+		fs.symlinkSync(absoluteArtifact, absoluteSymlink);
+		writeJsonReport(dir, "artifact link task", {
+			steps: [
+				{ id: "IMPLEMENT-abs", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", artifact: absoluteArtifact, summary: "generic implementation summary", startedAt: 1 },
+				{ id: "VERIFY-multi", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md; missing-detail.md; review notes #1.md", summary: "generic verify summary", startedAt: 2 },
+				{ id: "REVIEW-external", phase: "REVIEW", attempt: 1, agent: "reviewer", status: "reported", verdict: "PASS", artifact: "https://example.com/review.md", summary: "external review", startedAt: 3 },
+				{ id: "REVIEW-unsafe", phase: "REVIEW", attempt: 2, agent: "reviewer", status: "reported", verdict: "PASS", artifact: "javascript:alert(1)", summary: "unsafe review", startedAt: 4 },
+				{ id: "REVIEW-file", phase: "REVIEW", attempt: 3, agent: "reviewer", status: "reported", verdict: "PASS", artifact: "file:///etc/passwd", summary: "file url", startedAt: 5 },
+				{ id: "REVIEW-windows", phase: "REVIEW", attempt: 4, agent: "reviewer", status: "reported", verdict: "PASS", artifact: windowsArtifact, summary: "windows absolute reference", startedAt: 6 },
+				{ id: "CLOSE-symlink", phase: "CLOSE", attempt: 1, agent: "delegate", status: "reported", artifact: absoluteSymlink, summary: "absolute symlink", startedAt: 7 },
+			],
+		});
+		fs.writeFileSync(path.join(dir, "review notes #1.md"), "RESULT: PASS\n\n## Summary\nSpecial character artifact opened.\n", "utf8");
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, /Absolute artifact summary/);
+			assert.match(html, /Artifact 1/);
+			assert.match(html, /missing-detail\.md/);
+			assert.match(html, /Artifact 2 unavailable: Artifact not found/);
+			assert.match(html, /href="https:\/\/example\.com\/review\.md" rel="noreferrer"/);
+			assert.match(html, /Unsupported artifact URL scheme/);
+			assert.doesNotMatch(html, /href="javascript:alert\(1\)"/);
+			assert.doesNotMatch(html, /href="file:\/\/\/etc\/passwd"/);
+			assert.match(html, /C:&#x2F;report-viewer&#x2F;windows-artifact\.md|C:\/report-viewer\/windows-artifact\.md/);
+			assert.match(html, /Artifact not found/);
+			assert.match(html, /Absolute artifact symlinks are not allowed/);
+
+			const absolute = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent(absoluteArtifact)}`);
+			assert.equal(absolute.status, 200);
+			assert.match(await absolute.text(), /Absolute artifact summary/);
+			const special = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("review notes #1.md")}`);
+			assert.equal(special.status, 200);
+			assert.match(await special.text(), /Special character artifact opened/);
+			const unreferenced = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent(unreferencedArtifact)}`);
+			assert.equal(unreferenced.status, 400);
+			assert.match(await unreferenced.text(), /not referenced/);
+			const proxiedExternal = await fetch(`${baseUrl}/api/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("https://example.com/review.md")}`);
+			assert.equal(proxiedExternal.status, 400);
+			assert.match(await proxiedExternal.text(), /External artifacts are not proxied/);
+			const unsafe = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("javascript:alert(1)")}`);
+			assert.equal(unsafe.status, 400);
+			assert.match(await unsafe.text(), /Unsupported artifact URL scheme/);
+			const referencedWindows = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent(windowsArtifact)}`);
+			assert.equal(referencedWindows.status, 400);
+			assert.match(await referencedWindows.text(), /Artifact not found/);
+			const unreferencedWindows = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent(windowsUnreferenced)}`);
+			assert.equal(unreferencedWindows.status, 400);
+			assert.match(await unreferencedWindows.text(), /not referenced/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(outside, { recursive: true, force: true });
+	}
+});
+
+await runTest("semicolon-bearing external artifact URLs are not split", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-external-semicolon-"));
+	try {
+		const dir = projectRunDir(root);
+		const externalArtifact = "https://example.com/a;b/report.md";
+		writeJsonReport(dir, "external semicolon artifact task", {
+			steps: [
+				{ id: "REVIEW-external-semicolon", phase: "REVIEW", attempt: 1, agent: "reviewer", status: "reported", verdict: "PASS", artifact: externalArtifact, summary: "external semicolon review", startedAt: 1 },
+			],
+		});
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, /href="https:\/\/example\.com\/a;b\/report\.md" rel="noreferrer"/);
+			assert.doesNotMatch(html, /Artifact 1/);
+			assert.doesNotMatch(html, /Artifact 2/);
+			assert.doesNotMatch(html, /unavailable: Artifact not found/);
+			const proxiedExternal = await fetch(`${baseUrl}/api/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent(externalArtifact)}`);
+			assert.equal(proxiedExternal.status, 400);
+			assert.match(await proxiedExternal.text(), /External artifacts are not proxied/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("artifact verdict detection allows referenced absolutes and blocks relative symlink escapes", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-unsafe-verdict-root-"));
 	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-unsafe-verdict-outside-"));
 	try {
@@ -660,14 +789,14 @@ await runTest("artifact verdict detection ignores out-of-report artifact paths",
 			const list = await fetch(`${baseUrl}/reports?task=unsafe`);
 			assert.equal(list.status, 200);
 			const listHtml = await list.text();
-			assert.doesNotMatch(listHtml, /Failed verify\/review/);
+			assert.match(listHtml, /Failed verify\/review: REVIEW #1/);
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
 			const html = await detail.text();
-			assert.match(html, /absolute out-of-report artifact/);
+			assert.match(html, /Out-of-report secret verdict/);
 			assert.match(html, /symlink out-of-report artifact/);
-			assert.doesNotMatch(html, /<span class="badge bad">FAIL<\/span>/);
-			assert.match(html, /<span class="badge ">reported<\/span>/);
+			assert.match(html, /<span class="badge bad">FAIL<\/span>/);
+			assert.match(html, /Artifact path escapes configured report roots/);
 		});
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
@@ -755,7 +884,7 @@ await runTest("resolveArtifactPath allows report artifacts and rejects traversal
 		assert.equal(allowed.kind, "local");
 		assert.throws(() => resolveArtifactPath(configFor([root]), summary.viewerReportId, "../run/02-verification.md"), /traversal/i);
 		assert.throws(() => resolveArtifactPath(configFor([root]), summary.viewerReportId, "%2e%2e/run/02-verification.md"), /traversal/i);
-		assert.throws(() => resolveArtifactPath(configFor([root]), summary.viewerReportId, path.join(outside, "secret.md")), /escapes/i);
+		assert.throws(() => resolveArtifactPath(configFor([root]), summary.viewerReportId, path.join(outside, "secret.md")), /not referenced/i);
 		assert.throws(() => resolveArtifactPath(configFor([root]), summary.viewerReportId, "secret-link.md"), /escapes/i);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });

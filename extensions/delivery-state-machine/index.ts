@@ -101,6 +101,9 @@ interface DeliveryState {
 interface ChildLaunch extends LaunchConfig {
 	childPrompt: string;
 	acceptance: false;
+	artifact?: string;
+	output?: string;
+	outputMode?: "file-only";
 }
 
 interface NextAction {
@@ -599,11 +602,17 @@ function parallelArtifactName(phase: RunnablePhase, attempt: number, launch: Lau
 	return `${PHASE_ARTIFACT_STEMS[phase]}-${attempt}-${childNumber}-${slugifyLaunch(launch)}.md`;
 }
 
+function parallelArtifactPathForLaunch(state: DeliveryState, launch: LaunchConfig, index: number): string | undefined {
+	if (!isRunnablePhase(state.phase)) return undefined;
+	const attempt = phaseAttemptForStep(state, state.phase);
+	const artifactName = parallelArtifactName(state.phase, attempt, launch, index);
+	return state.artifactDir ? path.join(state.artifactDir, artifactName) : artifactName;
+}
+
 function parallelChildPrompt(basePrompt: string, state: DeliveryState, launch: LaunchConfig, index: number, total: number): string {
 	if (!isRunnablePhase(state.phase)) return basePrompt;
 	const attempt = phaseAttemptForStep(state, state.phase);
-	const artifactName = parallelArtifactName(state.phase, attempt, launch, index);
-	const artifactPath = state.artifactDir ? path.join(state.artifactDir, artifactName) : artifactName;
+	const artifactPath = parallelArtifactPathForLaunch(state, launch, index) ?? parallelArtifactName(state.phase, attempt, launch, index);
 	return `${basePrompt}
 
 Parallel phase instruction:
@@ -616,7 +625,7 @@ function reportInstructionForPhase(phase: RunnablePhase, parallelCount = 1): str
 	const verdictGuidance = phase === "VERIFY" ? " and verdict PASS/FAIL/INCONCLUSIVE" : "";
 	if (parallelCount > 1) {
 		const aggregateName = PHASE_ARTIFACT_STEMS[phase];
-		return `After all ${parallelCount} children complete, parent/orchestrator preserves every child artifact, writes a clean aggregate phase artifact such as ${aggregateName}.md with links/summaries for each child, then calls delivery_report once with phase ${phase}${verdictGuidance} and artifact set to only that aggregate artifact path. For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding.`;
+		return `After all ${parallelCount} children complete, parent/orchestrator confirms every details.next.parallel[].artifact file exists, is non-empty, and starts with RESULT/VERDICT. If a child returned inline output or the subagent output was saved elsewhere, copy it to that planned artifact path; if copying is not possible, pass the actual existing child artifact paths in delivery_report.artifact so the state can record existing paths. Then write a clean aggregate phase artifact such as ${aggregateName}.md with links/summaries for each child, and call delivery_report once with phase ${phase}${verdictGuidance}. When child artifacts are at the planned paths, set artifact to only the aggregate artifact path. For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding. delivery_report will reject parallel phase reports when child artifacts are missing or invalid to avoid stale delivery-report.json links.`;
 	}
 	return `After the child completes, parent/orchestrator calls delivery_report with phase ${phase}${verdictGuidance}.`;
 }
@@ -656,11 +665,15 @@ function nextAction(state: DeliveryState): NextAction {
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
-		? launches.map((launch, index, allLaunches) => ({
-			...launch,
-			acceptance: false as const,
-			childPrompt: parallelChildPrompt(childPrompt, state, launch, index, allLaunches.length),
-		}))
+		? launches.map((launch, index, allLaunches) => {
+			const artifactPath = parallelArtifactPathForLaunch(state, launch, index);
+			return {
+				...launch,
+				acceptance: false as const,
+				...(artifactPath ? { artifact: artifactPath, output: artifactPath, outputMode: "file-only" as const } : {}),
+				childPrompt: parallelChildPrompt(childPrompt, state, launch, index, allLaunches.length),
+			};
+		})
 		: undefined;
 	const orchestratorInstruction = [worktreePolicyInstruction(state), config.orchestratorInstruction(context)].filter(Boolean).join(" ");
 	const reportInstruction = reportInstructionForPhase(state.phase, launches.length);
@@ -769,8 +782,55 @@ function splitArtifactRefs(artifact?: string): string[] {
 		.filter(Boolean);
 }
 
+function artifactAbsolutePath(state: DeliveryState, artifact: string): string {
+	return path.isAbsolute(artifact) ? artifact : path.join(state.artifactDir ?? process.cwd(), artifact);
+}
+
 function isSameArtifactPath(a: string, b: string): boolean {
 	return path.resolve(a) === path.resolve(b);
+}
+
+function artifactReadiness(artifact?: string): { ok: true; verdict?: Verdict } | { ok: false; reason: string } {
+	if (!artifact) return { ok: false, reason: "missing artifact path" };
+	if (!fs.existsSync(artifact)) return { ok: false, reason: "artifact file does not exist" };
+	if (!fs.statSync(artifact).isFile()) return { ok: false, reason: "artifact path is not a file" };
+	const verdict = artifactVerdict(artifact);
+	if (!verdict) return { ok: false, reason: "artifact does not start with RESULT/VERDICT" };
+	return { ok: true, verdict };
+}
+
+function existingChildArtifactRefs(state: DeliveryState, artifact: string | undefined, aggregatePath: string | undefined): string[] {
+	return splitArtifactRefs(artifact)
+		.map((ref) => artifactAbsolutePath(state, ref))
+		.filter((candidate) => !aggregatePath || !isSameArtifactPath(candidate, aggregatePath))
+		.filter((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+}
+
+function reconcileParallelChildArtifacts(state: DeliveryState, steps: DeliveryStep[], artifact: string | undefined, aggregatePath: string | undefined) {
+	const childSteps = steps
+		.filter((step) => step.childIndex !== undefined)
+		.sort((a, b) => (a.childIndex ?? 0) - (b.childIndex ?? 0));
+	if (!childSteps.length) return;
+	const missingSteps = childSteps.filter((step) => !artifactReadiness(step.artifact).ok);
+	if (!missingSteps.length) return;
+	const actualRefs = existingChildArtifactRefs(state, artifact, aggregatePath);
+	if (actualRefs.length !== childSteps.length) return;
+	childSteps.forEach((step, index) => {
+		step.artifact = actualRefs[index];
+	});
+}
+
+function parallelChildArtifactIssues(steps: DeliveryStep[]): string[] {
+	return steps
+		.filter((step) => step.childIndex !== undefined)
+		.map((step) => {
+			const readiness = artifactReadiness(step.artifact);
+			if (readiness.ok) return undefined;
+			const childNumber = (step.childIndex ?? 0) + 1;
+			const total = step.childCount ?? steps.length;
+			return `${step.phase} #${step.attempt} child ${childNumber}/${total}: ${readiness.reason}${step.artifact ? ` (${step.artifact})` : ""}`;
+		})
+		.filter((issue): issue is string => Boolean(issue));
 }
 
 function markdownLinkForArtifact(state: DeliveryState, artifact: string): string {
@@ -816,6 +876,14 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 	const steps = ensurePlannedStepsForReport(state, ctx, params.phase);
 	const usageAfter = collectSessionUsage(ctx);
 	const parallel = steps.length > 1;
+	const aggregatePath = parallel ? aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)) : undefined;
+	if (parallel) {
+		reconcileParallelChildArtifacts(state, steps, params.artifact, aggregatePath);
+		const childArtifactIssues = parallelChildArtifactIssues(steps);
+		if (childArtifactIssues.length) {
+			throw new Error(`Cannot report ${params.phase}: parallel child artifacts are missing or invalid. Save each child output to details.next.parallel[].artifact or pass actual existing child artifact paths in artifact before reporting. Issues: ${childArtifactIssues.join("; ")}`);
+		}
+	}
 	const reportArtifact = parallel ? ensureAggregateArtifactForParallelReport(state, { ...params, phase: params.phase }, steps) : params.artifact;
 	const endedAt = Date.now();
 	for (const step of steps) {
@@ -1562,7 +1630,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptSnippet: "Return the next required delivery state-machine action",
 		promptGuidelines: [
 			"Use delivery_next before launching any delivery workflow subagent.",
-			"Launch the returned agent/model/thinking/context and pass only details.next.childPrompt to the subagent.",
+			"Launch the returned agent/model/thinking/context and pass only details.next.childPrompt to the subagent for single-child phases.",
+			"For parallel phases, pass each details.next.parallel[] entry's childPrompt plus output/outputMode when supported so each child artifact is saved to the planned path.",
 			"Pass details.next.acceptance or details.next.parallel[].acceptance when present so pi-subagents acceptance is disabled for delivery-managed artifact contracts.",
 			"Keep details.next.orchestratorInstruction and details.next.reportInstruction for the parent/orchestrator.",
 			"Follow delivery_next exactly; do not skip verification/review/close gates.",

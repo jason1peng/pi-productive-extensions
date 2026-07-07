@@ -190,13 +190,20 @@ await runTest("/deliver reaches review with exactly the configured parallel revi
 	assert.equal(action.parallel[0].model, undefined);
 	assert.equal(action.parallel[0].acceptance, false);
 	assert.match(action.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
+	assert.match(action.parallel[0].artifact, /03-review-1-01-reviewer\.md/);
+	assert.equal(action.parallel[0].output, action.parallel[0].artifact);
+	assert.equal(action.parallel[0].outputMode, "file-only");
 	assert.equal(action.parallel[1].agent, "reviewer");
 	assert.equal(action.parallel[1].model, "openai/gpt-5.5");
 	assert.equal(action.parallel[1].acceptance, false);
 	assert.match(action.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(action.parallel[1].artifact, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.equal(action.parallel[1].output, action.parallel[1].artifact);
+	assert.equal(action.parallel[1].outputMode, "file-only");
 	assert.match(action.reportInstruction, /After all 2 children complete/);
-	assert.match(action.reportInstruction, /writes a clean aggregate phase artifact/);
-	assert.match(action.reportInstruction, /artifact set to only that aggregate artifact path/);
+	assert.match(action.reportInstruction, /confirms every details\.next\.parallel\[\]\.artifact file exists/);
+	assert.match(action.reportInstruction, /delivery_report will reject parallel phase reports/);
+	assert.match(action.reportInstruction, /set artifact to only the aggregate artifact path/);
 });
 
 function profileLaunches(profiles: Record<string, Record<string, unknown>>, defaultProfile = Object.keys(profiles)[0]): string {
@@ -492,6 +499,9 @@ await runTest("verify and review failures with recommendedDecision=repair route 
 
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "fixed verification blocker" });
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verification passed" });
+	const reviewNext = await harness.tool("delivery_next");
+	writeReviewArtifact(reviewNext.details.next.parallel[0].artifact, "FAIL", "review blocker within scope");
+	writeReviewArtifact(reviewNext.details.next.parallel[1].artifact, "PASS", "second reviewer passed");
 	result = await harness.tool("delivery_report", {
 		phase: "REVIEW",
 		verdict: "FAIL",
@@ -518,7 +528,9 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	});
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "added regression coverage for summary report generation" });
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verification passed after repair" });
-	await harness.tool("delivery_next");
+	const reviewNext = await harness.tool("delivery_next");
+	writeReviewArtifact(reviewNext.details.next.parallel[0].artifact, "PASS", "reviewer 1 passed");
+	writeReviewArtifact(reviewNext.details.next.parallel[1].artifact, "PASS", "reviewer 2 passed");
 	await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "both reviewers passed" });
 	await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed locally" });
 	result = await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
@@ -559,6 +571,10 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	assert.equal(fs.existsSync(`${jsonPath}.tmp-${process.pid}`), false);
 });
 
+function writeReviewArtifact(filePath: string, verdict: "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL", summary: string) {
+	fs.writeFileSync(filePath, `RESULT: ${verdict}\n\n## Summary\n${summary}\n\n## Must-fix findings\n${verdict === "FAIL" ? `- ${summary}` : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? `- ${summary}` : "none"}\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- checked\n\n## Recommendation\n${verdict === "FAIL" ? "repair" : "none"}\n`, "utf8");
+}
+
 await runTest("parallel reviewer aggregate report preserves child verdict artifacts and writes clean aggregate", async () => {
 	const harness = createHarness();
 
@@ -568,8 +584,8 @@ await runTest("parallel reviewer aggregate report preserves child verdict artifa
 	const next = await harness.tool("delivery_next");
 	const plannedReviewSteps = next.details.state.steps.filter((step: any) => step.phase === "REVIEW");
 	assert.equal(plannedReviewSteps.length, 2);
-	fs.writeFileSync(plannedReviewSteps[0].artifact, "RESULT: FAIL\n\n## Summary\nReviewer 1 found a blocker.\n\n## Must-fix findings\n- missing artifact note\n\n## Non-blocking notes\nnone\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- blocker remains\n\n## Recommendation\nrepair\n", "utf8");
-	fs.writeFileSync(plannedReviewSteps[1].artifact, "RESULT: PASS\n\n## Summary\nReviewer 2 found no blockers.\n\n## Must-fix findings\nnone\n\n## Non-blocking notes\nnone\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- no blockers\n\n## Recommendation\nnone\n", "utf8");
+	writeReviewArtifact(plannedReviewSteps[0].artifact, "FAIL", "Reviewer 1 found a blocker.");
+	writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "Reviewer 2 found no blockers.");
 
 	const result = await harness.tool("delivery_report", {
 		phase: "REVIEW",
@@ -600,6 +616,55 @@ await runTest("parallel reviewer aggregate report preserves child verdict artifa
 	assert.match(text, /\| 4 \| REVIEW \| aggregate \| parent \| FAIL \| unavailable \| \[03-review\.md\]/);
 });
 
+await runTest("parallel review report rejects missing child artifacts before recording stale links", async () => {
+	const harness = createHarness();
+
+	await harness.tool("delivery_start", { task: "parallel missing child artifact smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	const next = await harness.tool("delivery_next");
+	const plannedReviewSteps = next.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+
+	await assert.rejects(
+		() => harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "review passed but child artifacts were not saved",
+		}),
+		/missing or invalid.*artifact file does not exist/i,
+	);
+
+	const status = await harness.tool("delivery_status");
+	const reviewSteps = status.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+	assert.equal(status.details.state.phase, "REVIEW");
+	assert.deepEqual(reviewSteps.map((step: any) => step.status), ["planned", "planned"]);
+	assert.deepEqual(reviewSteps.map((step: any) => step.artifact), plannedReviewSteps.map((step: any) => step.artifact));
+});
+
+await runTest("parallel review report can record actual existing child artifact paths", async () => {
+	const harness = createHarness();
+
+	await harness.tool("delivery_start", { task: "parallel actual child artifact path smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	const next = await harness.tool("delivery_next");
+	const artifactDir = next.details.state.artifactDir as string;
+	const actualA = path.join(artifactDir, "custom-review-a.md");
+	const actualB = path.join(artifactDir, "custom-review-b.md");
+	writeReviewArtifact(actualA, "PASS", "Reviewer A passed.");
+	writeReviewArtifact(actualB, "PASS", "Reviewer B passed.");
+
+	const result = await harness.tool("delivery_report", {
+		phase: "REVIEW",
+		verdict: "PASS",
+		summary: "both actual child artifacts passed",
+		artifact: `${actualA}; ${actualB}`,
+	});
+	const childSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
+	assert.deepEqual(childSteps.map((step: any) => step.artifact), [actualA, actualB]);
+	assert.deepEqual(childSteps.map((step: any) => step.verdict), ["PASS", "PASS"]);
+});
+
 await runTest("parallel review repair journey preserves distinct child artifact links per attempt", async () => {
 	const harness = createHarness();
 
@@ -610,6 +675,8 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 	const firstReview = await harness.tool("delivery_next");
 	assert.match(firstReview.details.next.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
 	assert.match(firstReview.details.next.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	writeReviewArtifact(firstReview.details.next.parallel[0].artifact, "FAIL", "repeated review artifacts reused");
+	writeReviewArtifact(firstReview.details.next.parallel[1].artifact, "PASS", "reviewer 2 passed");
 
 	result = await harness.tool("delivery_report", {
 		phase: "REVIEW",
@@ -623,6 +690,8 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 	const secondReview = await harness.tool("delivery_next");
 	assert.match(secondReview.details.next.parallel[0].childPrompt, /03-review-2-01-reviewer\.md/);
 	assert.match(secondReview.details.next.parallel[1].childPrompt, /03-review-2-02-reviewer-openai-gpt-5-5\.md/);
+	writeReviewArtifact(secondReview.details.next.parallel[0].artifact, "PASS", "reviewer 1 passed after repair");
+	writeReviewArtifact(secondReview.details.next.parallel[1].artifact, "PASS", "reviewer 2 passed after repair");
 
 	await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "review passed after repair" });
 	await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed locally" });

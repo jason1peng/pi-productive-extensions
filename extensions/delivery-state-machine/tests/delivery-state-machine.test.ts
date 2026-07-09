@@ -795,21 +795,27 @@ await runTest("usage summary does not show exact zero cost for session files wit
 	}
 });
 
-await runTest("usage summary reports overall cost since delivery_start when session usage exists", async () => {
+await runTest("usage summary reports total cost and phase token usage since delivery_start", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-usage-"));
 	const sessionFile = path.join(cwd, "session.jsonl");
 	fs.writeFileSync(sessionFile, "", "utf8");
 	try {
 		const harness = createHarness({ cwd, sessionFile });
 		await harness.tool("delivery_start", { task: "usage baseline smoke" });
-		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 100, output: 25, totalTokens: 125, cost: { total: 0.0123 } } } })}\n`, "utf8");
+		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 100, output: 25, cacheRead: 15, cacheWrite: 5, totalTokens: 145, cost: { total: 0.0123 } } } })}\n`, "utf8");
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented with usage" });
 		const summary = await harness.tool("delivery_summary");
 		const text = summary.content[0].text as string;
 
 		assert.match(text, /Overall cost: \$0\.0123/);
-		assert.match(text, /Overall tokens: 125/);
-		assert.match(text, /\$0\.0123 \(best-effort\)/);
+		assert.match(text, /Overall tokens: 145/);
+		assert.match(text, /Overall input tokens: 100/);
+		assert.match(text, /Overall output tokens: 25/);
+		assert.match(text, /Overall cache read tokens: 15/);
+		assert.match(text, /Overall cache write tokens: 5/);
+		assert.match(text, /\| # \| Phase \| Agent \| Model \| Verdict \| Token usage \| Detail \|/);
+		assert.match(text, /145 tokens \(best-effort\)/);
+		assert.doesNotMatch(text, /\$0\.0123 \(best-effort\)/);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}

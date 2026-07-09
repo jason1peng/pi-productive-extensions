@@ -608,6 +608,42 @@ await runTest("UI routes render report list, report detail, and artifact content
 	}
 });
 
+await runTest("report detail shows usage totals at the top and token-only phase usage", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-usage-"));
+	try {
+		const usageDelta = { input: 180, output: 70, cacheRead: 40, cacheWrite: 10, totalTokens: 300, cost: 0.1234, assistantMessages: 1, sessionFiles: 1 };
+		writeJsonReport(projectRunDir(root), "usage overview task", {
+			steps: [
+				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented usage cards", startedAt: 1, usageDelta },
+			],
+			usage: {
+				currentSessionTotals: { input: 9999, output: 9999, cacheRead: 9999, cacheWrite: 9999, totalTokens: 39996, cost: 9.9999, assistantMessages: 9, sessionFiles: 9 },
+				sinceDeliveryStart: { input: 700, output: 194, cacheRead: 300, cacheWrite: 40, totalTokens: 1234, cost: 0.4321, assistantMessages: 4, sessionFiles: 3 },
+				attribution: "best-effort",
+			},
+		});
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const html = await detail.text();
+			assert.match(html, /id="usage-overview"/);
+			assert.match(html, /Total cost[\s\S]*\$0\.4321/);
+			assert.match(html, /Total tokens[\s\S]*1,234/);
+			assert.match(html, /Input tokens[\s\S]*700/);
+			assert.match(html, /Output tokens[\s\S]*194/);
+			assert.match(html, /Cache read tokens[\s\S]*300/);
+			assert.match(html, /Cache write tokens[\s\S]*40/);
+			assert.match(html, /Tokens: 300/);
+			assert.match(html, /input 180 \/ output 70 \/ cache read 40 \/ cache write 10/);
+			assert.doesNotMatch(html, /Cost: \$0\.1234/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("report detail shows aggregate and individual parallel reviewer artifacts", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-parallel-review-"));
 	try {

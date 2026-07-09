@@ -1189,9 +1189,9 @@ function artifactLink(state: DeliveryState, artifact?: string): string {
 	return `[${mdEscape(label)}](${relative.replace(/ /g, "%20")})`;
 }
 
-function costCell(step: DeliveryStep): string {
+function tokenUsageCell(step: DeliveryStep): string {
 	if (!step.usageDelta || step.usageAttribution === "unavailable") return "unavailable";
-	return `${formatCost(step.usageDelta.cost)} (${step.usageAttribution ?? "best-effort"})`;
+	return `${formatNumber(step.usageDelta.totalTokens)} tokens (${step.usageAttribution ?? "best-effort"})`;
 }
 
 function usageHasAssistantMessages(usage: UsageTotals | undefined): usage is UsageTotals {
@@ -1314,11 +1314,15 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 		`Branch: ${state.gitBranch ?? "<not a git worktree>"}`,
 		`Overall cost: ${usableSinceStart ? formatCost(usableSinceStart.cost) : "unavailable"}`,
 		`Overall tokens: ${usableSinceStart ? formatNumber(usableSinceStart.totalTokens) : "unavailable"}`,
-		"Cost attribution: best-effort per step; overall cost is authoritative for discovered session files when usage is available.",
+		`Overall input tokens: ${usableSinceStart ? formatNumber(usableSinceStart.input) : "unavailable"}`,
+		`Overall output tokens: ${usableSinceStart ? formatNumber(usableSinceStart.output) : "unavailable"}`,
+		`Overall cache read tokens: ${usableSinceStart ? formatNumber(usableSinceStart.cacheRead) : "unavailable"}`,
+		`Overall cache write tokens: ${usableSinceStart ? formatNumber(usableSinceStart.cacheWrite) : "unavailable"}`,
+		"Usage attribution: phase token deltas are best-effort; total cost is reported only from discovered session usage when available.",
 		"",
 		"## Journey",
 		"",
-		"| # | Phase | Agent | Model | Verdict | Cost | Detail |",
+		"| # | Phase | Agent | Model | Verdict | Token usage | Detail |",
 		"|---|---|---|---|---|---:|---|",
 	];
 	if (!steps.length) {
@@ -1329,7 +1333,7 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 			const rowNumber = step.childCount && step.childIndex !== undefined
 				? `${displayIndex}${String.fromCharCode(97 + step.childIndex)}`
 				: String(displayIndex);
-			lines.push(`| ${rowNumber} | ${step.phase}${step.attempt > 1 ? ` #${step.attempt}` : ""} | ${mdEscape(step.agent || "unknown")} | ${mdEscape(step.model || "default")} | ${mdEscape(step.verdict || (step.status === "planned" ? "planned" : "unavailable"))} | ${costCell(step)} | ${artifactLink(state, step.artifact) || mdEscape(firstSentence(step.summary))} |`);
+			lines.push(`| ${rowNumber} | ${step.phase}${step.attempt > 1 ? ` #${step.attempt}` : ""} | ${mdEscape(step.agent || "unknown")} | ${mdEscape(step.model || "default")} | ${mdEscape(step.verdict || (step.status === "planned" ? "planned" : "unavailable"))} | ${tokenUsageCell(step)} | ${artifactLink(state, step.artifact) || mdEscape(firstSentence(step.summary))} |`);
 			if (!step.childCount || step.childIndex === undefined || step.childIndex === step.childCount - 1) displayIndex += 1;
 		}
 	}
@@ -1364,12 +1368,13 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 		lines.push("- Total: unavailable (current session has no usage-bearing assistant messages)");
 		lines.push("- Since `delivery_start`: unavailable");
 	} else {
-		lines.push(`- Total current session + discovered subagents: ${formatNumber(currentUsage.totalTokens)} tokens, ${formatCost(currentUsage.cost)}`);
-		lines.push(`- Since \`delivery_start\`: ${usableSinceStart ? `${formatNumber(usableSinceStart.totalTokens)} tokens, ${formatCost(usableSinceStart.cost)}` : "unavailable for deliveries started before usage baseline tracking or without usage-bearing assistant messages"}`);
+		lines.push(`- Total current session + discovered subagents: ${formatUsage(currentUsage)}`);
+		lines.push(`- Since \`delivery_start\`: ${usableSinceStart ? formatUsage(usableSinceStart) : "unavailable for deliveries started before usage baseline tracking or without usage-bearing assistant messages"}`);
 	}
 	lines.push("- Attribution notes:");
-	lines.push("  - Sequential phase costs are calculated from usage deltas when available.");
-	lines.push("  - Parallel phase child costs are exact only if child session files can be matched to child launches; otherwise rows show phase aggregate or unavailable.");
+	lines.push("  - Sequential phase token usage is calculated from usage deltas when available.");
+	lines.push("  - Parallel phase child token usage is exact only if child session files can be matched to child launches; otherwise rows show phase aggregate or unavailable.");
+	lines.push("  - Cached input is visible only when session usage records include cache read/write fields.");
 	lines.push("  - Unavailable means no session usage file/baseline or no usage-bearing assistant messages were available; zero cost is not inferred.");
 	lines.push("", "## Phase counts", "", ...formatPhaseCounts(state).map((line) => `- ${line}`));
 	return lines.join("\n");

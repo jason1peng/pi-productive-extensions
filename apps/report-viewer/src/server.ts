@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { DELIVERY_PHASES, activeProfileFilePayload, profileConfigFromRaw, readActiveProfilePayload, selectDeliveryProfile, type DeliveryProfileDefinitionSource, type DeliveryProfileDefinitions, type DeliveryProfileSelectionSource } from "../../../shared/delivery-profile-config.ts";
 import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2 } from "../../../shared/delivery-report.ts";
+import type { UsageTotals } from "../../../shared/session-usage.ts";
 import { parseArtifactContract, type ParsedArtifact, type RetroCandidate } from "./artifact-contract.ts";
 import { escapeHtml, renderMarkdownSafe } from "./markdown-renderer.ts";
 import { badgeClass, page } from "./report-renderer.ts";
@@ -1125,9 +1126,34 @@ function reportsHtml(config: ReportViewerConfig, query = new URLSearchParams()):
 	return page("Pi delivery reports", `<h1>Pi delivery reports</h1><p class="muted">Find reports by status, source, recency, or task text. Reports are grouped by project and shown as compact rows for easier scanning.</p>${deliveryProfilePanelHtml()}${filterForm}<div class="project-groups">${groups || `<div class="panel">No reports found.</div>`}</div>`, config);
 }
 
-function phaseCost(step: any): string {
-	const cost = step?.usageDelta?.cost;
-	return typeof cost === "number" ? `$${cost.toFixed(4)}` : "unavailable";
+function formatUsageNumber(value: unknown): string {
+	return typeof value === "number" && Number.isFinite(value) ? Math.round(value).toLocaleString("en-US") : "unavailable";
+}
+
+function formatUsageCost(value: unknown): string {
+	return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(4)}` : "unavailable";
+}
+
+function usageTotalsForReport(report: DeliveryReportJsonV2 | undefined): UsageTotals | undefined {
+	const sinceDeliveryStart = report?.usage?.sinceDeliveryStart;
+	if (sinceDeliveryStart && sinceDeliveryStart.assistantMessages > 0) return sinceDeliveryStart;
+	const currentSessionTotals = report?.usage?.currentSessionTotals;
+	if (currentSessionTotals && currentSessionTotals.assistantMessages > 0) return currentSessionTotals;
+	return undefined;
+}
+
+function usageCardsHtml(usage: UsageTotals | undefined): string {
+	return `<section id="usage-overview"><h2>Usage</h2><div class="grid"><div class="card"><div class="label">Total cost</div><div class="value">${escapeHtml(formatUsageCost(usage?.cost))}</div></div><div class="card"><div class="label">Total tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.totalTokens))}</div></div><div class="card"><div class="label">Input tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.input))}</div></div><div class="card"><div class="label">Output tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.output))}</div></div><div class="card"><div class="label">Cache read tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.cacheRead))}</div></div><div class="card"><div class="label">Cache write tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.cacheWrite))}</div></div></div><p class="muted">Cost is shown only from total recorded session usage; cached input appears when usage records include cache read/write token fields.</p></section>`;
+}
+
+function phaseTokenUsage(step: any): string {
+	return formatUsageNumber(step?.usageDelta?.totalTokens);
+}
+
+function phaseTokenDetail(step: any): string {
+	const usage = step?.usageDelta;
+	if (!usage) return "input unavailable / output unavailable / cache read unavailable / cache write unavailable";
+	return `input ${formatUsageNumber(usage.input)} / output ${formatUsageNumber(usage.output)} / cache read ${formatUsageNumber(usage.cacheRead)} / cache write ${formatUsageNumber(usage.cacheWrite)}`;
 }
 
 function shortSummary(value: unknown): string {
@@ -1174,7 +1200,7 @@ function stepDisplaySummary(config: Pick<ReportViewerConfig, "reportRoots">, vie
 function phaseStepCardHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, step: any): string {
 	const verdict = stepVerdict(step, config, viewerReportId);
 	const summary = stepDisplaySummary(config, viewerReportId, step);
-	return `<article class="phase-card"><div><strong>${escapeHtml(stepArtifactLabel(step))}</strong> <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="muted">Agent: ${escapeHtml(String(step.agent ?? "default"))}</div><div class="summary">${summary ? escapeHtml(summary) : `<span class="muted">No summary recorded.</span>`}</div><div class="muted">Cost: ${escapeHtml(phaseCost(step))}</div>${artifactLinksHtml(config, viewerReportId, step?.artifact)}</article>`;
+	return `<article class="phase-card"><div><strong>${escapeHtml(stepArtifactLabel(step))}</strong> <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="muted">Agent: ${escapeHtml(String(step.agent ?? "default"))}</div><div class="summary">${summary ? escapeHtml(summary) : `<span class="muted">No summary recorded.</span>`}</div><div class="muted">Tokens: ${escapeHtml(phaseTokenUsage(step))}</div><div class="muted">${escapeHtml(phaseTokenDetail(step))}</div>${artifactLinksHtml(config, viewerReportId, step?.artifact)}</article>`;
 }
 
 function phaseJourneyHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: any[]): string {
@@ -1208,6 +1234,7 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 	const artifacts = report.artifacts.map((artifact) => `<li>${artifactLinkHtml(config, viewerReportId, artifact.path, artifact.label)}<div><code>${escapeHtml(artifact.path)}</code></div></li>`).join("");
 	const steps = Array.isArray(report.structuredReport?.steps) ? report.structuredReport.steps : [];
 	const usage = report.structuredReport?.usage;
+	const displayUsage = usageTotalsForReport(report.structuredReport);
 	const acceptedRisks = Array.isArray(report.structuredReport?.acceptedRisks) ? report.structuredReport.acceptedRisks : [];
 	const pendingIssue = report.structuredReport?.pendingIssue;
 	const improvements = listImprovements(config, viewerReportId);
@@ -1225,7 +1252,7 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 	const title = compactTaskTitle(report.task, report.extensionReportId);
 	const fullTaskDetails = title === report.task ? "" : `<details class="full-task"><summary>Full delivery task</summary><p>${escapeHtml(report.task)}</p></details>`;
 	const retroLink = retroArtifact ? `<p>${artifactLinkHtml(config, viewerReportId, retroArtifact.path, "Open retro artifact")}</p>` : `<p class="muted">No retro artifact found.</p>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(title)}</h1>${fullTaskDetails}${sourceNote}${cards}<section id="phase-journey"><h2>Phase journey</h2>${phaseJourneyHtml(config, viewerReportId, steps)}</section><section id="failures-and-repairs" class="panel"><h2>Failures and repairs</h2>${failureRepairHtml(config, viewerReportId, steps)}${pendingHtml}</section><section id="retro-follow-ups" class="panel"><h2>Retro / follow-ups</h2>${retroLink}${improvementsHtml}${retroCandidatesHtml}<h3>Accepted risks</h3>${risksHtml}</section><section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
+	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(title)}</h1>${fullTaskDetails}${sourceNote}${cards}${usageCardsHtml(displayUsage)}<section id="phase-journey"><h2>Phase journey</h2>${phaseJourneyHtml(config, viewerReportId, steps)}</section><section id="failures-and-repairs" class="panel"><h2>Failures and repairs</h2>${failureRepairHtml(config, viewerReportId, steps)}${pendingHtml}</section><section id="retro-follow-ups" class="panel"><h2>Retro / follow-ups</h2>${retroLink}${improvementsHtml}${retroCandidatesHtml}<h3>Accepted risks</h3>${risksHtml}</section><section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
 }
 
 function sectionBodyHtml(body: string): string {

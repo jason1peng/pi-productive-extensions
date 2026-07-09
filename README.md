@@ -38,7 +38,7 @@ To expose the viewer on your tailnet:
 npm run report-viewer:tailscale -- start
 ```
 
-Details and future approval/execution workflow are tracked in [docs/plans/report-viewer-and-structured-reports.md](docs/plans/report-viewer-and-structured-reports.md).
+Details are documented in [apps/report-viewer/README.md](apps/report-viewer/README.md).
 
 ## Installation
 

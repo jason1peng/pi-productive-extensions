@@ -1146,6 +1146,130 @@ function usageCardsHtml(usage: UsageTotals | undefined): string {
 	return `<section id="usage-overview"><h2>Usage</h2><div class="grid"><div class="card"><div class="label">Total cost</div><div class="value">${escapeHtml(formatUsageCost(usage?.cost))}</div></div><div class="card"><div class="label">Total tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.totalTokens))}</div></div><div class="card"><div class="label">Input tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.input))}</div></div><div class="card"><div class="label">Output tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.output))}</div></div><div class="card"><div class="label">Cache read tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.cacheRead))}</div></div><div class="card"><div class="label">Cache write tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.cacheWrite))}</div></div></div><p class="muted">Cost is shown only from total recorded session usage; cached input appears when usage records include cache read/write token fields.</p></section>`;
 }
 
+type UsageBreakdownMetric = "totalTokens" | "input" | "output" | "cost";
+
+interface UsageBreakdownRow {
+	phase: string;
+	attemptLabel: string;
+	agent: string;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	cost: number;
+}
+
+interface UsagePhaseSummary {
+	phase: string;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	cost: number;
+}
+
+const USAGE_BREAKDOWN_COLORS = ["#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#7c3aed", "#0891b2", "#db2777"];
+const USAGE_METRIC_LABELS: Record<UsageBreakdownMetric, string> = {
+	totalTokens: "Total tokens",
+	input: "Input tokens",
+	output: "Output tokens",
+	cost: "Cost",
+};
+
+function usageNumber(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function usageMetricValue(row: Pick<UsageBreakdownRow, UsageBreakdownMetric>, metric: UsageBreakdownMetric): number {
+	return usageNumber(row[metric]);
+}
+
+function formatUsageMetric(value: number, metric: UsageBreakdownMetric): string {
+	return metric === "cost" ? formatUsageCost(value) : formatUsageNumber(value);
+}
+
+function usageBreakdownRows(steps: any[]): UsageBreakdownRow[] {
+	return steps.flatMap((step) => {
+		const usage = step?.usageDelta;
+		if (!usage) return [];
+		const input = usageNumber(usage.input);
+		const output = usageNumber(usage.output);
+		const cacheRead = usageNumber(usage.cacheRead);
+		const cacheWrite = usageNumber(usage.cacheWrite);
+		const totalTokens = usageNumber(usage.totalTokens) || input + output + cacheRead + cacheWrite;
+		const cost = usageNumber(usage.cost);
+		if (!totalTokens && !cost) return [];
+		return [{
+			phase: stepPhase(step) || "UNKNOWN",
+			attemptLabel: stepArtifactLabel(step),
+			agent: String(step?.agent ?? "default"),
+			input,
+			output,
+			cacheRead,
+			cacheWrite,
+			totalTokens,
+			cost,
+		}];
+	});
+}
+
+function usagePhaseSummaries(rows: UsageBreakdownRow[]): UsagePhaseSummary[] {
+	const summaries = new Map<string, UsagePhaseSummary>();
+	for (const row of rows) {
+		const existing = summaries.get(row.phase) ?? { phase: row.phase, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 };
+		existing.input += row.input;
+		existing.output += row.output;
+		existing.cacheRead += row.cacheRead;
+		existing.cacheWrite += row.cacheWrite;
+		existing.totalTokens += row.totalTokens;
+		existing.cost += row.cost;
+		summaries.set(row.phase, existing);
+	}
+	return [...summaries.values()].sort((a, b) => b.totalTokens - a.totalTokens || a.phase.localeCompare(b.phase));
+}
+
+function percentOf(value: number, total: number): string {
+	return total > 0 ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
+}
+
+function pieSlices(summary: UsagePhaseSummary[], metric: UsageBreakdownMetric): string {
+	const total = summary.reduce((sum, row) => sum + usageMetricValue(row, metric), 0);
+	if (total <= 0) return "#d0d5dd 0deg 360deg";
+	let cursor = 0;
+	return summary.map((row, index) => {
+		const value = usageMetricValue(row, metric);
+		const start = cursor;
+		cursor += (value / total) * 360;
+		return `${USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length]} ${start.toFixed(2)}deg ${cursor.toFixed(2)}deg`;
+	}).join(", ");
+}
+
+function usageBreakdownHtml(steps: any[]): string {
+	const rows = usageBreakdownRows(steps);
+	if (!rows.length) return `<section id="usage-breakdown" class="panel"><h2>Usage breakdown</h2><p class="muted">No per-step usage deltas are available for phase-level token analysis.</p></section>`;
+	const summary = usagePhaseSummaries(rows);
+	const metric: UsageBreakdownMetric = "totalTokens";
+	const total = summary.reduce((sum, row) => sum + usageMetricValue(row, metric), 0);
+	const maxTokens = Math.max(...summary.map((row) => row.totalTokens), 1);
+	const phaseOptions = summary.map((row) => `<label><input type="checkbox" name="phase" value="${escapeHtml(row.phase)}" checked> ${escapeHtml(row.phase)}</label>`).join("");
+	const metricOptions = (Object.keys(USAGE_METRIC_LABELS) as UsageBreakdownMetric[]).map((item) => `<option value="${item}" ${item === metric ? "selected" : ""}>${escapeHtml(USAGE_METRIC_LABELS[item])}</option>`).join("");
+	const legend = summary.map((row, index) => `<span class="usage-legend-item" data-phase="${escapeHtml(row.phase)}"><span class="usage-swatch" style="background:${USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length]}"></span>${escapeHtml(row.phase)} ${escapeHtml(percentOf(usageMetricValue(row, metric), total))}</span>`).join("");
+	const phaseRows = summary.map((row, index) => {
+		const tokenWidth = Math.max(2, (row.totalTokens / maxTokens) * 100);
+		const tokenTotal = row.totalTokens || row.input + row.output + row.cacheRead + row.cacheWrite || 1;
+		return `<tr data-phase="${escapeHtml(row.phase)}" data-totalTokens="${row.totalTokens}" data-input="${row.input}" data-output="${row.output}" data-cost="${row.cost}"><td><span class="usage-swatch" style="background:${USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length]}"></span>${escapeHtml(row.phase)}</td><td>${escapeHtml(formatUsageNumber(row.totalTokens))}</td><td>${escapeHtml(formatUsageNumber(row.input))}</td><td>${escapeHtml(formatUsageNumber(row.output))}</td><td>${escapeHtml(formatUsageCost(row.cost))}</td><td><div class="usage-stack" title="input/output/cache"><span class="usage-stack-input" style="width:${(row.input / tokenTotal) * tokenWidth}%"></span><span class="usage-stack-output" style="width:${(row.output / tokenTotal) * tokenWidth}%"></span><span class="usage-stack-cache" style="width:${((row.cacheRead + row.cacheWrite) / tokenTotal) * tokenWidth}%"></span></div></td></tr>`;
+	}).join("");
+	const offenderRows = [...rows].sort((a, b) => b.totalTokens - a.totalTokens || b.cost - a.cost).slice(0, 5).map((row, index) => `<li data-phase="${escapeHtml(row.phase)}" data-totalTokens="${row.totalTokens}" data-input="${row.input}" data-output="${row.output}" data-cost="${row.cost}"><strong>${index + 1}. ${escapeHtml(row.attemptLabel)}</strong> — ${escapeHtml(formatUsageNumber(row.totalTokens))} tokens (${escapeHtml(percentOf(row.totalTokens, rows.reduce((sum, item) => sum + item.totalTokens, 0)))}) · input ${escapeHtml(formatUsageNumber(row.input))} / output ${escapeHtml(formatUsageNumber(row.output))} · ${escapeHtml(formatUsageCost(row.cost))} · ${escapeHtml(row.agent)}</li>`).join("");
+	const data = escapeHtml(JSON.stringify(summary.map((row, index) => ({ ...row, color: USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length] }))));
+	return `<section id="usage-breakdown" class="panel" data-usage-summary="${data}"><h2>Usage breakdown by phase</h2><p class="muted">Use this to identify whether delivery cost is dominated by a phase, by prompt input, by model output, or by repeated repair loops.</p><form class="filters" id="usage-breakdown-filters"><label>Metric <select name="metric">${metricOptions}</select></label><fieldset class="usage-phase-filter"><legend class="label">Phases</legend>${phaseOptions}</fieldset><button type="button" data-action="all">All phases</button><button type="button" data-action="none">No phases</button></form><div class="section-grid"><div class="card"><div class="label" id="usage-pie-title">${escapeHtml(USAGE_METRIC_LABELS[metric])} by phase</div><div class="usage-pie" role="img" aria-label="Pie chart of delivery usage by phase" style="background:conic-gradient(${escapeHtml(pieSlices(summary, metric))})"></div><div class="usage-legend">${legend}</div></div><div class="card"><div class="label">Top token offenders</div><ol class="usage-offenders">${offenderRows}</ol></div></div><div class="wide-table"><table id="usage-breakdown-table"><thead><tr><th>Phase</th><th>Total tokens</th><th>Input</th><th>Output</th><th>Cost</th><th>Input/output/cache bar</th></tr></thead><tbody>${phaseRows}</tbody></table></div><p class="muted">Stacked bars show input (blue), output (green), and cache read/write (amber) token proportions per phase. Percent labels and the pie chart update in-browser when filters change.</p>${usageBreakdownScriptHtml()}</section>`;
+}
+
+function usageBreakdownScriptHtml(): string {
+	return `<script>(()=>{const section=document.getElementById('usage-breakdown');if(!section)return;const data=JSON.parse(section.dataset.usageSummary||'[]');const form=document.getElementById('usage-breakdown-filters');const pie=section.querySelector('.usage-pie');const title=document.getElementById('usage-pie-title');const labels={totalTokens:'Total tokens',input:'Input tokens',output:'Output tokens',cost:'Cost'};function enabled(){return new Set([...form.querySelectorAll('input[name="phase"]')].filter((input)=>input.checked).map((input)=>input.value));}function fmt(value,metric){return metric==='cost'?'$'+Number(value||0).toFixed(4):Math.round(Number(value||0)).toLocaleString('en-US');}function render(){const metric=form.elements.metric.value;const phases=enabled();const visible=data.filter((row)=>phases.has(row.phase));const total=visible.reduce((sum,row)=>sum+Number(row[metric]||0),0);let cursor=0;const slices=visible.map((row)=>{const start=cursor;cursor+=total>0?Number(row[metric]||0)/total*360:0;return row.color+' '+start.toFixed(2)+'deg '+cursor.toFixed(2)+'deg';});pie.style.background='conic-gradient('+(slices.length?slices.join(', '):'#d0d5dd 0deg 360deg')+')';title.textContent=labels[metric]+' by phase';section.querySelectorAll('[data-phase]').forEach((node)=>{const show=phases.has(node.dataset.phase);node.style.display=show?'':'none';});section.querySelectorAll('.usage-legend-item').forEach((node)=>{const row=data.find((item)=>item.phase===node.dataset.phase);const pct=total>0&&row?(Number(row[metric]||0)/total*100).toFixed(1):'0.0';node.lastChild.textContent=row.phase+' '+pct+'%';});}form.addEventListener('change',render);form.querySelector('[data-action="all"]').addEventListener('click',()=>{form.querySelectorAll('input[name="phase"]').forEach((input)=>input.checked=true);render();});form.querySelector('[data-action="none"]').addEventListener('click',()=>{form.querySelectorAll('input[name="phase"]').forEach((input)=>input.checked=false);render();});render();})();</script>`;
+}
+
 function phaseTokenUsage(step: any): string {
 	return formatUsageNumber(step?.usageDelta?.totalTokens);
 }
@@ -1252,7 +1376,7 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 	const title = compactTaskTitle(report.task, report.extensionReportId);
 	const fullTaskDetails = title === report.task ? "" : `<details class="full-task"><summary>Full delivery task</summary><p>${escapeHtml(report.task)}</p></details>`;
 	const retroLink = retroArtifact ? `<p>${artifactLinkHtml(config, viewerReportId, retroArtifact.path, "Open retro artifact")}</p>` : `<p class="muted">No retro artifact found.</p>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(title)}</h1>${fullTaskDetails}${sourceNote}${cards}${usageCardsHtml(displayUsage)}<section id="phase-journey"><h2>Phase journey</h2>${phaseJourneyHtml(config, viewerReportId, steps)}</section><section id="failures-and-repairs" class="panel"><h2>Failures and repairs</h2>${failureRepairHtml(config, viewerReportId, steps)}${pendingHtml}</section><section id="retro-follow-ups" class="panel"><h2>Retro / follow-ups</h2>${retroLink}${improvementsHtml}${retroCandidatesHtml}<h3>Accepted risks</h3>${risksHtml}</section><section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
+	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(title)}</h1>${fullTaskDetails}${sourceNote}${cards}${usageCardsHtml(displayUsage)}${usageBreakdownHtml(steps)}<section id="phase-journey"><h2>Phase journey</h2>${phaseJourneyHtml(config, viewerReportId, steps)}</section><section id="failures-and-repairs" class="panel"><h2>Failures and repairs</h2>${failureRepairHtml(config, viewerReportId, steps)}${pendingHtml}</section><section id="retro-follow-ups" class="panel"><h2>Retro / follow-ups</h2>${retroLink}${improvementsHtml}${retroCandidatesHtml}<h3>Accepted risks</h3>${risksHtml}</section><section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
 }
 
 function sectionBodyHtml(body: string): string {

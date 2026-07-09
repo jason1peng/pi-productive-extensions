@@ -615,6 +615,7 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 		writeJsonReport(projectRunDir(root), "usage overview task", {
 			steps: [
 				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented usage cards", startedAt: 1, usageDelta },
+				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified usage cards", startedAt: 2, usageDelta: { input: 40, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 50, cost: 0.0101, assistantMessages: 1, sessionFiles: 1 } },
 			],
 			usage: {
 				currentSessionTotals: { input: 9999, output: 9999, cacheRead: 9999, cacheWrite: 9999, totalTokens: 39996, cost: 9.9999, assistantMessages: 9, sessionFiles: 9 },
@@ -637,6 +638,15 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 			assert.match(html, /Cache write tokens[\s\S]*40/);
 			assert.match(html, /Tokens: 300/);
 			assert.match(html, /input 180 \/ output 70 \/ cache read 40 \/ cache write 10/);
+			assert.match(html, /id="usage-breakdown"/);
+			assert.match(html, /Usage breakdown by phase/);
+			assert.match(html, /Metric[\s\S]*Input tokens[\s\S]*Output tokens[\s\S]*Cost/);
+			assert.match(html, /Pie chart of delivery usage by phase/);
+			assert.match(html, /Top token offenders/);
+			assert.match(html, /IMPLEMENT[\s\S]*300[\s\S]*180[\s\S]*70[\s\S]*\$0\.1234/);
+			assert.match(html, /VERIFY[\s\S]*50[\s\S]*40[\s\S]*10[\s\S]*\$0\.0101/);
+			assert.match(html, /IMPLEMENT #1[\s\S]*300 tokens \(85\.7%\)/);
+			assert.match(html, /data-usage-summary=/);
 			assert.doesNotMatch(html, /Cost: \$0\.1234/);
 		});
 	} finally {

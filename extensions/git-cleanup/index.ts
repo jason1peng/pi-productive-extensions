@@ -96,6 +96,13 @@ function isAncestor(cwd: string, maybeAncestor: string | undefined, descendant: 
 	}
 }
 
+function hasNoUniquePatch(cwd: string, branchHead: string | undefined, target: string): boolean {
+	if (!branchHead) return false;
+	const cherry = git(cwd, ["cherry", target, branchHead], { allowFailure: true });
+	if (!cherry) return false;
+	return cherry.split(/\r?\n/).filter(Boolean).every((line) => line.startsWith("-"));
+}
+
 export function cleanupGitWorktrees(cwd: string, options: CleanupOptions): CleanupResult {
 	const currentRoot = git(cwd, ["rev-parse", "--show-toplevel"]);
 	const worktrees = parseWorktreeList(git(currentRoot, ["worktree", "list", "--porcelain"]));
@@ -133,12 +140,14 @@ export function cleanupGitWorktrees(cwd: string, options: CleanupOptions): Clean
 			result.skipped.push({ path: worktree.path, branch, reason: "dirty or untracked files" });
 			continue;
 		}
-		if (!isAncestor(mainWorktree.path, worktree.head, target)) {
-			result.skipped.push({ path: worktree.path, branch, reason: `not merged into ${target}` });
+		const ancestorMerged = isAncestor(mainWorktree.path, worktree.head, target);
+		const patchEquivalent = !ancestorMerged && hasNoUniquePatch(mainWorktree.path, worktree.head, target);
+		if (!ancestorMerged && !patchEquivalent) {
+			result.skipped.push({ path: worktree.path, branch, reason: `not merged or patch-equivalent to ${target}` });
 			continue;
 		}
 		runGit(mainWorktree.path, ["worktree", "remove", worktree.path]);
-		if (branch) runGit(mainWorktree.path, ["branch", "-d", branch]);
+		if (branch) runGit(mainWorktree.path, ["branch", patchEquivalent ? "-D" : "-d", branch]);
 		result.removed.push({ path: worktree.path, branch });
 	}
 	runGit(mainWorktree.path, ["worktree", "prune"]);

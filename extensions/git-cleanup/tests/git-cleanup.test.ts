@@ -70,3 +70,41 @@ await runTest("cleanup removes clean merged worktrees and skips dirty ones", () 
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
+
+await runTest("cleanup removes patch-equivalent worktrees from rewritten MR merges", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-cherry-"));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "repo");
+	const feature = path.join(root, "repo-feature");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		sh(main, ["git", "add", "README.md"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+
+		sh(main, ["git", "worktree", "add", "-b", "feature-branch", feature, "main"]);
+		sh(feature, ["git", "config", "user.email", "test@example.com"]);
+		sh(feature, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(feature, "feature.txt"), "feature\n", "utf8");
+		sh(feature, ["git", "add", "feature.txt"]);
+		sh(feature, ["git", "commit", "-m", "feature change"]);
+
+		fs.writeFileSync(path.join(main, "feature.txt"), "feature\n", "utf8");
+		sh(main, ["git", "add", "feature.txt"]);
+		sh(main, ["git", "commit", "-m", "rewritten feature change"]);
+		sh(main, ["git", "push", "origin", "main"]);
+
+		const result = cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false });
+
+		assert.equal(fs.existsSync(feature), false);
+		assert.deepEqual(result.removed.map((item) => item.branch), ["feature-branch"]);
+		assert.doesNotMatch(sh(main, ["git", "branch"]), /feature-branch/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});

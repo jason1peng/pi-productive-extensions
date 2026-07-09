@@ -561,12 +561,15 @@ await runTest("UI routes render report list, report detail, and artifact content
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
 			const detailHtml = await detail.text();
-			assert.match(detailHtml, /Phase journey/);
+			assert.match(detailHtml, /Outcome summary/);
+			assert.match(detailHtml, /Phase summaries/);
+			assert.match(detailHtml, /Compact phase timeline/);
 			assert.match(detailHtml, /phase-card/);
 			assert.match(detailHtml, /PASS verification evidence/);
 			assert.match(detailHtml, /class="phase-groups"/);
+			assert.match(detailHtml, /Attention and follow-ups/);
 			assert.match(detailHtml, /Failures and repairs/);
-			assert.match(detailHtml, /Raw structured JSON/);
+			assert.match(detailHtml, /<details><summary>Raw structured JSON/);
 			const artifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("02-verification.md")}`);
 			assert.equal(artifact.status, 200);
 			const artifactHtml = await artifact.text();
@@ -602,6 +605,39 @@ await runTest("UI routes render report list, report detail, and artifact content
 			const improvement = await created.json();
 			assert.equal(improvement.sourceArtifact, "05-retro.md");
 			assert.match(improvement.sourceText, /Add parser fixtures/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("report detail deduplicates phase summaries and keeps debug data collapsed", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-display-model-"));
+	try {
+		writeJsonReport(projectRunDir(root), "structured display model task", {
+			steps: [
+				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "missing-implementation-1.md", summary: "same implementation summary", startedAt: 1 },
+				{ id: "IMPLEMENT-2", phase: "IMPLEMENT", attempt: 2, agent: "worker", status: "reported", verdict: "PASS", artifact: "missing-implementation-2.md", summary: "same implementation summary", startedAt: 2 },
+				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified display model", startedAt: 3 },
+			],
+		});
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.match(html, /id="outcome-summary"/);
+			assert.match(html, /Outcome: DONE/);
+			assert.match(html, /id="phase-summaries"/);
+			assert.match(html, /data-phase="IMPLEMENT" data-summary-count="1"/);
+			assert.match(html, /2 attempts · 1 unique summary/);
+			assert.match(html, /Compact phase timeline/);
+			assert.match(html, /<summary>Phase attempt details<\/summary>/);
+			assert.match(html, /id="attention-follow-ups"/);
+			assert.match(html, /<details><summary>Usage JSON<\/summary>/);
+			assert.match(html, /<details><summary>Pending issue JSON<\/summary>/);
+			assert.match(html, /<details><summary>Raw structured JSON<\/summary>/);
 		});
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });

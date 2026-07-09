@@ -1321,6 +1321,98 @@ function stepDisplaySummary(config: Pick<ReportViewerConfig, "reportRoots">, vie
 	return shortSummary(step?.summary);
 }
 
+interface PhaseDisplaySummary {
+	phase: string;
+	attempts: number;
+	verdicts: string[];
+	summaries: string[];
+}
+
+function normalizedDisplayText(value: string): string {
+	return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function phaseDisplaySummaries(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: any[]): PhaseDisplaySummary[] {
+	const summaries = new Map<string, PhaseDisplaySummary & { seenSummaries: Set<string>; seenVerdicts: Set<string> }>();
+	for (const step of steps) {
+		const phase = stepPhase(step) || "UNKNOWN";
+		let phaseSummary = summaries.get(phase);
+		if (!phaseSummary) {
+			phaseSummary = { phase, attempts: 0, verdicts: [], summaries: [], seenSummaries: new Set(), seenVerdicts: new Set() };
+			summaries.set(phase, phaseSummary);
+		}
+		phaseSummary.attempts += 1;
+		const verdict = stepVerdict(step, config, viewerReportId);
+		if (!phaseSummary.seenVerdicts.has(verdict)) {
+			phaseSummary.seenVerdicts.add(verdict);
+			phaseSummary.verdicts.push(verdict);
+		}
+		const summary = stepDisplaySummary(config, viewerReportId, step);
+		const normalized = normalizedDisplayText(summary);
+		if (normalized && !phaseSummary.seenSummaries.has(normalized)) {
+			phaseSummary.seenSummaries.add(normalized);
+			phaseSummary.summaries.push(summary);
+		}
+	}
+	return [...summaries.values()].map(({ seenSummaries, seenVerdicts, ...summary }) => summary);
+}
+
+function phaseSummariesHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: any[]): string {
+	const summaries = phaseDisplaySummaries(config, viewerReportId, steps);
+	if (!summaries.length) return `<p class="muted">No structured phase summaries are available.</p>`;
+	return `<div class="section-grid">${summaries.map((summary) => {
+		const summaryCount = summary.summaries.length;
+		const meta = `${summary.attempts} ${summary.attempts === 1 ? "attempt" : "attempts"} · ${summaryCount} unique ${summaryCount === 1 ? "summary" : "summaries"}`;
+		const verdicts = summary.verdicts.map((verdict) => `<span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span>`).join(" ");
+		const items = summary.summaries.length
+			? `<ul>${summary.summaries.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+			: `<p class="muted">No summary recorded.</p>`;
+		return `<article class="card phase-summary-card" data-phase="${escapeHtml(summary.phase)}" data-summary-count="${summaryCount}"><h3>${escapeHtml(summary.phase)}</h3><div class="phase-summary-meta"><span class="muted">${escapeHtml(meta)}</span> ${verdicts}</div>${items}</article>`;
+	}).join("")}</div>`;
+}
+
+function phaseTimelineHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: any[]): string {
+	if (!steps.length) return `<p class="muted">No structured timeline is available.</p>`;
+	return `<ol class="phase-timeline" aria-label="Compact phase timeline">${steps.map((step) => {
+		const verdict = stepVerdict(step, config, viewerReportId);
+		const summary = stepDisplaySummary(config, viewerReportId, step);
+		return `<li><div class="timeline-label"><strong>${escapeHtml(stepArtifactLabel(step))}</strong><span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="timeline-summary muted">${summary ? escapeHtml(summary) : "No summary"}</div></li>`;
+	}).join("")}</ol>`;
+}
+
+function outcomeSummaryHtml(config: Pick<ReportViewerConfig, "reportRoots">, report: LoadedReport, steps: any[]): string {
+	const failedQualitySteps = steps.filter((step) => ["VERIFY", "REVIEW"].includes(stepPhase(step)) && stepVerdict(step, config, report.viewerReportId).toUpperCase().includes("FAIL"));
+	const latest = [...steps].reverse().find((step) => stepDisplaySummary(config, report.viewerReportId, step)) ?? steps.at(-1);
+	const latestSummary = latest ? stepDisplaySummary(config, report.viewerReportId, latest) : "";
+	const pendingIssue = report.structuredReport?.pendingIssue;
+	const headline = pendingIssue
+		? `Attention needed: ${String(pendingIssue.source ?? "pending issue")} reported ${String(pendingIssue.verdict ?? "issue")}`
+		: failedQualitySteps.length
+			? `Completed with attention: ${failedQualitySteps.length} failed verify/review ${failedQualitySteps.length === 1 ? "step" : "steps"}`
+			: report.source === "json"
+				? `Outcome: ${report.status}${report.phase && report.phase !== report.status ? ` (${report.phase})` : ""}`
+				: `Outcome: ${report.status} legacy Markdown report`;
+	const detail = pendingIssue?.summary ?? latestSummary ?? reportBrief(config, report);
+	return `<section id="outcome-summary" class="panel outcome-summary"><h2>Outcome summary</h2><p class="outcome-line"><strong>${escapeHtml(headline)}</strong>${detail ? ` — ${escapeHtml(shortSummary(detail))}` : ""}</p><div class="signal-list"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span><span class="badge">${escapeHtml(steps.length ? `${steps.length} phase steps` : "No phase steps")}</span>${failedQualitySteps.length ? `<span class="badge bad">${failedQualitySteps.length} failed quality gate${failedQualitySteps.length === 1 ? "" : "s"}</span>` : `<span class="badge ok">No failed quality gates</span>`}</div></section>`;
+}
+
+function pendingIssueSummaryHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, pendingIssue: unknown): string {
+	if (!pendingIssue || typeof pendingIssue !== "object" || Array.isArray(pendingIssue)) return `<p class="muted">No pending issue.</p>`;
+	const issue = pendingIssue as Record<string, unknown>;
+	const artifact = typeof issue.artifact === "string" && issue.artifact.trim()
+		? `<div>${artifactLinkHtml(config, viewerReportId, issue.artifact, "Open pending issue artifact")}</div>`
+		: "";
+	return `<div><strong>${escapeHtml(String(issue.source ?? "Pending issue"))}</strong> <span class="badge ${badgeClass(String(issue.verdict ?? ""))}">${escapeHtml(String(issue.verdict ?? "issue"))}</span></div><p>${escapeHtml(String(issue.summary ?? "No summary recorded."))}</p>${issue.recommendedDecision ? `<div class="muted">Recommended decision: ${escapeHtml(String(issue.recommendedDecision))}</div>` : ""}${artifact}`;
+}
+
+function attentionFollowUpsHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, acceptedRisks: unknown[], pendingIssue: unknown, improvements: RetroImprovement[], retroArtifact: { path: string } | undefined, retroCandidates: RetroCandidate[], steps: any[]): string {
+	const risksHtml = acceptedRisks.length ? `<ul>${acceptedRisks.map((risk: unknown) => `<li>${escapeHtml(String(risk))}</li>`).join("")}</ul>` : `<p class="muted">No accepted risks recorded.</p>`;
+	const improvementsHtml = improvements.length ? `<ul>${improvements.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> <span class="badge ${badgeClass(item.status)}">${escapeHtml(item.status)}</span><div class="muted">${escapeHtml(item.description)}</div></li>`).join("")}</ul>` : `<p class="muted">No app-owned retro improvements saved yet.</p>`;
+	const retroCandidatesHtml = retroArtifact && retroCandidates.length ? retroCandidateHtml(viewerReportId, retroArtifact.path, retroCandidates) : `<p class="muted">No unsaved retro candidate rows found.</p>`;
+	const retroLink = retroArtifact ? `<p>${artifactLinkHtml(config, viewerReportId, retroArtifact.path, "Open retro artifact")}</p>` : `<p class="muted">No retro artifact found.</p>`;
+	return `<section id="attention-follow-ups" class="panel"><h2>Attention and follow-ups</h2><div class="attention-grid"><div class="attention-card"><h3>Failures and repairs</h3>${failureRepairHtml(config, viewerReportId, steps)}</div><div class="attention-card"><h3>Pending issue</h3>${pendingIssueSummaryHtml(config, viewerReportId, pendingIssue)}</div><div class="attention-card"><h3>Retro / follow-ups</h3>${retroLink}${improvementsHtml}</div><div class="attention-card"><h3>Accepted risks</h3>${risksHtml}</div></div>${retroCandidatesHtml}</section>`;
+}
+
 function phaseStepCardHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, step: any): string {
 	const verdict = stepVerdict(step, config, viewerReportId);
 	const summary = stepDisplaySummary(config, viewerReportId, step);
@@ -1340,7 +1432,7 @@ function phaseJourneyHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewe
 		const repairNote = phaseSteps.length > 1 ? `<p class="muted">Repair loop: ${phaseSteps.length} attempts recorded.</p>` : "";
 		return `<section class="section-card phase-group"><h3>${escapeHtml(phase)} attempts (${phaseSteps.length})</h3>${repairNote}<div class="phase-grid">${phaseSteps.map((step) => phaseStepCardHtml(config, viewerReportId, step)).join("")}</div></section>`;
 	}).join("");
-	return `<div class="phase-groups">${groups}</div>`;
+	return `${phaseTimelineHtml(config, viewerReportId, steps)}<details><summary>Phase attempt details</summary><div class="phase-groups">${groups}</div></details>`;
 }
 
 function failureRepairHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: any[]): string {
@@ -1368,15 +1460,12 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 		? `<p><span class="badge ok">Structured JSON source</span> <span class="muted">Rendered from <code>delivery-report.json</code>; raw JSON stays collapsed below.</span></p>`
 		: `<div class="panel"><span class="badge warn">Legacy Markdown source</span><p class="muted">This run does not have <code>delivery-report.json</code>, so only limited metadata is available.</p></div>`;
 	const cards = `<section id="overview"><h2>Overview</h2><div class="grid"><div class="card"><div class="label">Status</div><div class="value"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span></div></div><div class="card"><div class="label">Phase</div><div class="value">${escapeHtml(report.phase ?? "—")}</div></div><div class="card"><div class="label">Source</div><div class="value">${escapeHtml(report.source === "json" ? "JSON" : "Markdown")}</div></div><div class="card"><div class="label">Updated</div><div class="value">${escapeHtml(new Date(report.updatedAt).toLocaleString())}</div></div></div><div class="panel"><div class="label">Artifact directory</div><code>${escapeHtml(report.artifactDir)}</code></div></section>`;
-	const risksHtml = acceptedRisks.length ? `<ul>${acceptedRisks.map((risk: unknown) => `<li>${escapeHtml(String(risk))}</li>`).join("")}</ul>` : `<p class="muted">No accepted risks recorded.</p>`;
-	const improvementsHtml = improvements.length ? `<ul>${improvements.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> <span class="badge ${badgeClass(item.status)}">${escapeHtml(item.status)}</span><div class="muted">${escapeHtml(item.description)}</div></li>`).join("")}</ul>` : `<p class="muted">No app-owned retro improvements saved yet.</p>`;
-	const retroCandidatesHtml = retroArtifact && retroCandidates.length ? retroCandidateHtml(viewerReportId, retroArtifact.path, retroCandidates) : `<p class="muted">No unsaved retro candidate rows found.</p>`;
-	const pendingHtml = pendingIssue ? `<pre>${escapeHtml(JSON.stringify(pendingIssue, null, 2))}</pre>` : `<p class="muted">No pending issue.</p>`;
 	const usageHtml = usage ? `<pre>${escapeHtml(JSON.stringify(usage, null, 2))}</pre>` : `<p class="muted">No structured usage data.</p>`;
+	const pendingRawHtml = pendingIssue ? `<pre>${escapeHtml(JSON.stringify(pendingIssue, null, 2))}</pre>` : `<p class="muted">No pending issue.</p>`;
 	const title = compactTaskTitle(report.task, report.extensionReportId);
 	const fullTaskDetails = title === report.task ? "" : `<details class="full-task"><summary>Full delivery task</summary><p>${escapeHtml(report.task)}</p></details>`;
-	const retroLink = retroArtifact ? `<p>${artifactLinkHtml(config, viewerReportId, retroArtifact.path, "Open retro artifact")}</p>` : `<p class="muted">No retro artifact found.</p>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(title)}</h1>${fullTaskDetails}${sourceNote}${cards}${usageCardsHtml(displayUsage)}${usageBreakdownHtml(steps)}<section id="phase-journey"><h2>Phase journey</h2>${phaseJourneyHtml(config, viewerReportId, steps)}</section><section id="failures-and-repairs" class="panel"><h2>Failures and repairs</h2>${failureRepairHtml(config, viewerReportId, steps)}${pendingHtml}</section><section id="retro-follow-ups" class="panel"><h2>Retro / follow-ups</h2>${retroLink}${improvementsHtml}${retroCandidatesHtml}<h3>Accepted risks</h3>${risksHtml}</section><section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
+	const structuredDisplay = `<section id="phase-summaries"><h2>Phase summaries</h2>${phaseSummariesHtml(config, viewerReportId, steps)}</section><section id="phase-journey"><h2>Compact phase timeline</h2>${phaseJourneyHtml(config, viewerReportId, steps)}</section>`;
+	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(title)}</h1>${fullTaskDetails}${sourceNote}${outcomeSummaryHtml(config, report, steps)}${cards}${usageCardsHtml(displayUsage)}${usageBreakdownHtml(steps)}${structuredDisplay}${attentionFollowUpsHtml(config, viewerReportId, acceptedRisks, pendingIssue, improvements, retroArtifact, retroCandidates, steps)}<section id="artifacts"><h2>Artifacts</h2><ul class="artifact-list">${artifacts || `<li>No artifacts found.</li>`}</ul></section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Pending issue JSON</summary>${pendingRawHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
 }
 
 function sectionBodyHtml(body: string): string {

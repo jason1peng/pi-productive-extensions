@@ -19,12 +19,14 @@ Start here when planning or implementing changes in this repository.
 - `extensions/delivery-state-machine/README.md` — commands, state machine behavior, artifact layout, phase/profile config, and report summary behavior.
 - `extensions/delivery-state-machine/docs/index.md` — extension-specific guides, including user-space overrides.
 - `extensions/session-usage/README.md` — session/subagent usage data source, fields, token policy, and limitations.
+- `extensions/git-cleanup/README.md` — `/cleanup` post-merge worktree housekeeping command.
 - `apps/report-viewer/README.md` — running/configuring the viewer, routes, behavior, and safety gates.
 
 ## Directory map
 
 - `extensions/delivery-state-machine/` — Pi delivery orchestration extension, phase prompts, profile config, docs, and tests.
 - `extensions/session-usage/` — Pi session/subagent usage reporting extension and tests.
+- `extensions/git-cleanup/` — Pi command for post-merge git worktree cleanup.
 - `apps/report-viewer/` — local delivery report dashboard, migration helper, and route/API tests.
 - `shared/` — dependency-light TypeScript helpers shared by extensions/apps.
 

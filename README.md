@@ -22,6 +22,13 @@ Reports current pi session token/cost usage including pi-subagents child session
 - Tool: `session_usage_all`
 - Details: [extensions/session-usage/README.md](extensions/session-usage/README.md)
 
+### git-cleanup
+
+Post-merge housekeeping for local git worktrees.
+
+- Command: `/cleanup`
+- Details: [extensions/git-cleanup/README.md](extensions/git-cleanup/README.md)
+
 ## Apps
 
 ### report-viewer

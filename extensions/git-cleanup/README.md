@@ -6,11 +6,11 @@ The command:
 
 1. Finds the repository's `main` worktree.
 2. Runs `git fetch origin main --prune` and `git pull --ff-only origin main` there.
-3. Removes clean non-main worktrees whose HEAD is already merged into `origin/main`.
+3. Removes clean non-main worktrees whose HEAD is already merged into `origin/main` or whose commits are patch-equivalent to commits already on `origin/main` (for rebased/cherry-picked MR merges).
 4. Deletes the matching local branch after the worktree is removed.
 5. Runs `git worktree prune`.
 
-It skips the current worktree by default, dirty/untracked worktrees, and worktrees not merged into `origin/main`.
+It skips the current worktree by default, dirty/untracked worktrees, and worktrees not merged or patch-equivalent to `origin/main`.
 
 Options:
 

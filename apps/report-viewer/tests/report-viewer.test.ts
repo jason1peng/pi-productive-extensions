@@ -19,6 +19,7 @@ import {
 	type ReportViewerConfig,
 } from "../src/server.ts";
 import { parseArtifactContract } from "../src/artifact-contract.ts";
+import { buildReportListPageViewModel } from "../src/report-view-model.ts";
 import { migrateDeliveryReports } from "../scripts/migrate-delivery-reports.ts";
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
@@ -443,6 +444,25 @@ await runTest("groupReportsByProject groups runs by project and sorts by latest 
 	}
 });
 
+await runTest("report list view-model filters before grouping and carries profile errors", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-list-vm-"));
+	try {
+		writeJsonReport(projectRunDir(root, "project-alpha-11111111", "alpha"), "alpha visible task", { updatedAt: 1000 });
+		writeJsonReport(projectRunDir(root, "project-beta-22222222", "beta"), "beta hidden task", { updatedAt: 2000 });
+		const viewModel = buildReportListPageViewModel({
+			reports: scanReports(configFor([root])),
+			query: new URLSearchParams("task=alpha"),
+			profileError: "profile config unavailable",
+		});
+		assert.deepEqual(viewModel.query, { status: "", source: "", task: "alpha", recentDays: "" });
+		assert.equal(viewModel.profilePanel.kind, "unavailable");
+		assert.deepEqual(viewModel.groups.map((group) => group.projectId), ["project-alpha-11111111"]);
+		assert.deepEqual(viewModel.groups[0].reports.map((report) => report.task), ["alpha visible task"]);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("reports page groups after applying filters", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-filtered-groups-"));
 	try {
@@ -561,12 +581,18 @@ await runTest("UI routes render report list, report detail, and artifact content
 			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
 			assert.equal(detail.status, 200);
 			const detailHtml = await detail.text();
-			assert.match(detailHtml, /Phase journey/);
+			assert.match(detailHtml, /Outcome summary/);
+			assert.match(detailHtml, /Phase summaries/);
+			assert.match(detailHtml, /Compact phase timeline/);
 			assert.match(detailHtml, /phase-card/);
 			assert.match(detailHtml, /PASS verification evidence/);
 			assert.match(detailHtml, /class="phase-groups"/);
+			assert.match(detailHtml, /Attention and follow-ups/);
 			assert.match(detailHtml, /Failures and repairs/);
-			assert.match(detailHtml, /Raw structured JSON/);
+			assert.match(detailHtml, /class="artifact-table"/);
+			assert.match(detailHtml, /<th>Artifact<\/th><th>Path<\/th>/);
+			assert.doesNotMatch(detailHtml, /class="artifact-list"/);
+			assert.match(detailHtml, /<details><summary>Raw structured JSON/);
 			const artifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("02-verification.md")}`);
 			assert.equal(artifact.status, 200);
 			const artifactHtml = await artifact.text();
@@ -608,18 +634,58 @@ await runTest("UI routes render report list, report detail, and artifact content
 	}
 });
 
+await runTest("report detail deduplicates phase summaries and keeps debug data collapsed", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-display-model-"));
+	try {
+		writeJsonReport(projectRunDir(root), "structured display model task", {
+			steps: [
+				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "missing-implementation-1.md", summary: "same implementation summary", startedAt: 1 },
+				{ id: "IMPLEMENT-2", phase: "IMPLEMENT", attempt: 2, agent: "worker", status: "reported", verdict: "PASS", artifact: "missing-implementation-2.md", summary: "same implementation summary", startedAt: 2 },
+				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified display model", startedAt: 3 },
+			],
+		});
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.match(html, /id="outcome-summary"/);
+			assert.match(html, /Outcome: DONE/);
+			assert.match(html, /id="phase-summaries"/);
+			assert.match(html, /class="phase-summary-list"/);
+			assert.match(html, /data-phase="IMPLEMENT" data-summary-count="1"/);
+			assert.match(html, /2 attempts · 1 unique summary/);
+			assert.match(html, /Compact phase timeline/);
+			assert.match(html, /<summary>Phase attempt details<\/summary>/);
+			assert.match(html, /id="attention-follow-ups"/);
+			assert.match(html, /<details><summary>Usage JSON<\/summary>/);
+			assert.match(html, /<details><summary>Pending issue JSON<\/summary>/);
+			assert.match(html, /<details><summary>Raw structured JSON<\/summary>/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("report detail shows usage totals at the top and token-only phase usage", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-usage-"));
 	try {
 		const usageDelta = { input: 180, output: 70, cacheRead: 40, cacheWrite: 10, totalTokens: 300, cost: 0.1234, assistantMessages: 1, sessionFiles: 1 };
+		const parentOverhead = { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 25, cost: 0.0050, assistantMessages: 1, sessionFiles: 1 };
 		writeJsonReport(projectRunDir(root), "usage overview task", {
 			steps: [
 				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented usage cards", startedAt: 1, usageDelta },
 				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified usage cards", startedAt: 2, usageDelta: { input: 40, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 50, cost: 0.0101, assistantMessages: 1, sessionFiles: 1 } },
+				{ id: "CLOSE-1", phase: "CLOSE", attempt: 1, agent: "delegate", status: "reported", verdict: "MR_CREATED", artifact: "04-close.md", summary: "closed usage cards", startedAt: 3 },
+				{ id: "RETRO-1", phase: "RETRO", attempt: 1, agent: "delegate", status: "reported", verdict: "DONE", artifact: "05-retro.md", summary: "retro usage cards", startedAt: 4 },
 			],
 			usage: {
 				currentSessionTotals: { input: 9999, output: 9999, cacheRead: 9999, cacheWrite: 9999, totalTokens: 39996, cost: 9.9999, assistantMessages: 9, sessionFiles: 9 },
 				sinceDeliveryStart: { input: 700, output: 194, cacheRead: 300, cacheWrite: 40, totalTokens: 1234, cost: 0.4321, assistantMessages: 4, sessionFiles: 3 },
+				deliveryTotal: { input: 700, output: 194, cacheRead: 300, cacheWrite: 40, totalTokens: 1234, cost: 0.4321, assistantMessages: 4, sessionFiles: 3 },
+				phaseStepsTotal: { input: 220, output: 80, cacheRead: 40, cacheWrite: 10, totalTokens: 350, cost: 0.1335, assistantMessages: 2, sessionFiles: 2 },
+				parentOverhead,
 				attribution: "best-effort",
 			},
 		});
@@ -645,7 +711,13 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 			assert.match(html, /Top token offenders/);
 			assert.match(html, /IMPLEMENT[\s\S]*300[\s\S]*180[\s\S]*70[\s\S]*\$0\.1234/);
 			assert.match(html, /VERIFY[\s\S]*50[\s\S]*40[\s\S]*10[\s\S]*\$0\.0101/);
-			assert.match(html, /IMPLEMENT #1[\s\S]*300 tokens \(85\.7%\)/);
+			assert.match(html, /PARENT[\s\S]*25[\s\S]*20[\s\S]*5[\s\S]*\$0\.0050/);
+			assert.match(html, /IMPLEMENT #1[\s\S]*300 tokens \(80\.0%\)/);
+			assert.match(html, /Parent\/orchestrator overhead[\s\S]*25 tokens/);
+			assert.match(html, /Usage unavailable for recorded steps: CLOSE, RETRO/);
+			assert.match(html, /CLOSE #1[\s\S]*no per-step usage delta recorded/);
+			assert.match(html, /RETRO #1[\s\S]*excluded from chart totals/);
+			assert.match(html, /Phases with recorded usage/);
 			assert.match(html, /data-usage-summary=/);
 			assert.doesNotMatch(html, /Cost: \$0\.1234/);
 		});
@@ -662,9 +734,9 @@ await runTest("report detail shows aggregate and individual parallel reviewer ar
 			steps: [
 				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented", startedAt: 1 },
 				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified", startedAt: 2 },
-				{ id: "REVIEW-1-0", phase: "REVIEW", attempt: 1, childIndex: 0, childCount: 2, agent: "reviewer", model: "default", status: "reported", artifact: "03-review-1-01-reviewer.md", startedAt: 3 },
-				{ id: "REVIEW-1-1", phase: "REVIEW", attempt: 1, childIndex: 1, childCount: 2, agent: "reviewer", model: "openai/gpt-5.5", status: "reported", artifact: "03-review-1-02-reviewer-openai-gpt-5-5.md", startedAt: 3 },
-				{ id: "REVIEW-1-aggregate", phase: "REVIEW", attempt: 1, agent: "aggregate", model: "parent", status: "reported", verdict: "FAIL", artifact: "03-review.md", summary: "Reviewer 1 found a blocker; reviewer 2 passed.", startedAt: 3 },
+				{ id: "REVIEW-1-0", phase: "REVIEW", attempt: 1, childIndex: 0, childCount: 2, agent: "reviewer", model: "default", status: "reported", artifact: "03-review-1-01-reviewer.md", startedAt: 3, usageDelta: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 25, cost: 0.0025, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported" },
+				{ id: "REVIEW-1-1", phase: "REVIEW", attempt: 1, childIndex: 1, childCount: 2, agent: "reviewer", model: "openai/gpt-5.5", status: "reported", artifact: "03-review-1-02-reviewer-openai-gpt-5-5.md", startedAt: 3, usageDelta: { input: 30, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 35, cost: 0.0035, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported" },
+				{ id: "REVIEW-1-aggregate", phase: "REVIEW", attempt: 1, agent: "aggregate", model: "parent", status: "reported", verdict: "FAIL", artifact: "03-review.md", summary: "Reviewer 1 found a blocker; reviewer 2 passed.", startedAt: 3, usageDelta: { input: 50, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 60, cost: 0.0060, assistantMessages: 2, sessionFiles: 2 }, usageAttribution: "phase-aggregate" },
 			],
 		});
 		fs.writeFileSync(path.join(dir, "03-review-1-01-reviewer.md"), "RESULT: FAIL\n\n## Summary\nReviewer 1 found a blocker.\n\n## Must-fix findings\n- blocker\n\n## Non-blocking notes\nnone\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- failed\n\n## Recommendation\nrepair\n", "utf8");
@@ -683,6 +755,9 @@ await runTest("report detail shows aggregate and individual parallel reviewer ar
 			assert.match(html, /03-review\.md/);
 			assert.match(html, /<span class="badge bad">FAIL<\/span>/);
 			assert.match(html, /<span class="badge ok">PASS<\/span>/);
+			assert.match(html, /REVIEW #1 reviewer 1\/2[\s\S]*25 tokens/);
+			assert.match(html, /REVIEW #1 reviewer 2\/2[\s\S]*35 tokens/);
+			assert.doesNotMatch(html, /REVIEW #1 aggregate[\s\S]*60 tokens/);
 		});
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });

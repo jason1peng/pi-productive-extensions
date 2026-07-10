@@ -575,6 +575,515 @@ function writeReviewArtifact(filePath: string, verdict: "PASS" | "PASS_WITH_NON_
 	fs.writeFileSync(filePath, `RESULT: ${verdict}\n\n## Summary\n${summary}\n\n## Must-fix findings\n${verdict === "FAIL" ? `- ${summary}` : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? `- ${summary}` : "none"}\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- checked\n\n## Recommendation\n${verdict === "FAIL" ? "repair" : "none"}\n`, "utf8");
 }
 
+function appendAssistantUsage(sessionFile: string, usage: Record<string, unknown>) {
+	fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role: "assistant", usage } })}\n`, "utf8");
+}
+
+await runTest("explicit subagent usage is preferred and parent overhead is reported", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-explicit-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "explicit child usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		appendAssistantUsage(sessionFile, { input: 80, output: 20, totalTokens: 100, cost: { total: 0.01 } });
+		result = await harness.tool("delivery_report", {
+			phase: "IMPLEMENT",
+			verdict: "PASS",
+			summary: "implemented with child usage",
+			usageDelta: { input: 30, output: 10, totalTokens: 40, cost: 0.004, assistantMessages: 2, sessionFiles: 1 },
+			usageAttribution: "subagent-reported",
+			usageSource: "subagent",
+			subagentRunId: "child-run-1",
+			subagentSessionFile: "/tmp/child-run-1.jsonl",
+		});
+		const step = result.details.state.steps.find((item: any) => item.phase === "IMPLEMENT");
+		assert.equal(step.usageAttribution, "subagent-reported");
+		assert.equal(step.usageSource, "subagent");
+		assert.equal(step.subagentRunId, "child-run-1");
+		assert.equal(step.usageDelta.totalTokens, 40);
+
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.deliveryTotal.totalTokens, 100);
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 40);
+		assert.equal(structuredReport.usage.parentOverhead.totalTokens, 60);
+		const summaryText = fs.readFileSync(path.join(artifactDir, "00-delivery-summary.md"), "utf8");
+		assert.match(summaryText, /Phase steps total: tokens 40/);
+		assert.match(summaryText, /Parent\/orchestrator overhead: tokens 60/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("subagent session file can populate single-step usage", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-session-file-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	const childSessionFile = path.join(cwd, "child-session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	fs.writeFileSync(childSessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "session file child usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		appendAssistantUsage(sessionFile, { input: 80, output: 20, totalTokens: 100, cost: { total: 0.01 } });
+		appendAssistantUsage(childSessionFile, { input: 30, output: 10, totalTokens: 40, cost: { total: 0.004 } });
+		result = await harness.tool("delivery_report", {
+			phase: "IMPLEMENT",
+			verdict: "PASS",
+			summary: "implemented with child session usage",
+			subagentRunId: "child-run-1",
+			subagentSessionFile: childSessionFile,
+		});
+		const step = result.details.state.steps.find((item: any) => item.phase === "IMPLEMENT");
+		assert.equal(step.usageAttribution, "subagent-reported");
+		assert.equal(step.usageSource, "subagent");
+		assert.equal(step.subagentRunId, "child-run-1");
+		assert.equal(step.subagentSessionFile, childSessionFile);
+		assert.equal(step.usageDelta.totalTokens, 40);
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 40);
+		assert.equal(structuredReport.usage.parentOverhead.totalTokens, 60);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("parallel stepUsage can resolve usage from subagent run ids", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-run-id-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	const child1 = path.join(cwd, "session", "review-run-1", "run-0", "session.jsonl");
+	const child2 = path.join(cwd, "session", "review-run-2", "run-0", "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	fs.mkdirSync(path.dirname(child1), { recursive: true });
+	fs.mkdirSync(path.dirname(child2), { recursive: true });
+	fs.writeFileSync(child1, "", "utf8");
+	fs.writeFileSync(child2, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "parallel run id usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		result = await harness.tool("delivery_next");
+		const plannedReviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
+		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
+		appendAssistantUsage(sessionFile, { input: 100, output: 20, totalTokens: 120, cost: { total: 0.012 } });
+		appendAssistantUsage(child1, { input: 20, output: 5, totalTokens: 25, cost: { total: 0.0025 } });
+		appendAssistantUsage(child2, { input: 30, output: 5, totalTokens: 35, cost: { total: 0.0035 } });
+		result = await harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "reviewed",
+			artifact: `${plannedReviewSteps[0].artifact}; ${plannedReviewSteps[1].artifact}`,
+			stepUsage: [
+				{ childIndex: 0, subagentRunId: "review-run-1" },
+				{ childIndex: 1, subagentRunId: "review-run-2" },
+			],
+		});
+		const childSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
+		assert.deepEqual(childSteps.map((step: any) => step.usageDelta.totalTokens), [25, 35]);
+		assert.deepEqual(childSteps.map((step: any) => step.usageSource), ["subagent", "subagent"]);
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 60);
+		assert.equal(structuredReport.usage.parentOverhead.totalTokens, 120);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+function writePiSubagentMeta(artifactsDir: string, opts: {
+	runId: string;
+	agent: string;
+	model?: string;
+	usage: Record<string, unknown>;
+	transcriptPath?: string;
+	task: string;
+	timestamp: number;
+}) {
+	fs.mkdirSync(artifactsDir, { recursive: true });
+	const file = path.join(artifactsDir, `${opts.runId}_${opts.agent}_0_meta.json`);
+	fs.writeFileSync(file, JSON.stringify(opts), "utf8");
+	return file;
+}
+
+await runTest("pi-subagents meta scan attributes single-step usage without delivery_report params", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-single-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "meta scan single step smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		result = await harness.tool("delivery_next");
+		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
+		writePiSubagentMeta(artifactsDir, {
+			runId: "aabbccdd",
+			agent: "worker",
+			usage: { input: 30, output: 10, totalTokens: 40, cost: 0.004, turns: 2 },
+			transcriptPath: path.join(artifactsDir, "aabbccdd_worker_0_transcript.jsonl"),
+			task: `Implement this phase.\n\nSave to ${plannedStep.artifact}. Do not call delivery_report.`,
+			timestamp: Date.now() + 1000,
+		});
+		appendAssistantUsage(sessionFile, { input: 80, output: 20, totalTokens: 100, cost: { total: 0.01 } });
+		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(step.usageAttribution, "subagent-reported");
+		assert.equal(step.usageSource, "subagent");
+		assert.equal(step.subagentRunId, "aabbccdd");
+		assert.equal(step.usageDelta.totalTokens, 40);
+		assert.equal(step.usageDelta.assistantMessages, 2);
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		const implementStep = structuredReport.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(implementStep.usageAttribution, "subagent-reported");
+		assert.equal(implementStep.usageDelta.totalTokens, 40);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("pi-subagents meta scan discovers metadata in git worktrees", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-worktree-root-"));
+	const worktree = `${root}-child-worktree`;
+	const sessionFile = path.join(root, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
+		fs.writeFileSync(path.join(root, "README.md"), "root\n", "utf8");
+		execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
+		execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"], { cwd: root, stdio: "ignore" });
+		execFileSync("git", ["worktree", "add", "-b", "child", worktree], { cwd: root, stdio: "ignore" });
+		const harness = createHarness({ cwd: root, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "meta scan worktree smoke" });
+		result = await harness.tool("delivery_next");
+		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const artifactsDir = path.join(worktree, ".pi-subagents", "artifacts");
+		writePiSubagentMeta(artifactsDir, {
+			runId: "worktree1",
+			agent: "worker",
+			usage: { input: 25, output: 15, totalTokens: 40, cost: 0.004, turns: 2 },
+			transcriptPath: path.join(artifactsDir, "worktree1_worker_0_transcript.jsonl"),
+			task: `Implement in sibling worktree.\n\nSave to ${plannedStep.artifact}. Do not call delivery_report.`,
+			timestamp: Date.now() + 1000,
+		});
+		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(step.usageAttribution, "subagent-reported");
+		assert.equal(step.subagentRunId, "worktree1");
+		assert.equal(step.usageDelta.totalTokens, 40);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(worktree, { recursive: true, force: true });
+	}
+});
+
+await runTest("pi-subagents meta scan attributes parallel child usage and skips aggregate", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-parallel-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "meta scan parallel review smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		result = await harness.tool("delivery_next");
+		const plannedReviewSteps = result.details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.status === "planned");
+		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
+		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
+		const now = Date.now();
+		appendAssistantUsage(sessionFile, { input: 100, output: 20, totalTokens: 120, cost: { total: 0.012 } });
+		writePiSubagentMeta(artifactsDir, {
+			runId: "review11",
+			agent: "reviewer",
+			usage: { input: 20, output: 5, totalTokens: 25, cost: 0.0025, turns: 1 },
+			transcriptPath: path.join(artifactsDir, "review11_reviewer_0_transcript.jsonl"),
+			task: `Review diff.\n\nSave to ${plannedReviewSteps[0].artifact}. Do not call delivery_report.`,
+			timestamp: now + 1000,
+		});
+		// second reviewer has different runId but also reviewer agent
+		const meta2file = path.join(artifactsDir, `review22_reviewer_1_meta.json`);
+		fs.writeFileSync(meta2file, JSON.stringify({
+			runId: "review22",
+			agent: "reviewer",
+			usage: { input: 30, output: 5, totalTokens: 35, cost: 0.0035, turns: 1 },
+			transcriptPath: path.join(artifactsDir, "review22_reviewer_1_transcript.jsonl"),
+			task: `Review diff.\n\nSave to ${plannedReviewSteps[1].artifact}. Do not call delivery_report.`,
+			timestamp: now + 2000,
+		}), "utf8");
+		result = await harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "both passed",
+			artifact: `${plannedReviewSteps[0].artifact}; ${plannedReviewSteps[1].artifact}`,
+		});
+		const childSteps = result.details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.childIndex !== undefined);
+		assert.equal(childSteps[0].usageAttribution, "subagent-reported");
+		assert.equal(childSteps[0].usageDelta.totalTokens, 25);
+		assert.equal(childSteps[0].subagentRunId, "review11");
+		assert.equal(childSteps[1].usageAttribution, "subagent-reported");
+		assert.equal(childSteps[1].usageDelta.totalTokens, 35);
+		assert.equal(childSteps[1].subagentRunId, "review22");
+		// aggregate row must NOT get meta usage
+		const aggregate = result.details.state.steps.find((s: any) => s.phase === "REVIEW" && s.agent === "aggregate");
+		assert.ok(!aggregate.usageDelta || aggregate.usageAttribution !== "subagent-reported", "aggregate should not get meta usage");
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 60);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("pi-subagents meta scan does not overwrite explicit delivery_report usage", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-explicit-wins-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "explicit wins over meta scan" });
+		result = await harness.tool("delivery_next");
+		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
+		writePiSubagentMeta(artifactsDir, {
+			runId: "metarunid",
+			agent: "worker",
+			usage: { input: 50, output: 20, totalTokens: 70, cost: 0.007, turns: 3 },
+			transcriptPath: path.join(artifactsDir, "metarunid_worker_0_transcript.jsonl"),
+			task: `Implement.\n\nSave to ${plannedStep.artifact}. Do not call delivery_report.`,
+			timestamp: Date.now() + 1000,
+		});
+		// pass explicit usageDelta — should win
+		result = await harness.tool("delivery_report", {
+			phase: "IMPLEMENT",
+			verdict: "PASS",
+			summary: "implemented",
+			usageDelta: { input: 30, output: 10, totalTokens: 40, cost: 0.004, assistantMessages: 2, sessionFiles: 1 },
+			usageAttribution: "subagent-reported",
+		});
+		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(step.usageDelta.totalTokens, 40, "explicit wins over meta");
+		assert.equal(step.subagentRunId, undefined, "explicit path does not set meta runId");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("parallel stepUsage records child usage without aggregate double counting", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-parallel-explicit-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "parallel explicit usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		result = await harness.tool("delivery_next");
+		const plannedReviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
+		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
+		appendAssistantUsage(sessionFile, { input: 100, output: 20, totalTokens: 120, cost: { total: 0.012 } });
+		result = await harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "reviewed",
+			artifact: `${plannedReviewSteps[0].artifact}; ${plannedReviewSteps[1].artifact}`,
+			stepUsage: [
+				{ childIndex: 0, usageDelta: { input: 20, output: 5, totalTokens: 25, cost: 0.0025, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported", usageSource: "subagent", subagentRunId: "review-1" },
+				{ childIndex: 1, usageDelta: { input: 30, output: 5, totalTokens: 35, cost: 0.0035, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported", usageSource: "subagent", subagentRunId: "review-2" },
+			],
+		});
+		const childSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
+		assert.deepEqual(childSteps.map((step: any) => step.usageDelta.totalTokens), [25, 35]);
+		assert.deepEqual(childSteps.map((step: any) => step.subagentRunId), ["review-1", "review-2"]);
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 60);
+		assert.equal(structuredReport.usage.parentOverhead.totalTokens, 60);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("delayed close and retro usage is backfilled from later session totals", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-delayed-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "delayed close retro usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		const reviewNext = await harness.tool("delivery_next");
+		writeReviewArtifact(reviewNext.details.next.parallel[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(reviewNext.details.next.parallel[1].artifact, "PASS", "reviewer 2 passed");
+		await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "both reviewers passed" });
+		await harness.tool("delivery_next");
+
+		result = await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed locally" });
+		let closeStep = result.details.state.steps.find((step: any) => step.phase === "CLOSE");
+		assert.equal(closeStep.usageAttribution, "unavailable");
+		assert.equal(closeStep.usageDelta, undefined);
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		result = await harness.tool("delivery_next");
+		closeStep = result.details.state.steps.find((step: any) => step.phase === "CLOSE");
+		assert.equal(closeStep.usageAttribution, "best-effort");
+		assert.equal(closeStep.usageDelta.totalTokens, 37);
+
+		result = await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
+		let retroStep = result.details.state.steps.find((step: any) => step.phase === "RETRO");
+		assert.equal(retroStep.usageAttribution, "unavailable");
+		assert.equal(retroStep.usageDelta, undefined);
+
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		const summary = await harness.tool("delivery_summary");
+		const text = summary.content[0].text as string;
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		closeStep = structuredReport.steps.find((step: any) => step.phase === "CLOSE");
+		retroStep = structuredReport.steps.find((step: any) => step.phase === "RETRO");
+		const reviewSteps = structuredReport.steps.filter((step: any) => step.phase === "REVIEW");
+
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageAttribution), ["unavailable", "unavailable", "unavailable"]);
+		assert.equal(closeStep.usageAttribution, "best-effort");
+		assert.equal(closeStep.usageDelta.totalTokens, 37);
+		assert.equal(retroStep.usageAttribution, "best-effort");
+		assert.equal(retroStep.usageDelta.totalTokens, 19);
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 56);
+		assert.equal(structuredReport.usage.parentOverhead, null);
+		assert.match(text, /37 tokens \(best-effort\)/);
+		assert.match(text, /19 tokens \(best-effort\)/);
+		assert.match(text, /Phase steps total: tokens 56/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("delayed usage refreshes a stale planned next-phase boundary", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-stale-boundary-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "stale boundary delayed usage smoke" });
+		let result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented before usage landed" });
+		let implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+
+		result = await harness.tool("delivery_next");
+		let verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(verifyStep.status, "planned");
+		assert.equal(verifyStep.usageBefore.totalTokens, 0);
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		result = await harness.tool("delivery_summary");
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageAttribution, "best-effort");
+		assert.equal(implementStep.usageDelta.totalTokens, 37);
+		assert.equal(verifyStep.usageBefore.totalTokens, 37);
+
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified after usage boundary refresh" });
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageDelta.totalTokens, 37);
+		assert.equal(verifyStep.usageAttribution, "best-effort");
+		assert.equal(verifyStep.usageDelta.totalTokens, 19);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("delayed usage avoids misattribution when first observed during next phase report", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-ambiguous-boundary-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "ambiguous delayed usage smoke" });
+		let result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented before usage landed" });
+		let implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+
+		result = await harness.tool("delivery_next");
+		let verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(verifyStep.status, "planned");
+		assert.equal(verifyStep.usageBefore.totalTokens, 0);
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified before a safe boundary was observed" });
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+		assert.equal(implementStep.usageDelta, undefined);
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+		assert.equal(verifyStep.usageDelta, undefined);
+		assert.equal(verifyStep.usageBefore.totalTokens, 56);
+
+		result = await harness.tool("delivery_next");
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+		assert.equal(implementStep.usageDelta, undefined);
+		assert.equal(implementStep.usageBackfillBlockedAfter.totalTokens, 56);
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+		assert.equal(verifyStep.usageDelta, undefined);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("delayed usage avoids misattribution when first observed during parallel review report", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-ambiguous-parallel-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "ambiguous parallel delayed usage smoke" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		let result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified before usage landed" });
+		let verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+
+		result = await harness.tool("delivery_next");
+		const plannedReviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
+		assert.equal(plannedReviewSteps.length, 2);
+		assert.deepEqual(plannedReviewSteps.map((step: any) => step.usageBefore.totalTokens), [0, 0]);
+		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		result = await harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "reviewed before a safe usage boundary was observed",
+			artifact: `${plannedReviewSteps[0].artifact}; ${plannedReviewSteps[1].artifact}`,
+		});
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		const reviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+		assert.equal(verifyStep.usageDelta, undefined);
+		assert.equal(verifyStep.usageBackfillBlockedAfter.totalTokens, 56);
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageAttribution), ["unavailable", "unavailable", "unavailable"]);
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageDelta), [undefined, undefined, undefined]);
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageBefore.totalTokens), [56, 56, 56]);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 await runTest("parallel reviewer aggregate report preserves child verdict artifacts and writes clean aggregate", async () => {
 	const harness = createHarness();
 

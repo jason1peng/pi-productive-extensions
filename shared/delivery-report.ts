@@ -6,7 +6,7 @@ export type DeliveryReportRunnablePhase = "IMPLEMENT" | "VERIFY" | "REVIEW" | "C
 export type DeliveryReportVerdict = "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL" | "INCONCLUSIVE" | "DONE" | "MR_CREATED";
 export type DeliveryReportDecision = "repair" | "stop" | "accept_risk" | "continue" | "defer";
 export type DeliveryReportIssueSource = "verify" | "review" | "close";
-export type DeliveryReportUsageAttribution = "exact" | "best-effort" | "phase-aggregate" | "unavailable";
+export type DeliveryReportUsageAttribution = "exact" | "subagent-reported" | "best-effort" | "phase-aggregate" | "parent-overhead" | "unavailable";
 
 export interface DeliveryProjectMetadataV1 {
 	schemaVersion: 1;
@@ -65,6 +65,10 @@ export interface DeliveryReportStep {
 	usageAfter?: UsageTotals;
 	usageDelta?: UsageTotals;
 	usageAttribution?: DeliveryReportUsageAttribution;
+	usageSource?: "subagent" | "parent-session-delta" | "backfill" | "manual";
+	subagentRunId?: string;
+	subagentSessionFile?: string;
+	usageBackfillBlockedAfter?: UsageTotals;
 }
 
 export interface DeliveryReportJsonV2 {
@@ -91,6 +95,9 @@ export interface DeliveryReportJsonV2 {
 	usage: {
 		currentSessionTotals: UsageTotals | null;
 		sinceDeliveryStart: UsageTotals | null;
+		deliveryTotal?: UsageTotals | null;
+		phaseStepsTotal?: UsageTotals | null;
+		parentOverhead?: UsageTotals | null;
 		attribution: DeliveryReportUsageAttribution;
 	};
 }

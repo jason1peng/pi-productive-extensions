@@ -19,6 +19,7 @@ import {
 	type ReportViewerConfig,
 } from "../src/server.ts";
 import { parseArtifactContract } from "../src/artifact-contract.ts";
+import { buildReportListPageViewModel } from "../src/report-view-model.ts";
 import { migrateDeliveryReports } from "../scripts/migrate-delivery-reports.ts";
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
@@ -438,6 +439,25 @@ await runTest("groupReportsByProject groups runs by project and sorts by latest 
 		assert.deepEqual(groups[1].reports.map((report) => report.task), ["alpha new task", "alpha old task"]);
 		assert.equal(groups[1].projectName, "project-alpha");
 		assert.equal(groups[1].gitRemote, "git@example.com:project-alpha-11111111.git");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("report list view-model filters before grouping and carries profile errors", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-list-vm-"));
+	try {
+		writeJsonReport(projectRunDir(root, "project-alpha-11111111", "alpha"), "alpha visible task", { updatedAt: 1000 });
+		writeJsonReport(projectRunDir(root, "project-beta-22222222", "beta"), "beta hidden task", { updatedAt: 2000 });
+		const viewModel = buildReportListPageViewModel({
+			reports: scanReports(configFor([root])),
+			query: new URLSearchParams("task=alpha"),
+			profileError: "profile config unavailable",
+		});
+		assert.deepEqual(viewModel.query, { status: "", source: "", task: "alpha", recentDays: "" });
+		assert.equal(viewModel.profilePanel.kind, "unavailable");
+		assert.deepEqual(viewModel.groups.map((group) => group.projectId), ["project-alpha-11111111"]);
+		assert.deepEqual(viewModel.groups[0].reports.map((report) => report.task), ["alpha visible task"]);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

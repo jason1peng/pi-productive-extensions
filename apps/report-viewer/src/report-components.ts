@@ -345,11 +345,52 @@ function usageForStep(step: DeliveryReportStep): UsageBreakdownRow | undefined {
 	};
 }
 
-function usageBreakdownRows(steps: DeliveryReportStep[]): UsageBreakdownRow[] {
-	return steps.flatMap((step) => {
+function usageRowFromTotals(phase: string, attemptLabel: string, agent: string, usage: UsageTotals | null | undefined): UsageBreakdownRow | undefined {
+	if (!usage) return undefined;
+	const input = usageNumber(usage.input);
+	const output = usageNumber(usage.output);
+	const cacheRead = usageNumber(usage.cacheRead);
+	const cacheWrite = usageNumber(usage.cacheWrite);
+	const totalTokens = usageNumber(usage.totalTokens) || input + output + cacheRead + cacheWrite;
+	const cost = usageNumber(usage.cost);
+	if (!totalTokens && !cost) return undefined;
+	return { phase, attemptLabel, agent, input, output, cacheRead, cacheWrite, totalTokens, cost };
+}
+
+function usageStepsForBreakdown(steps: DeliveryReportStep[]): DeliveryReportStep[] {
+	const byGroup = new Map<string, DeliveryReportStep[]>();
+	for (const step of steps) {
+		if (!usageForStep(step)) continue;
+		const key = `${step.phase}:${step.attempt}`;
+		const group = byGroup.get(key) ?? [];
+		group.push(step);
+		byGroup.set(key, group);
+	}
+	const selected: DeliveryReportStep[] = [];
+	for (const group of byGroup.values()) {
+		const explicitChildren = group.filter((step) => step.childIndex !== undefined && step.usageAttribution !== "phase-aggregate");
+		if (explicitChildren.length) {
+			selected.push(...explicitChildren);
+			continue;
+		}
+		const aggregate = group.find((step) => step.agent === "aggregate") ?? group.find((step) => step.usageAttribution === "phase-aggregate");
+		if (aggregate) {
+			selected.push(aggregate);
+			continue;
+		}
+		selected.push(...group.filter((step) => step.childIndex === undefined));
+	}
+	return selected;
+}
+
+function usageBreakdownRows(steps: DeliveryReportStep[], parentOverhead?: UsageTotals | null): UsageBreakdownRow[] {
+	const rows = usageStepsForBreakdown(steps).flatMap((step) => {
 		const usage = usageForStep(step);
 		return usage ? [usage] : [];
 	});
+	const overhead = usageRowFromTotals("PARENT", "Parent/orchestrator overhead", "parent", parentOverhead);
+	if (overhead) rows.push(overhead);
+	return rows;
 }
 
 function usageUnavailableSteps(steps: DeliveryReportStep[]): DeliveryReportStep[] {
@@ -395,8 +436,8 @@ function usageUnavailableHtml(steps: DeliveryReportStep[]): string {
 	return `<details class="usage-unavailable" open><summary>Usage unavailable for recorded steps: ${escapeHtml(phases)}</summary><p class="muted">These phases still consume tokens, but this report does not contain attributable usage deltas for them. They remain visible here instead of silently disappearing from the breakdown.</p><ul>${items}</ul></details>`;
 }
 
-function usageBreakdownHtml(steps: DeliveryReportStep[]): string {
-	const rows = usageBreakdownRows(steps);
+function usageBreakdownHtml(steps: DeliveryReportStep[], parentOverhead?: UsageTotals | null): string {
+	const rows = usageBreakdownRows(steps, parentOverhead);
 	const unavailableHtml = usageUnavailableHtml(steps);
 	if (!rows.length) return `<section id="usage-breakdown" class="panel"><h2>Usage breakdown</h2><p class="muted">No per-step usage deltas are available for phase-level token analysis.</p>${unavailableHtml}</section>`;
 	const summary = usagePhaseSummaries(rows);
@@ -618,7 +659,7 @@ function reportHtml(config: ReportViewerConfig, viewerReportId: string): string 
 	const artifactsHtml = artifacts
 		? `<div class="wide-table"><table class="artifact-table"><thead><tr><th>Artifact</th><th>Path</th></tr></thead><tbody>${artifacts}</tbody></table></div>`
 		: `<p class="muted">No artifacts found.</p>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(viewModel.title)}</h1>${fullTaskDetails}${sourceNote}${outcomeSummaryHtml(config, report, steps)}${cards}${usageCardsHtml(displayUsage)}${usageBreakdownHtml(steps)}${structuredDisplay}${attentionFollowUpsHtml(config, viewerReportId, acceptedRisks, pendingIssue, improvements, retroArtifact, retroCandidates, steps)}<section id="artifacts"><h2>Artifacts</h2>${artifactsHtml}</section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Pending issue JSON</summary>${pendingRawHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
+	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(viewModel.title)}</h1>${fullTaskDetails}${sourceNote}${outcomeSummaryHtml(config, report, steps)}${cards}${usageCardsHtml(displayUsage)}${usageBreakdownHtml(steps, report.structuredReport?.usage?.parentOverhead)}${structuredDisplay}${attentionFollowUpsHtml(config, viewerReportId, acceptedRisks, pendingIssue, improvements, retroArtifact, retroCandidates, steps)}<section id="artifacts"><h2>Artifacts</h2>${artifactsHtml}</section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Pending issue JSON</summary>${pendingRawHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
 }
 
 function sectionBodyHtml(body: string): string {

@@ -672,6 +672,7 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-usage-"));
 	try {
 		const usageDelta = { input: 180, output: 70, cacheRead: 40, cacheWrite: 10, totalTokens: 300, cost: 0.1234, assistantMessages: 1, sessionFiles: 1 };
+		const parentOverhead = { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 25, cost: 0.0050, assistantMessages: 1, sessionFiles: 1 };
 		writeJsonReport(projectRunDir(root), "usage overview task", {
 			steps: [
 				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented usage cards", startedAt: 1, usageDelta },
@@ -682,6 +683,9 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 			usage: {
 				currentSessionTotals: { input: 9999, output: 9999, cacheRead: 9999, cacheWrite: 9999, totalTokens: 39996, cost: 9.9999, assistantMessages: 9, sessionFiles: 9 },
 				sinceDeliveryStart: { input: 700, output: 194, cacheRead: 300, cacheWrite: 40, totalTokens: 1234, cost: 0.4321, assistantMessages: 4, sessionFiles: 3 },
+				deliveryTotal: { input: 700, output: 194, cacheRead: 300, cacheWrite: 40, totalTokens: 1234, cost: 0.4321, assistantMessages: 4, sessionFiles: 3 },
+				phaseStepsTotal: { input: 220, output: 80, cacheRead: 40, cacheWrite: 10, totalTokens: 350, cost: 0.1335, assistantMessages: 2, sessionFiles: 2 },
+				parentOverhead,
 				attribution: "best-effort",
 			},
 		});
@@ -707,7 +711,9 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 			assert.match(html, /Top token offenders/);
 			assert.match(html, /IMPLEMENT[\s\S]*300[\s\S]*180[\s\S]*70[\s\S]*\$0\.1234/);
 			assert.match(html, /VERIFY[\s\S]*50[\s\S]*40[\s\S]*10[\s\S]*\$0\.0101/);
-			assert.match(html, /IMPLEMENT #1[\s\S]*300 tokens \(85\.7%\)/);
+			assert.match(html, /PARENT[\s\S]*25[\s\S]*20[\s\S]*5[\s\S]*\$0\.0050/);
+			assert.match(html, /IMPLEMENT #1[\s\S]*300 tokens \(80\.0%\)/);
+			assert.match(html, /Parent\/orchestrator overhead[\s\S]*25 tokens/);
 			assert.match(html, /Usage unavailable for recorded steps: CLOSE, RETRO/);
 			assert.match(html, /CLOSE #1[\s\S]*no per-step usage delta recorded/);
 			assert.match(html, /RETRO #1[\s\S]*excluded from chart totals/);
@@ -728,9 +734,9 @@ await runTest("report detail shows aggregate and individual parallel reviewer ar
 			steps: [
 				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented", startedAt: 1 },
 				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified", startedAt: 2 },
-				{ id: "REVIEW-1-0", phase: "REVIEW", attempt: 1, childIndex: 0, childCount: 2, agent: "reviewer", model: "default", status: "reported", artifact: "03-review-1-01-reviewer.md", startedAt: 3 },
-				{ id: "REVIEW-1-1", phase: "REVIEW", attempt: 1, childIndex: 1, childCount: 2, agent: "reviewer", model: "openai/gpt-5.5", status: "reported", artifact: "03-review-1-02-reviewer-openai-gpt-5-5.md", startedAt: 3 },
-				{ id: "REVIEW-1-aggregate", phase: "REVIEW", attempt: 1, agent: "aggregate", model: "parent", status: "reported", verdict: "FAIL", artifact: "03-review.md", summary: "Reviewer 1 found a blocker; reviewer 2 passed.", startedAt: 3 },
+				{ id: "REVIEW-1-0", phase: "REVIEW", attempt: 1, childIndex: 0, childCount: 2, agent: "reviewer", model: "default", status: "reported", artifact: "03-review-1-01-reviewer.md", startedAt: 3, usageDelta: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 25, cost: 0.0025, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported" },
+				{ id: "REVIEW-1-1", phase: "REVIEW", attempt: 1, childIndex: 1, childCount: 2, agent: "reviewer", model: "openai/gpt-5.5", status: "reported", artifact: "03-review-1-02-reviewer-openai-gpt-5-5.md", startedAt: 3, usageDelta: { input: 30, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 35, cost: 0.0035, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported" },
+				{ id: "REVIEW-1-aggregate", phase: "REVIEW", attempt: 1, agent: "aggregate", model: "parent", status: "reported", verdict: "FAIL", artifact: "03-review.md", summary: "Reviewer 1 found a blocker; reviewer 2 passed.", startedAt: 3, usageDelta: { input: 50, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 60, cost: 0.0060, assistantMessages: 2, sessionFiles: 2 }, usageAttribution: "phase-aggregate" },
 			],
 		});
 		fs.writeFileSync(path.join(dir, "03-review-1-01-reviewer.md"), "RESULT: FAIL\n\n## Summary\nReviewer 1 found a blocker.\n\n## Must-fix findings\n- blocker\n\n## Non-blocking notes\nnone\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- failed\n\n## Recommendation\nrepair\n", "utf8");
@@ -749,6 +755,9 @@ await runTest("report detail shows aggregate and individual parallel reviewer ar
 			assert.match(html, /03-review\.md/);
 			assert.match(html, /<span class="badge bad">FAIL<\/span>/);
 			assert.match(html, /<span class="badge ok">PASS<\/span>/);
+			assert.match(html, /REVIEW #1 reviewer 1\/2[\s\S]*25 tokens/);
+			assert.match(html, /REVIEW #1 reviewer 2\/2[\s\S]*35 tokens/);
+			assert.doesNotMatch(html, /REVIEW #1 aggregate[\s\S]*60 tokens/);
 		});
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });

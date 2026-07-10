@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { collectSessionUsage as collectSharedSessionUsage, subtractUsageTotals, type UsageTotals } from "../../shared/session-usage.ts";
+import { addUsageTotals, collectSessionUsage as collectSharedSessionUsage, emptyUsageTotals, subtractUsageTotals, type UsageTotals } from "../../shared/session-usage.ts";
 import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportStep } from "../../shared/delivery-report.ts";
 import { loadPhaseConfigBundle, loadPhaseConfigs, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
@@ -53,15 +53,19 @@ interface PendingIssue {
 }
 
 type PhaseRounds = Record<RunnablePhase, number>;
-type UsageAttribution = "exact" | "best-effort" | "phase-aggregate" | "unavailable";
+type UsageAttribution = "exact" | "subagent-reported" | "best-effort" | "phase-aggregate" | "parent-overhead" | "unavailable";
 type ProjectMetadata = DeliveryProjectMetadataV1;
 type DeliveryStep = DeliveryReportStep;
 
 interface ReportUsageSnapshot {
 	currentSessionTotals?: UsageTotals;
 	sinceDeliveryStart?: UsageTotals;
+	phaseStepsTotal?: UsageTotals;
+	parentOverhead?: UsageTotals;
 	usableCurrentSessionTotals?: UsageTotals;
 	usableSinceDeliveryStart?: UsageTotals;
+	usablePhaseStepsTotal?: UsageTotals;
+	usableParentOverhead?: UsageTotals;
 	attribution: UsageAttribution;
 }
 
@@ -132,6 +136,20 @@ const START_PARAMS = Type.Object({
 	}, { description: "Per-phase maximum rounds. Overrides configured defaults for this delivery." })),
 });
 
+const USAGE_TOTALS_PARAMS = Type.Object({
+	input: Type.Optional(Type.Number({ description: "Input tokens" })),
+	output: Type.Optional(Type.Number({ description: "Output tokens" })),
+	cacheRead: Type.Optional(Type.Number({ description: "Cache read tokens" })),
+	cacheWrite: Type.Optional(Type.Number({ description: "Cache write tokens" })),
+	totalTokens: Type.Optional(Type.Number({ description: "Total tokens" })),
+	cost: Type.Optional(Type.Number({ description: "Total cost" })),
+	assistantMessages: Type.Optional(Type.Number({ description: "Assistant message count" })),
+	sessionFiles: Type.Optional(Type.Number({ description: "Session file count" })),
+});
+
+const USAGE_ATTRIBUTION_PARAMS = StringEnum(["exact", "subagent-reported", "best-effort", "phase-aggregate", "unavailable"] as const);
+const USAGE_SOURCE_PARAMS = StringEnum(["subagent", "parent-session-delta", "backfill", "manual"] as const);
+
 const REPORT_PARAMS = Type.Object({
 	phase: StringEnum([
 		"IMPLEMENT",
@@ -145,6 +163,21 @@ const REPORT_PARAMS = Type.Object({
 	),
 	summary: Type.String({ description: "Concise evidence-backed report from the completed state" }),
 	artifact: Type.Optional(Type.String({ description: "Artifact path, MR URL, or saved output reference" })),
+	usageDelta: Type.Optional(USAGE_TOTALS_PARAMS),
+	usageAttribution: Type.Optional(USAGE_ATTRIBUTION_PARAMS),
+	usageSource: Type.Optional(USAGE_SOURCE_PARAMS),
+	subagentRunId: Type.Optional(Type.String({ description: "Subagent run id that produced this report, when known" })),
+	subagentSessionFile: Type.Optional(Type.String({ description: "Subagent session file that produced this report, when known" })),
+	stepUsage: Type.Optional(Type.Array(Type.Object({
+		stepId: Type.Optional(Type.String({ description: "Delivery step id to attach usage to" })),
+		childIndex: Type.Optional(Type.Number({ description: "Parallel child index to attach usage to" })),
+		artifact: Type.Optional(Type.String({ description: "Artifact path associated with the step usage" })),
+		usageDelta: USAGE_TOTALS_PARAMS,
+		usageAttribution: Type.Optional(USAGE_ATTRIBUTION_PARAMS),
+		usageSource: Type.Optional(USAGE_SOURCE_PARAMS),
+		subagentRunId: Type.Optional(Type.String()),
+		subagentSessionFile: Type.Optional(Type.String()),
+	}))),
 	recommendedDecision: Type.Optional(
 		StringEnum(["repair", "stop", "accept_risk", "continue", "defer"] as const),
 	),
@@ -759,6 +792,24 @@ function ensurePlannedStepsForReport(state: DeliveryState, ctx: ExtensionContext
 	return steps;
 }
 
+function finiteNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeUsageTotals(value: unknown): UsageTotals | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const record = value as Partial<UsageTotals>;
+	const input = finiteNumber(record.input) ?? 0;
+	const output = finiteNumber(record.output) ?? 0;
+	const cacheRead = finiteNumber(record.cacheRead) ?? 0;
+	const cacheWrite = finiteNumber(record.cacheWrite) ?? 0;
+	const totalTokens = finiteNumber(record.totalTokens) ?? input + output + cacheRead + cacheWrite;
+	const cost = finiteNumber(record.cost) ?? 0;
+	const assistantMessages = finiteNumber(record.assistantMessages) ?? (totalTokens > 0 || cost > 0 ? 1 : 0);
+	const sessionFiles = finiteNumber(record.sessionFiles) ?? 0;
+	return { input, output, cacheRead, cacheWrite, totalTokens, cost, assistantMessages, sessionFiles };
+}
+
 function usageDeltaForStep(step: DeliveryStep, usageAfter: UsageTotals | undefined): UsageTotals | undefined {
 	if (!usageAfter || !step.usageBefore) return undefined;
 	return subtractUsageTotals(usageAfter, step.usageBefore);
@@ -990,6 +1041,31 @@ function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: Runnab
 	return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Evidence\n${childLines}\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n`;
 }
 
+interface ReportStepUsageInput {
+	stepId?: string;
+	childIndex?: number;
+	artifact?: string;
+	usageDelta?: unknown;
+	usageAttribution?: UsageAttribution;
+	usageSource?: DeliveryStep["usageSource"];
+	subagentRunId?: string;
+	subagentSessionFile?: string;
+}
+
+interface DeliveryReportInput {
+	phase: Phase;
+	verdict?: Verdict;
+	summary: string;
+	artifact?: string;
+	recommendedDecision?: Decision;
+	usageDelta?: unknown;
+	usageAttribution?: UsageAttribution;
+	usageSource?: DeliveryStep["usageSource"];
+	subagentRunId?: string;
+	subagentSessionFile?: string;
+	stepUsage?: ReportStepUsageInput[];
+}
+
 function ensureAggregateArtifactForParallelReport(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string; artifact?: string }, steps: DeliveryStep[]): string | undefined {
 	const aggregatePath = aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase));
 	if (!aggregatePath) return params.artifact;
@@ -1003,7 +1079,62 @@ function ensureAggregateArtifactForParallelReport(state: DeliveryState, params: 
 	return aggregatePath;
 }
 
-function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params: { phase: Phase; verdict?: Verdict; summary: string; artifact?: string }): string | undefined {
+function artifactMatchesStep(state: DeliveryState, step: DeliveryStep, artifact: string | undefined): boolean {
+	if (!artifact || !step.artifact) return false;
+	try {
+		return isSameArtifactPath(artifactAbsolutePath(state, artifact), artifactAbsolutePath(state, step.artifact));
+	} catch {
+		return artifact === step.artifact;
+	}
+}
+
+function stepUsageInputMatchesStep(state: DeliveryState, input: ReportStepUsageInput, step: DeliveryStep): boolean {
+	if (input.stepId && input.stepId === step.id) return true;
+	if (input.childIndex !== undefined && input.childIndex === step.childIndex) return true;
+	if (artifactMatchesStep(state, step, input.artifact)) return true;
+	return false;
+}
+
+function applyExplicitUsageToStep(step: DeliveryStep, usage: UsageTotals, options: { attribution?: UsageAttribution; source?: DeliveryStep["usageSource"]; subagentRunId?: string; subagentSessionFile?: string }): boolean {
+	if (!usageHasAssistantMessages(usage)) return false;
+	step.usageDelta = usage;
+	step.usageAttribution = options.attribution ?? "subagent-reported";
+	step.usageSource = options.source ?? "subagent";
+	step.subagentRunId = options.subagentRunId;
+	step.subagentSessionFile = options.subagentSessionFile;
+	step.usageBackfillBlockedAfter = undefined;
+	return true;
+}
+
+function applyExplicitReportUsage(state: DeliveryState, steps: DeliveryStep[], params: DeliveryReportInput): boolean {
+	let changed = false;
+	const stepUsage = Array.isArray(params.stepUsage) ? params.stepUsage : [];
+	for (const input of stepUsage) {
+		const usage = normalizeUsageTotals(input.usageDelta);
+		if (!usage) continue;
+		const targets = steps.filter((step) => stepUsageInputMatchesStep(state, input, step));
+		for (const step of targets) {
+			changed = applyExplicitUsageToStep(step, usage, {
+				attribution: input.usageAttribution,
+				source: input.usageSource,
+				subagentRunId: input.subagentRunId,
+				subagentSessionFile: input.subagentSessionFile,
+			}) || changed;
+		}
+	}
+	const usage = normalizeUsageTotals(params.usageDelta);
+	if (usage && steps.length === 1) {
+		changed = applyExplicitUsageToStep(steps[0]!, usage, {
+			attribution: params.usageAttribution,
+			source: params.usageSource,
+			subagentRunId: params.subagentRunId,
+			subagentSessionFile: params.subagentSessionFile,
+		}) || changed;
+	}
+	return changed;
+}
+
+function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params: DeliveryReportInput): string | undefined {
 	if (!isRunnablePhase(params.phase)) return params.artifact;
 	const steps = ensurePlannedStepsForReport(state, ctx, params.phase);
 	const usageAfter = collectSessionUsage(ctx);
@@ -1060,6 +1191,8 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 		}
 		if (!existing) state.steps.push(aggregate);
 	}
+	const currentPhaseSteps = state.steps.filter((step) => step.phase === params.phase && step.attempt === (steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)));
+	applyExplicitReportUsage(state, currentPhaseSteps, params);
 	state.updatedAt = Date.now();
 	return reportArtifact;
 }
@@ -1334,6 +1467,10 @@ function usageHasAssistantMessages(usage: UsageTotals | undefined): usage is Usa
 	return !!usage && usage.assistantMessages > 0;
 }
 
+function usageHasTokensOrCost(usage: UsageTotals | undefined): usage is UsageTotals {
+	return !!usage && (usage.assistantMessages > 0 || usage.totalTokens > 0 || usage.cost > 0);
+}
+
 function legacyStepsFromHistory(state: DeliveryState): DeliveryStep[] {
 	const phaseAttempts = new Map<RunnablePhase, number>();
 	return state.history
@@ -1406,16 +1543,57 @@ function deliveryStatus(state: DeliveryState): Phase {
 	return state.phase === "DONE" ? "DONE" : state.phase === "STOPPED" ? "STOPPED" : state.active ? state.phase : "IDLE";
 }
 
+function usageStepsForTotals(steps: DeliveryStep[]): DeliveryStep[] {
+	const byGroup = new Map<string, DeliveryStep[]>();
+	for (const step of steps) {
+		if (!stepHasUsableUsageDelta(step)) continue;
+		const key = `${step.phase}:${step.attempt}`;
+		const group = byGroup.get(key) ?? [];
+		group.push(step);
+		byGroup.set(key, group);
+	}
+	const selected: DeliveryStep[] = [];
+	for (const group of byGroup.values()) {
+		const explicitChildren = group.filter((step) => step.childIndex !== undefined && step.usageAttribution !== "phase-aggregate");
+		if (explicitChildren.length) {
+			selected.push(...explicitChildren);
+			continue;
+		}
+		const aggregate = group.find((step) => step.agent === "aggregate") ?? group.find((step) => step.usageAttribution === "phase-aggregate");
+		if (aggregate) {
+			selected.push(aggregate);
+			continue;
+		}
+		selected.push(...group.filter((step) => step.childIndex === undefined));
+	}
+	return selected;
+}
+
+function sumUsageTotals(usages: UsageTotals[]): UsageTotals | undefined {
+	if (!usages.length) return undefined;
+	const total = emptyUsageTotals();
+	for (const usage of usages) addUsageTotals(total, usage);
+	return total;
+}
+
 function reportUsageSnapshot(state: DeliveryState, ctx: ExtensionContext): ReportUsageSnapshot {
 	const currentSessionTotals = collectSessionUsage(ctx);
 	const sinceDeliveryStart = currentSessionTotals && state.usageAtStart ? subtractUsageTotals(currentSessionTotals, state.usageAtStart) : undefined;
+	const phaseStepsTotal = sumUsageTotals(usageStepsForTotals(state.steps).map((step) => step.usageDelta!).filter(usageHasAssistantMessages));
+	const parentOverhead = sinceDeliveryStart && phaseStepsTotal ? subtractUsageTotals(sinceDeliveryStart, phaseStepsTotal) : undefined;
 	const usableCurrentSessionTotals = usageHasAssistantMessages(currentSessionTotals) ? currentSessionTotals : undefined;
 	const usableSinceDeliveryStart = usageHasAssistantMessages(sinceDeliveryStart) ? sinceDeliveryStart : undefined;
+	const usablePhaseStepsTotal = usageHasTokensOrCost(phaseStepsTotal) ? phaseStepsTotal : undefined;
+	const usableParentOverhead = usageHasTokensOrCost(parentOverhead) ? parentOverhead : undefined;
 	return {
 		currentSessionTotals,
 		sinceDeliveryStart,
+		phaseStepsTotal,
+		parentOverhead,
 		usableCurrentSessionTotals,
 		usableSinceDeliveryStart,
+		usablePhaseStepsTotal,
+		usableParentOverhead,
 		attribution: usableCurrentSessionTotals ? "best-effort" : "unavailable",
 	};
 }
@@ -1439,6 +1617,8 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 	const currentUsage = usageSnapshot.currentSessionTotals;
 	const usableCurrentUsage = usageSnapshot.usableCurrentSessionTotals;
 	const usableSinceStart = usageSnapshot.usableSinceDeliveryStart;
+	const usablePhaseStepsTotal = usageSnapshot.usablePhaseStepsTotal;
+	const usableParentOverhead = usageSnapshot.usableParentOverhead;
 	const status = deliveryStatus(state);
 	const lines: string[] = [
 		"# Delivery summary",
@@ -1506,9 +1686,12 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 	} else {
 		lines.push(`- Total current session + discovered subagents: ${formatUsage(currentUsage)}`);
 		lines.push(`- Since \`delivery_start\`: ${usableSinceStart ? formatUsage(usableSinceStart) : "unavailable for deliveries started before usage baseline tracking or without usage-bearing assistant messages"}`);
+		lines.push(`- Phase steps total: ${usablePhaseStepsTotal ? formatUsage(usablePhaseStepsTotal) : "unavailable"}`);
+		lines.push(`- Parent/orchestrator overhead: ${usableParentOverhead ? formatUsage(usableParentOverhead) : "unavailable or fully attributed to phase steps"}`);
 	}
 	lines.push("- Attribution notes:");
-	lines.push("  - Sequential phase token usage is calculated from usage deltas when available.");
+	lines.push("  - Explicit subagent-reported usage is preferred when provided to delivery_report.");
+	lines.push("  - Sequential phase token usage falls back to session deltas/backfill when explicit usage is unavailable.");
 	lines.push("  - Parallel phase child token usage is exact only if child session files can be matched to child launches; otherwise rows show phase aggregate or unavailable.");
 	lines.push("  - Cached input is visible only when session usage records include cache read/write fields.");
 	lines.push("  - Unavailable means no session usage file/baseline or no usage-bearing assistant messages were available; zero cost is not inferred.");
@@ -1551,6 +1734,9 @@ function buildStructuredReport(
 		usage: {
 			currentSessionTotals: usageSnapshot.usableCurrentSessionTotals ?? null,
 			sinceDeliveryStart: usageSnapshot.usableSinceDeliveryStart ?? null,
+			deliveryTotal: usageSnapshot.usableSinceDeliveryStart ?? null,
+			phaseStepsTotal: usageSnapshot.usablePhaseStepsTotal ?? null,
+			parentOverhead: usageSnapshot.usableParentOverhead ?? null,
 			attribution: usageSnapshot.attribution,
 		},
 	};
@@ -1563,8 +1749,9 @@ function writeJsonAtomic(filePath: string, data: unknown) {
 }
 
 function writeReportArtifacts(state: DeliveryState, ctx: ExtensionContext): ReportArtifacts {
+	const initialUsageSnapshot = reportUsageSnapshot(state, ctx);
+	backfillReportedStepUsage(state, initialUsageSnapshot.currentSessionTotals);
 	const usageSnapshot = reportUsageSnapshot(state, ctx);
-	backfillReportedStepUsage(state, usageSnapshot.currentSessionTotals);
 	const markdown = formatJourneyReport(state, ctx, usageSnapshot);
 	if (!state.artifactDir) return { markdown };
 	fs.mkdirSync(state.artifactDir, { recursive: true });
@@ -1804,7 +1991,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			if (!state.active && state.phase !== "RETRO") {
 				return { content: [{ type: "text", text: "No active delivery. Use delivery_start or /deliver first." }], details: { state: cloneState(state) } };
 			}
-			const reportParams = { ...(params as { phase: Phase; verdict?: Verdict; summary: string; artifact?: string; recommendedDecision?: Decision }) };
+			const reportParams = { ...(params as DeliveryReportInput) };
 			reportParams.artifact = recordReportedSteps(state, ctx, reportParams) ?? reportParams.artifact;
 			transitionAfterReport(state, reportParams);
 			persist();

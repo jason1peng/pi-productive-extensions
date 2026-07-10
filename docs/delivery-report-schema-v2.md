@@ -63,7 +63,10 @@ interface DeliveryReportJsonV2 {
   usage: {
     currentSessionTotals: UsageTotals | null;
     sinceDeliveryStart: UsageTotals | null;
-    attribution: "exact" | "best-effort" | "phase-aggregate" | "unavailable";
+    deliveryTotal?: UsageTotals | null;
+    phaseStepsTotal?: UsageTotals | null;
+    parentOverhead?: UsageTotals | null;
+    attribution: "exact" | "subagent-reported" | "best-effort" | "phase-aggregate" | "parent-overhead" | "unavailable";
   };
 }
 ```
@@ -101,7 +104,10 @@ interface DeliveryReportStep {
   usageBefore?: UsageTotals;
   usageAfter?: UsageTotals;
   usageDelta?: UsageTotals;
-  usageAttribution?: "exact" | "best-effort" | "phase-aggregate" | "unavailable";
+  usageAttribution?: "exact" | "subagent-reported" | "best-effort" | "phase-aggregate" | "parent-overhead" | "unavailable";
+  usageSource?: "subagent" | "parent-session-delta" | "backfill" | "manual";
+  subagentRunId?: string;
+  subagentSessionFile?: string;
 }
 ```
 

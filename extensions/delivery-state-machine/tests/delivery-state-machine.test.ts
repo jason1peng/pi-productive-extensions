@@ -579,6 +579,81 @@ function appendAssistantUsage(sessionFile: string, usage: Record<string, unknown
 	fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role: "assistant", usage } })}\n`, "utf8");
 }
 
+await runTest("explicit subagent usage is preferred and parent overhead is reported", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-explicit-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "explicit child usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		appendAssistantUsage(sessionFile, { input: 80, output: 20, totalTokens: 100, cost: { total: 0.01 } });
+		result = await harness.tool("delivery_report", {
+			phase: "IMPLEMENT",
+			verdict: "PASS",
+			summary: "implemented with child usage",
+			usageDelta: { input: 30, output: 10, totalTokens: 40, cost: 0.004, assistantMessages: 2, sessionFiles: 1 },
+			usageAttribution: "subagent-reported",
+			usageSource: "subagent",
+			subagentRunId: "child-run-1",
+			subagentSessionFile: "/tmp/child-run-1.jsonl",
+		});
+		const step = result.details.state.steps.find((item: any) => item.phase === "IMPLEMENT");
+		assert.equal(step.usageAttribution, "subagent-reported");
+		assert.equal(step.usageSource, "subagent");
+		assert.equal(step.subagentRunId, "child-run-1");
+		assert.equal(step.usageDelta.totalTokens, 40);
+
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.deliveryTotal.totalTokens, 100);
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 40);
+		assert.equal(structuredReport.usage.parentOverhead.totalTokens, 60);
+		const summaryText = fs.readFileSync(path.join(artifactDir, "00-delivery-summary.md"), "utf8");
+		assert.match(summaryText, /Phase steps total: tokens 40/);
+		assert.match(summaryText, /Parent\/orchestrator overhead: tokens 60/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("parallel stepUsage records child usage without aggregate double counting", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-parallel-explicit-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "parallel explicit usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		result = await harness.tool("delivery_next");
+		const plannedReviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
+		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
+		appendAssistantUsage(sessionFile, { input: 100, output: 20, totalTokens: 120, cost: { total: 0.012 } });
+		result = await harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "reviewed",
+			artifact: `${plannedReviewSteps[0].artifact}; ${plannedReviewSteps[1].artifact}`,
+			stepUsage: [
+				{ childIndex: 0, usageDelta: { input: 20, output: 5, totalTokens: 25, cost: 0.0025, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported", usageSource: "subagent", subagentRunId: "review-1" },
+				{ childIndex: 1, usageDelta: { input: 30, output: 5, totalTokens: 35, cost: 0.0035, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported", usageSource: "subagent", subagentRunId: "review-2" },
+			],
+		});
+		const childSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
+		assert.deepEqual(childSteps.map((step: any) => step.usageDelta.totalTokens), [25, 35]);
+		assert.deepEqual(childSteps.map((step: any) => step.subagentRunId), ["review-1", "review-2"]);
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 60);
+		assert.equal(structuredReport.usage.parentOverhead.totalTokens, 60);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 await runTest("delayed close and retro usage is backfilled from later session totals", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-delayed-usage-"));
 	const sessionFile = path.join(cwd, "session.jsonl");
@@ -624,8 +699,11 @@ await runTest("delayed close and retro usage is backfilled from later session to
 		assert.equal(closeStep.usageDelta.totalTokens, 37);
 		assert.equal(retroStep.usageAttribution, "best-effort");
 		assert.equal(retroStep.usageDelta.totalTokens, 19);
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 56);
+		assert.equal(structuredReport.usage.parentOverhead, null);
 		assert.match(text, /37 tokens \(best-effort\)/);
 		assert.match(text, /19 tokens \(best-effort\)/);
+		assert.match(text, /Phase steps total: tokens 56/);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}

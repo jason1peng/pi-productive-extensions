@@ -6,11 +6,11 @@ The command:
 
 1. Finds the repository's `main` worktree.
 2. Runs `git fetch origin main --prune` and `git pull --ff-only origin main` there.
-3. Removes clean non-main worktrees whose HEAD is already merged into `origin/main` or whose commits are patch-equivalent to commits already on `origin/main` (for rebased/cherry-picked MR merges).
+3. Removes clean non-main worktrees whose HEAD is already merged into `origin/main` or whose commits are patch-equivalent to commits already on `origin/main` (for rebased/cherry-picked MR merges). Worktrees with only untracked files, such as local `.pi-subagents/` runtime artifacts, are treated as removable and removed with `git worktree remove --force`.
 4. Deletes the matching local branch after the worktree is removed.
 5. Runs `git worktree prune`.
 
-It skips the current worktree by default, dirty/untracked worktrees, and worktrees not merged or patch-equivalent to `origin/main`.
+It skips the current worktree by default, worktrees with tracked modifications, and worktrees not merged or patch-equivalent to `origin/main`. Untracked-only worktrees are not skipped.
 
 Options:
 

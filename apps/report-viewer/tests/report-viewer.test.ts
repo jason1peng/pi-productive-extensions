@@ -589,6 +589,9 @@ await runTest("UI routes render report list, report detail, and artifact content
 			assert.match(detailHtml, /class="phase-groups"/);
 			assert.match(detailHtml, /Attention and follow-ups/);
 			assert.match(detailHtml, /Failures and repairs/);
+			assert.match(detailHtml, /class="artifact-table"/);
+			assert.match(detailHtml, /<th>Artifact<\/th><th>Path<\/th>/);
+			assert.doesNotMatch(detailHtml, /class="artifact-list"/);
 			assert.match(detailHtml, /<details><summary>Raw structured JSON/);
 			const artifact = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}/artifacts/${encodeURIComponent("02-verification.md")}`);
 			assert.equal(artifact.status, 200);

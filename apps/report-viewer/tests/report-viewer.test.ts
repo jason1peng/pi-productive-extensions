@@ -650,6 +650,7 @@ await runTest("report detail deduplicates phase summaries and keeps debug data c
 			assert.match(html, /id="outcome-summary"/);
 			assert.match(html, /Outcome: DONE/);
 			assert.match(html, /id="phase-summaries"/);
+			assert.match(html, /class="phase-summary-list"/);
 			assert.match(html, /data-phase="IMPLEMENT" data-summary-count="1"/);
 			assert.match(html, /2 attempts · 1 unique summary/);
 			assert.match(html, /Compact phase timeline/);
@@ -672,6 +673,8 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 			steps: [
 				{ id: "IMPLEMENT-1", phase: "IMPLEMENT", attempt: 1, agent: "worker", status: "reported", verdict: "PASS", artifact: "01-implementation.md", summary: "implemented usage cards", startedAt: 1, usageDelta },
 				{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified usage cards", startedAt: 2, usageDelta: { input: 40, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 50, cost: 0.0101, assistantMessages: 1, sessionFiles: 1 } },
+				{ id: "CLOSE-1", phase: "CLOSE", attempt: 1, agent: "delegate", status: "reported", verdict: "MR_CREATED", artifact: "04-close.md", summary: "closed usage cards", startedAt: 3 },
+				{ id: "RETRO-1", phase: "RETRO", attempt: 1, agent: "delegate", status: "reported", verdict: "DONE", artifact: "05-retro.md", summary: "retro usage cards", startedAt: 4 },
 			],
 			usage: {
 				currentSessionTotals: { input: 9999, output: 9999, cacheRead: 9999, cacheWrite: 9999, totalTokens: 39996, cost: 9.9999, assistantMessages: 9, sessionFiles: 9 },
@@ -702,6 +705,10 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 			assert.match(html, /IMPLEMENT[\s\S]*300[\s\S]*180[\s\S]*70[\s\S]*\$0\.1234/);
 			assert.match(html, /VERIFY[\s\S]*50[\s\S]*40[\s\S]*10[\s\S]*\$0\.0101/);
 			assert.match(html, /IMPLEMENT #1[\s\S]*300 tokens \(85\.7%\)/);
+			assert.match(html, /Usage unavailable for recorded steps: CLOSE, RETRO/);
+			assert.match(html, /CLOSE #1[\s\S]*no per-step usage delta recorded/);
+			assert.match(html, /RETRO #1[\s\S]*excluded from chart totals/);
+			assert.match(html, /Phases with recorded usage/);
 			assert.match(html, /data-usage-summary=/);
 			assert.doesNotMatch(html, /Cost: \$0\.1234/);
 		});

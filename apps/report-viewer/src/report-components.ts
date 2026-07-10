@@ -322,29 +322,38 @@ function usageMetricValue(row: Pick<UsageBreakdownRow, UsageBreakdownMetric>, me
 	return usageNumber(row[metric]);
 }
 
+function usageForStep(step: DeliveryReportStep): UsageBreakdownRow | undefined {
+	const usage = step.usageDelta;
+	if (!usage) return undefined;
+	const input = usageNumber(usage.input);
+	const output = usageNumber(usage.output);
+	const cacheRead = usageNumber(usage.cacheRead);
+	const cacheWrite = usageNumber(usage.cacheWrite);
+	const totalTokens = usageNumber(usage.totalTokens) || input + output + cacheRead + cacheWrite;
+	const cost = usageNumber(usage.cost);
+	if (!totalTokens && !cost) return undefined;
+	return {
+		phase: stepPhase(step) || "UNKNOWN",
+		attemptLabel: stepArtifactLabel(step),
+		agent: String(step.agent ?? "default"),
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		totalTokens,
+		cost,
+	};
+}
+
 function usageBreakdownRows(steps: DeliveryReportStep[]): UsageBreakdownRow[] {
 	return steps.flatMap((step) => {
-		const usage = step?.usageDelta;
-		if (!usage) return [];
-		const input = usageNumber(usage.input);
-		const output = usageNumber(usage.output);
-		const cacheRead = usageNumber(usage.cacheRead);
-		const cacheWrite = usageNumber(usage.cacheWrite);
-		const totalTokens = usageNumber(usage.totalTokens) || input + output + cacheRead + cacheWrite;
-		const cost = usageNumber(usage.cost);
-		if (!totalTokens && !cost) return [];
-		return [{
-			phase: stepPhase(step) || "UNKNOWN",
-			attemptLabel: stepArtifactLabel(step),
-			agent: String(step?.agent ?? "default"),
-			input,
-			output,
-			cacheRead,
-			cacheWrite,
-			totalTokens,
-			cost,
-		}];
+		const usage = usageForStep(step);
+		return usage ? [usage] : [];
 	});
+}
+
+function usageUnavailableSteps(steps: DeliveryReportStep[]): DeliveryReportStep[] {
+	return steps.filter((step) => !usageForStep(step));
 }
 
 function usagePhaseSummaries(rows: UsageBreakdownRow[]): UsagePhaseSummary[] {
@@ -378,9 +387,18 @@ function pieSlices(summary: UsagePhaseSummary[], metric: UsageBreakdownMetric): 
 	}).join(", ");
 }
 
+function usageUnavailableHtml(steps: DeliveryReportStep[]): string {
+	const unavailable = usageUnavailableSteps(steps);
+	if (!unavailable.length) return "";
+	const phases = [...new Set(unavailable.map((step) => stepPhase(step) || "UNKNOWN"))].join(", ");
+	const items = unavailable.map((step) => `<li><strong>${escapeHtml(stepArtifactLabel(step))}</strong> — ${escapeHtml(String(step.agent ?? "default"))}; no per-step usage delta recorded, so this step is excluded from chart totals.</li>`).join("");
+	return `<details class="usage-unavailable" open><summary>Usage unavailable for recorded steps: ${escapeHtml(phases)}</summary><p class="muted">These phases still consume tokens, but this report does not contain attributable usage deltas for them. They remain visible here instead of silently disappearing from the breakdown.</p><ul>${items}</ul></details>`;
+}
+
 function usageBreakdownHtml(steps: DeliveryReportStep[]): string {
 	const rows = usageBreakdownRows(steps);
-	if (!rows.length) return `<section id="usage-breakdown" class="panel"><h2>Usage breakdown</h2><p class="muted">No per-step usage deltas are available for phase-level token analysis.</p></section>`;
+	const unavailableHtml = usageUnavailableHtml(steps);
+	if (!rows.length) return `<section id="usage-breakdown" class="panel"><h2>Usage breakdown</h2><p class="muted">No per-step usage deltas are available for phase-level token analysis.</p>${unavailableHtml}</section>`;
 	const summary = usagePhaseSummaries(rows);
 	const metric: UsageBreakdownMetric = "totalTokens";
 	const total = summary.reduce((sum, row) => sum + usageMetricValue(row, metric), 0);
@@ -395,7 +413,7 @@ function usageBreakdownHtml(steps: DeliveryReportStep[]): string {
 	}).join("");
 	const offenderRows = [...rows].sort((a, b) => b.totalTokens - a.totalTokens || b.cost - a.cost).slice(0, 5).map((row, index) => `<li data-phase="${escapeHtml(row.phase)}" data-totalTokens="${row.totalTokens}" data-input="${row.input}" data-output="${row.output}" data-cost="${row.cost}"><strong>${index + 1}. ${escapeHtml(row.attemptLabel)}</strong> — ${escapeHtml(formatUsageNumber(row.totalTokens))} tokens (${escapeHtml(percentOf(row.totalTokens, rows.reduce((sum, item) => sum + item.totalTokens, 0)))}) · input ${escapeHtml(formatUsageNumber(row.input))} / output ${escapeHtml(formatUsageNumber(row.output))} · ${escapeHtml(formatUsageCost(row.cost))} · ${escapeHtml(row.agent)}</li>`).join("");
 	const data = escapeHtml(JSON.stringify(summary.map((row, index) => ({ ...row, color: USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length] }))));
-	return `<section id="usage-breakdown" class="panel" data-usage-summary="${data}"><h2>Usage breakdown by phase</h2><p class="muted">Use this to identify whether delivery cost is dominated by a phase, by prompt input, by model output, or by repeated repair loops.</p><form class="filters" id="usage-breakdown-filters"><label>Metric <select name="metric">${metricOptions}</select></label><fieldset class="usage-phase-filter"><legend class="label">Phases</legend>${phaseOptions}</fieldset><button type="button" data-action="all">All phases</button><button type="button" data-action="none">No phases</button></form><div class="section-grid"><div class="card"><div class="label" id="usage-pie-title">${escapeHtml(USAGE_METRIC_LABELS[metric])} by phase</div><div class="usage-pie" role="img" aria-label="Pie chart of delivery usage by phase" style="background:conic-gradient(${escapeHtml(pieSlices(summary, metric))})"></div><div class="usage-legend">${legend}</div></div><div class="card"><div class="label">Top token offenders</div><ol class="usage-offenders">${offenderRows}</ol></div></div><div class="wide-table"><table id="usage-breakdown-table"><thead><tr><th>Phase</th><th>Total tokens</th><th>Input</th><th>Output</th><th>Cost</th><th>Input/output/cache bar</th></tr></thead><tbody>${phaseRows}</tbody></table></div><p class="muted">Stacked bars show input (blue), output (green), and cache read/write (amber) token proportions per phase. Percent labels and the pie chart update in-browser when filters change.</p>${usageBreakdownScriptHtml()}</section>`;
+	return `<section id="usage-breakdown" class="panel" data-usage-summary="${data}"><h2>Usage breakdown by phase</h2><p class="muted">Use this to identify whether delivery cost is dominated by a phase, by prompt input, by model output, or by repeated repair loops.</p><form class="filters" id="usage-breakdown-filters"><label>Metric <select name="metric">${metricOptions}</select></label><fieldset class="usage-phase-filter"><legend class="label">Phases with recorded usage</legend>${phaseOptions}</fieldset><button type="button" data-action="all">All phases</button><button type="button" data-action="none">No phases</button></form><div class="section-grid"><div class="card"><div class="label" id="usage-pie-title">${escapeHtml(USAGE_METRIC_LABELS[metric])} by phase</div><div class="usage-pie" role="img" aria-label="Pie chart of delivery usage by phase" style="background:conic-gradient(${escapeHtml(pieSlices(summary, metric))})"></div><div class="usage-legend">${legend}</div></div><div class="card"><div class="label">Top token offenders</div><ol class="usage-offenders">${offenderRows}</ol></div></div><div class="wide-table"><table id="usage-breakdown-table"><thead><tr><th>Phase</th><th>Total tokens</th><th>Input</th><th>Output</th><th>Cost</th><th>Input/output/cache bar</th></tr></thead><tbody>${phaseRows}</tbody></table></div>${unavailableHtml}<p class="muted">Stacked bars show input (blue), output (green), and cache read/write (amber) token proportions per phase. Percent labels and the pie chart update in-browser when filters change. Steps without per-step usage deltas are listed separately because they cannot be safely included in chart totals.</p>${usageBreakdownScriptHtml()}</section>`;
 }
 
 function usageBreakdownScriptHtml(): string {
@@ -492,7 +510,7 @@ function phaseDisplaySummaries(config: Pick<ReportViewerConfig, "reportRoots">, 
 function phaseSummariesHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: DeliveryReportStep[]): string {
 	const summaries = phaseDisplaySummaries(config, viewerReportId, steps);
 	if (!summaries.length) return `<p class="muted">No structured phase summaries are available.</p>`;
-	return `<div class="section-grid">${summaries.map((summary) => {
+	return `<div class="phase-summary-list">${summaries.map((summary) => {
 		const summaryCount = summary.summaries.length;
 		const meta = `${summary.attempts} ${summary.attempts === 1 ? "attempt" : "attempts"} · ${summaryCount} unique ${summaryCount === 1 ? "summary" : "summaries"}`;
 		const verdicts = summary.verdicts.map((verdict) => `<span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span>`).join(" ");

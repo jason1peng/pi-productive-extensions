@@ -575,6 +575,178 @@ function writeReviewArtifact(filePath: string, verdict: "PASS" | "PASS_WITH_NON_
 	fs.writeFileSync(filePath, `RESULT: ${verdict}\n\n## Summary\n${summary}\n\n## Must-fix findings\n${verdict === "FAIL" ? `- ${summary}` : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? `- ${summary}` : "none"}\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- checked\n\n## Recommendation\n${verdict === "FAIL" ? "repair" : "none"}\n`, "utf8");
 }
 
+function appendAssistantUsage(sessionFile: string, usage: Record<string, unknown>) {
+	fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role: "assistant", usage } })}\n`, "utf8");
+}
+
+await runTest("delayed close and retro usage is backfilled from later session totals", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-delayed-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "delayed close retro usage smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		const reviewNext = await harness.tool("delivery_next");
+		writeReviewArtifact(reviewNext.details.next.parallel[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(reviewNext.details.next.parallel[1].artifact, "PASS", "reviewer 2 passed");
+		await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "both reviewers passed" });
+		await harness.tool("delivery_next");
+
+		result = await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed locally" });
+		let closeStep = result.details.state.steps.find((step: any) => step.phase === "CLOSE");
+		assert.equal(closeStep.usageAttribution, "unavailable");
+		assert.equal(closeStep.usageDelta, undefined);
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		result = await harness.tool("delivery_next");
+		closeStep = result.details.state.steps.find((step: any) => step.phase === "CLOSE");
+		assert.equal(closeStep.usageAttribution, "best-effort");
+		assert.equal(closeStep.usageDelta.totalTokens, 37);
+
+		result = await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
+		let retroStep = result.details.state.steps.find((step: any) => step.phase === "RETRO");
+		assert.equal(retroStep.usageAttribution, "unavailable");
+		assert.equal(retroStep.usageDelta, undefined);
+
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		const summary = await harness.tool("delivery_summary");
+		const text = summary.content[0].text as string;
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		closeStep = structuredReport.steps.find((step: any) => step.phase === "CLOSE");
+		retroStep = structuredReport.steps.find((step: any) => step.phase === "RETRO");
+		const reviewSteps = structuredReport.steps.filter((step: any) => step.phase === "REVIEW");
+
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageAttribution), ["unavailable", "unavailable", "unavailable"]);
+		assert.equal(closeStep.usageAttribution, "best-effort");
+		assert.equal(closeStep.usageDelta.totalTokens, 37);
+		assert.equal(retroStep.usageAttribution, "best-effort");
+		assert.equal(retroStep.usageDelta.totalTokens, 19);
+		assert.match(text, /37 tokens \(best-effort\)/);
+		assert.match(text, /19 tokens \(best-effort\)/);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("delayed usage refreshes a stale planned next-phase boundary", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-stale-boundary-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "stale boundary delayed usage smoke" });
+		let result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented before usage landed" });
+		let implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+
+		result = await harness.tool("delivery_next");
+		let verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(verifyStep.status, "planned");
+		assert.equal(verifyStep.usageBefore.totalTokens, 0);
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		result = await harness.tool("delivery_summary");
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageAttribution, "best-effort");
+		assert.equal(implementStep.usageDelta.totalTokens, 37);
+		assert.equal(verifyStep.usageBefore.totalTokens, 37);
+
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified after usage boundary refresh" });
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageDelta.totalTokens, 37);
+		assert.equal(verifyStep.usageAttribution, "best-effort");
+		assert.equal(verifyStep.usageDelta.totalTokens, 19);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("delayed usage avoids misattribution when first observed during next phase report", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-ambiguous-boundary-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "ambiguous delayed usage smoke" });
+		let result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented before usage landed" });
+		let implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+
+		result = await harness.tool("delivery_next");
+		let verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(verifyStep.status, "planned");
+		assert.equal(verifyStep.usageBefore.totalTokens, 0);
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified before a safe boundary was observed" });
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+		assert.equal(implementStep.usageDelta, undefined);
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+		assert.equal(verifyStep.usageDelta, undefined);
+		assert.equal(verifyStep.usageBefore.totalTokens, 56);
+
+		result = await harness.tool("delivery_next");
+		implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT");
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(implementStep.usageAttribution, "unavailable");
+		assert.equal(implementStep.usageDelta, undefined);
+		assert.equal(implementStep.usageBackfillBlockedAfter.totalTokens, 56);
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+		assert.equal(verifyStep.usageDelta, undefined);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("delayed usage avoids misattribution when first observed during parallel review report", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-ambiguous-parallel-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "ambiguous parallel delayed usage smoke" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		let result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified before usage landed" });
+		let verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+
+		result = await harness.tool("delivery_next");
+		const plannedReviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
+		assert.equal(plannedReviewSteps.length, 2);
+		assert.deepEqual(plannedReviewSteps.map((step: any) => step.usageBefore.totalTokens), [0, 0]);
+		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
+
+		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
+		appendAssistantUsage(sessionFile, { input: 11, output: 8, totalTokens: 19, cost: { total: 0.0019 } });
+		result = await harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "reviewed before a safe usage boundary was observed",
+			artifact: `${plannedReviewSteps[0].artifact}; ${plannedReviewSteps[1].artifact}`,
+		});
+		verifyStep = result.details.state.steps.find((step: any) => step.phase === "VERIFY");
+		const reviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+		assert.equal(verifyStep.usageAttribution, "unavailable");
+		assert.equal(verifyStep.usageDelta, undefined);
+		assert.equal(verifyStep.usageBackfillBlockedAfter.totalTokens, 56);
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageAttribution), ["unavailable", "unavailable", "unavailable"]);
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageDelta), [undefined, undefined, undefined]);
+		assert.deepEqual(reviewSteps.map((step: any) => step.usageBefore.totalTokens), [56, 56, 56]);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 await runTest("parallel reviewer aggregate report preserves child verdict artifacts and writes clean aggregate", async () => {
 	const harness = createHarness();
 

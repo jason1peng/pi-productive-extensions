@@ -720,6 +720,7 @@ function recordPlannedSteps(state: DeliveryState, ctx: ExtensionContext, action:
 	const phase = action.phase;
 	const attempt = phaseAttemptForStep(state, phase);
 	const usageBefore = collectSessionUsage(ctx);
+	backfillReportedStepUsage(state, usageBefore);
 	const fallbackLaunch = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[phase].launches[0];
 	const launches = action.parallel?.length
 		? action.parallel
@@ -767,6 +768,137 @@ function usageAttributionForStep(step: DeliveryStep, usageAfter: UsageTotals | u
 	const delta = usageDeltaForStep(step, usageAfter);
 	if (!delta || delta.assistantMessages === 0) return "unavailable";
 	return parallel ? "phase-aggregate" : "best-effort";
+}
+
+function stepHasUsableUsageDelta(step: DeliveryStep): boolean {
+	return !!step.usageDelta && step.usageDelta.assistantMessages > 0 && step.usageAttribution !== "unavailable";
+}
+
+function stepNeedsUsageBackfill(step: DeliveryStep): boolean {
+	return step.status === "reported" && !!step.usageBefore && !step.usageBackfillBlockedAfter && !stepHasUsableUsageDelta(step);
+}
+
+function isParallelUsageStep(step: DeliveryStep): boolean {
+	return (step.childCount ?? 0) > 1 || step.agent === "aggregate";
+}
+
+function nextUsageBoundaryForStep(state: DeliveryState, step: DeliveryStep): { found: boolean; step?: DeliveryStep; usageBefore?: UsageTotals } {
+	const endedAt = step.endedAt ?? step.startedAt;
+	const laterSteps = state.steps
+		.filter((candidate) => candidate.id !== step.id)
+		.filter((candidate) => candidate.phase !== step.phase || candidate.attempt !== step.attempt)
+		.filter((candidate) => candidate.startedAt >= endedAt)
+		.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+	const boundaryStep = laterSteps[0];
+	return boundaryStep ? { found: true, step: boundaryStep, usageBefore: boundaryStep.usageBefore } : { found: false };
+}
+
+function sameUsageTotals(a: UsageTotals | undefined, b: UsageTotals | undefined): boolean {
+	if (!a || !b) return a === b;
+	return a.input === b.input
+		&& a.output === b.output
+		&& a.cacheRead === b.cacheRead
+		&& a.cacheWrite === b.cacheWrite
+		&& a.totalTokens === b.totalTokens
+		&& a.cost === b.cost
+		&& a.assistantMessages === b.assistantMessages
+		&& a.sessionFiles === b.sessionFiles;
+}
+
+function usageTotalsAdvanced(from: UsageTotals | undefined, to: UsageTotals): boolean {
+	if (!from) return to.assistantMessages > 0;
+	return to.assistantMessages > from.assistantMessages
+		|| to.totalTokens > from.totalTokens
+		|| to.input > from.input
+		|| to.output > from.output
+		|| to.cacheRead > from.cacheRead
+		|| to.cacheWrite > from.cacheWrite
+		|| to.cost > from.cost;
+}
+
+function refreshPlannedUsageBoundary(state: DeliveryState, boundaryStep: DeliveryStep, staleUsage: UsageTotals | undefined, currentUsage: UsageTotals): boolean {
+	let changed = false;
+	for (const candidate of state.steps) {
+		if (candidate.status !== "planned") continue;
+		if (candidate.phase !== boundaryStep.phase || candidate.attempt !== boundaryStep.attempt) continue;
+		if (!sameUsageTotals(candidate.usageBefore, staleUsage)) continue;
+		candidate.usageBefore = currentUsage;
+		changed = true;
+	}
+	return changed;
+}
+
+function backfillReportedStepUsage(state: DeliveryState, currentUsage: UsageTotals | undefined, options: { blockedBoundaryStepIds?: Set<string> } = {}): boolean {
+	if (!currentUsage) return false;
+	let changed = false;
+	for (const step of state.steps) {
+		if (!stepNeedsUsageBackfill(step)) continue;
+		const boundary = nextUsageBoundaryForStep(state, step);
+		const parallel = isParallelUsageStep(step);
+		let usageAfter = boundary.found ? boundary.usageBefore : currentUsage;
+		let attribution = usageAttributionForStep(step, usageAfter, parallel);
+		const canRefreshBoundary = boundary.step?.status === "planned" && !options.blockedBoundaryStepIds?.has(boundary.step.id);
+		if (canRefreshBoundary && attribution === "unavailable" && usageTotalsAdvanced(boundary.usageBefore, currentUsage)) {
+			const currentAttribution = usageAttributionForStep(step, currentUsage, parallel);
+			if (currentAttribution !== "unavailable") {
+				usageAfter = currentUsage;
+				attribution = currentAttribution;
+				changed = refreshPlannedUsageBoundary(state, boundary.step!, boundary.usageBefore, currentUsage) || changed;
+			}
+		}
+		if (!usageAfter || attribution === "unavailable") continue;
+		step.usageAfter = usageAfter;
+		step.usageDelta = subtractUsageTotals(usageAfter, step.usageBefore!);
+		step.usageAttribution = attribution;
+		changed = true;
+	}
+	if (changed) state.updatedAt = Date.now();
+	return changed;
+}
+
+function ambiguousReportingBoundaryStepIds(state: DeliveryState, reportingSteps: DeliveryStep[], currentUsage: UsageTotals | undefined): Set<string> {
+	const ids = new Set(reportingSteps.map((step) => step.id));
+	if (!currentUsage) return new Set();
+	const ambiguous = new Set<string>();
+	for (const step of state.steps) {
+		if (!stepNeedsUsageBackfill(step)) continue;
+		const boundary = nextUsageBoundaryForStep(state, step);
+		if (!boundary.step || !ids.has(boundary.step.id)) continue;
+		if (!usageTotalsAdvanced(boundary.usageBefore, currentUsage)) continue;
+		for (const reportingStep of reportingSteps) {
+			if (reportingStep.phase !== boundary.step.phase || reportingStep.attempt !== boundary.step.attempt) continue;
+			if (!sameUsageTotals(reportingStep.usageBefore, boundary.usageBefore)) continue;
+			ambiguous.add(reportingStep.id);
+		}
+	}
+	return ambiguous;
+}
+
+function refreshAmbiguousReportingBaselines(reportingSteps: DeliveryStep[], ambiguousStepIds: Set<string>, currentUsage: UsageTotals | undefined): boolean {
+	if (!currentUsage || !ambiguousStepIds.size) return false;
+	let changed = false;
+	for (const step of reportingSteps) {
+		if (!ambiguousStepIds.has(step.id)) continue;
+		if (sameUsageTotals(step.usageBefore, currentUsage)) continue;
+		step.usageBefore = currentUsage;
+		changed = true;
+	}
+	return changed;
+}
+
+function blockAmbiguousPriorBackfill(state: DeliveryState, ambiguousBoundaryIds: Set<string>, currentUsage: UsageTotals | undefined): boolean {
+	if (!currentUsage || !ambiguousBoundaryIds.size) return false;
+	let changed = false;
+	for (const step of state.steps) {
+		if (!stepNeedsUsageBackfill(step)) continue;
+		const boundary = nextUsageBoundaryForStep(state, step);
+		if (!boundary.step || !ambiguousBoundaryIds.has(boundary.step.id)) continue;
+		step.usageAfter = currentUsage;
+		step.usageAttribution = "unavailable";
+		step.usageBackfillBlockedAfter = currentUsage;
+		changed = true;
+	}
+	return changed;
 }
 
 function aggregateArtifactPath(state: DeliveryState, phase: RunnablePhase, attempt: number): string | undefined {
@@ -875,6 +1007,10 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 	if (!isRunnablePhase(params.phase)) return params.artifact;
 	const steps = ensurePlannedStepsForReport(state, ctx, params.phase);
 	const usageAfter = collectSessionUsage(ctx);
+	const ambiguousBoundaryIds = ambiguousReportingBoundaryStepIds(state, steps, usageAfter);
+	backfillReportedStepUsage(state, usageAfter, { blockedBoundaryStepIds: ambiguousBoundaryIds });
+	blockAmbiguousPriorBackfill(state, ambiguousBoundaryIds, usageAfter);
+	refreshAmbiguousReportingBaselines(steps, ambiguousBoundaryIds, usageAfter);
 	const parallel = steps.length > 1;
 	const aggregatePath = parallel ? aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)) : undefined;
 	if (parallel) {
@@ -1428,6 +1564,7 @@ function writeJsonAtomic(filePath: string, data: unknown) {
 
 function writeReportArtifacts(state: DeliveryState, ctx: ExtensionContext): ReportArtifacts {
 	const usageSnapshot = reportUsageSnapshot(state, ctx);
+	backfillReportedStepUsage(state, usageSnapshot.currentSessionTotals);
 	const markdown = formatJourneyReport(state, ctx, usageSnapshot);
 	if (!state.artifactDir) return { markdown };
 	fs.mkdirSync(state.artifactDir, { recursive: true });
@@ -1704,6 +1841,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			updateUi(ctx, state);
+			backfillReportedStepUsage(state, collectSessionUsage(ctx));
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
 			return { content: [{ type: "text", text }], details: { state: cloneState(state), next: nextAction(state) } };
 		},

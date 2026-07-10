@@ -65,6 +65,7 @@ export interface DeliveryReportStep {
 	usageAfter?: UsageTotals;
 	usageDelta?: UsageTotals;
 	usageAttribution?: DeliveryReportUsageAttribution;
+	usageBackfillBlockedAfter?: UsageTotals;
 }
 
 export interface DeliveryReportJsonV2 {

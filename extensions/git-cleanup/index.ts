@@ -82,8 +82,18 @@ function localBranchName(ref: string | undefined): string | undefined {
 	return ref?.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : undefined;
 }
 
-function isClean(worktreePath: string): boolean {
-	return git(worktreePath, ["status", "--porcelain"], { allowFailure: true }) === "";
+interface WorktreeDirtyState {
+	hasTrackedChanges: boolean;
+	hasUntrackedOnly: boolean;
+}
+
+function dirtyState(worktreePath: string): WorktreeDirtyState {
+	const status = git(worktreePath, ["status", "--porcelain"], { allowFailure: true });
+	const lines = status.split(/\r?\n/).filter(Boolean);
+	return {
+		hasTrackedChanges: lines.some((line) => !line.startsWith("??")),
+		hasUntrackedOnly: lines.length > 0 && lines.every((line) => line.startsWith("??")),
+	};
 }
 
 function isAncestor(cwd: string, maybeAncestor: string | undefined, descendant: string): boolean {
@@ -136,8 +146,9 @@ export function cleanupGitWorktrees(cwd: string, options: CleanupOptions): Clean
 			result.skipped.push({ path: worktree.path, branch, reason: "current worktree" });
 			continue;
 		}
-		if (!isClean(worktree.path)) {
-			result.skipped.push({ path: worktree.path, branch, reason: "dirty or untracked files" });
+		const dirty = dirtyState(worktree.path);
+		if (dirty.hasTrackedChanges) {
+			result.skipped.push({ path: worktree.path, branch, reason: "tracked changes" });
 			continue;
 		}
 		const ancestorMerged = isAncestor(mainWorktree.path, worktree.head, target);
@@ -146,7 +157,7 @@ export function cleanupGitWorktrees(cwd: string, options: CleanupOptions): Clean
 			result.skipped.push({ path: worktree.path, branch, reason: `not merged or patch-equivalent to ${target}` });
 			continue;
 		}
-		runGit(mainWorktree.path, ["worktree", "remove", worktree.path]);
+		runGit(mainWorktree.path, ["worktree", "remove", ...(dirty.hasUntrackedOnly ? ["--force"] : []), worktree.path]);
 		if (branch) runGit(mainWorktree.path, ["branch", patchEquivalent ? "-D" : "-d", branch]);
 		result.removed.push({ path: worktree.path, branch });
 	}

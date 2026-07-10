@@ -32,11 +32,12 @@ await runTest("parseWorktreeList reads porcelain output", () => {
 	]);
 });
 
-await runTest("cleanup removes clean merged worktrees and skips dirty ones", () => {
+await runTest("cleanup removes merged worktrees with untracked-only artifacts and skips tracked changes", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-"));
 	const remote = path.join(root, "remote.git");
 	const main = path.join(root, "repo");
 	const merged = path.join(root, "repo-merged");
+	const untrackedOnly = path.join(root, "repo-untracked");
 	const dirty = path.join(root, "repo-dirty");
 	try {
 		sh(root, ["git", "init", "--bare", remote]);
@@ -56,16 +57,23 @@ await runTest("cleanup removes clean merged worktrees and skips dirty ones", () 
 		sh(main, ["git", "merge", "--ff-only", "merged-branch"]);
 		sh(main, ["git", "push", "origin", "main"]);
 
+		sh(main, ["git", "worktree", "add", "-b", "untracked-branch", untrackedOnly, "main"]);
+		fs.mkdirSync(path.join(untrackedOnly, ".pi-subagents", "artifacts"), { recursive: true });
+		fs.writeFileSync(path.join(untrackedOnly, ".pi-subagents", "artifacts", "runtime.txt"), "runtime\n", "utf8");
+
 		sh(main, ["git", "worktree", "add", "-b", "dirty-branch", dirty, "main"]);
-		fs.writeFileSync(path.join(dirty, "untracked.txt"), "dirty\n", "utf8");
+		fs.writeFileSync(path.join(dirty, "README.md"), "tracked dirty\n", "utf8");
 
 		const result = cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false });
 
 		assert.equal(fs.existsSync(merged), false);
+		assert.equal(fs.existsSync(untrackedOnly), false);
 		assert.equal(fs.existsSync(dirty), true);
-		assert.deepEqual(result.removed.map((item) => item.branch), ["merged-branch"]);
-		assert.equal(result.skipped.some((item) => item.branch === "dirty-branch" && item.reason === "dirty or untracked files"), true);
-		assert.doesNotMatch(sh(main, ["git", "branch"]), /merged-branch/);
+		assert.deepEqual(result.removed.map((item) => item.branch).sort(), ["merged-branch", "untracked-branch"]);
+		assert.equal(result.skipped.some((item) => item.branch === "dirty-branch" && item.reason === "tracked changes"), true);
+		const branches = sh(main, ["git", "branch"]);
+		assert.doesNotMatch(branches, /merged-branch/);
+		assert.doesNotMatch(branches, /untracked-branch/);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

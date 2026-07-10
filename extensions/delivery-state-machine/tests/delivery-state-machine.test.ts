@@ -696,6 +696,186 @@ await runTest("parallel stepUsage can resolve usage from subagent run ids", asyn
 	}
 });
 
+function writePiSubagentMeta(artifactsDir: string, opts: {
+	runId: string;
+	agent: string;
+	model?: string;
+	usage: Record<string, unknown>;
+	transcriptPath?: string;
+	task: string;
+	timestamp: number;
+}) {
+	fs.mkdirSync(artifactsDir, { recursive: true });
+	const file = path.join(artifactsDir, `${opts.runId}_${opts.agent}_0_meta.json`);
+	fs.writeFileSync(file, JSON.stringify(opts), "utf8");
+	return file;
+}
+
+await runTest("pi-subagents meta scan attributes single-step usage without delivery_report params", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-single-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "meta scan single step smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		result = await harness.tool("delivery_next");
+		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
+		writePiSubagentMeta(artifactsDir, {
+			runId: "aabbccdd",
+			agent: "worker",
+			usage: { input: 30, output: 10, totalTokens: 40, cost: 0.004, turns: 2 },
+			transcriptPath: path.join(artifactsDir, "aabbccdd_worker_0_transcript.jsonl"),
+			task: `Implement this phase.\n\nSave to ${plannedStep.artifact}. Do not call delivery_report.`,
+			timestamp: Date.now() + 1000,
+		});
+		appendAssistantUsage(sessionFile, { input: 80, output: 20, totalTokens: 100, cost: { total: 0.01 } });
+		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(step.usageAttribution, "subagent-reported");
+		assert.equal(step.usageSource, "subagent");
+		assert.equal(step.subagentRunId, "aabbccdd");
+		assert.equal(step.usageDelta.totalTokens, 40);
+		assert.equal(step.usageDelta.assistantMessages, 2);
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		const implementStep = structuredReport.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(implementStep.usageAttribution, "subagent-reported");
+		assert.equal(implementStep.usageDelta.totalTokens, 40);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("pi-subagents meta scan discovers metadata in git worktrees", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-worktree-root-"));
+	const worktree = `${root}-child-worktree`;
+	const sessionFile = path.join(root, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
+		fs.writeFileSync(path.join(root, "README.md"), "root\n", "utf8");
+		execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
+		execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"], { cwd: root, stdio: "ignore" });
+		execFileSync("git", ["worktree", "add", "-b", "child", worktree], { cwd: root, stdio: "ignore" });
+		const harness = createHarness({ cwd: root, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "meta scan worktree smoke" });
+		result = await harness.tool("delivery_next");
+		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const artifactsDir = path.join(worktree, ".pi-subagents", "artifacts");
+		writePiSubagentMeta(artifactsDir, {
+			runId: "worktree1",
+			agent: "worker",
+			usage: { input: 25, output: 15, totalTokens: 40, cost: 0.004, turns: 2 },
+			transcriptPath: path.join(artifactsDir, "worktree1_worker_0_transcript.jsonl"),
+			task: `Implement in sibling worktree.\n\nSave to ${plannedStep.artifact}. Do not call delivery_report.`,
+			timestamp: Date.now() + 1000,
+		});
+		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(step.usageAttribution, "subagent-reported");
+		assert.equal(step.subagentRunId, "worktree1");
+		assert.equal(step.usageDelta.totalTokens, 40);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(worktree, { recursive: true, force: true });
+	}
+});
+
+await runTest("pi-subagents meta scan attributes parallel child usage and skips aggregate", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-parallel-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "meta scan parallel review smoke" });
+		const artifactDir = result.details.state.artifactDir as string;
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		result = await harness.tool("delivery_next");
+		const plannedReviewSteps = result.details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.status === "planned");
+		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
+		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
+		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
+		const now = Date.now();
+		appendAssistantUsage(sessionFile, { input: 100, output: 20, totalTokens: 120, cost: { total: 0.012 } });
+		writePiSubagentMeta(artifactsDir, {
+			runId: "review11",
+			agent: "reviewer",
+			usage: { input: 20, output: 5, totalTokens: 25, cost: 0.0025, turns: 1 },
+			transcriptPath: path.join(artifactsDir, "review11_reviewer_0_transcript.jsonl"),
+			task: `Review diff.\n\nSave to ${plannedReviewSteps[0].artifact}. Do not call delivery_report.`,
+			timestamp: now + 1000,
+		});
+		// second reviewer has different runId but also reviewer agent
+		const meta2file = path.join(artifactsDir, `review22_reviewer_1_meta.json`);
+		fs.writeFileSync(meta2file, JSON.stringify({
+			runId: "review22",
+			agent: "reviewer",
+			usage: { input: 30, output: 5, totalTokens: 35, cost: 0.0035, turns: 1 },
+			transcriptPath: path.join(artifactsDir, "review22_reviewer_1_transcript.jsonl"),
+			task: `Review diff.\n\nSave to ${plannedReviewSteps[1].artifact}. Do not call delivery_report.`,
+			timestamp: now + 2000,
+		}), "utf8");
+		result = await harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "PASS",
+			summary: "both passed",
+			artifact: `${plannedReviewSteps[0].artifact}; ${plannedReviewSteps[1].artifact}`,
+		});
+		const childSteps = result.details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.childIndex !== undefined);
+		assert.equal(childSteps[0].usageAttribution, "subagent-reported");
+		assert.equal(childSteps[0].usageDelta.totalTokens, 25);
+		assert.equal(childSteps[0].subagentRunId, "review11");
+		assert.equal(childSteps[1].usageAttribution, "subagent-reported");
+		assert.equal(childSteps[1].usageDelta.totalTokens, 35);
+		assert.equal(childSteps[1].subagentRunId, "review22");
+		// aggregate row must NOT get meta usage
+		const aggregate = result.details.state.steps.find((s: any) => s.phase === "REVIEW" && s.agent === "aggregate");
+		assert.ok(!aggregate.usageDelta || aggregate.usageAttribution !== "subagent-reported", "aggregate should not get meta usage");
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.phaseStepsTotal.totalTokens, 60);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("pi-subagents meta scan does not overwrite explicit delivery_report usage", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-explicit-wins-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		let result = await harness.tool("delivery_start", { task: "explicit wins over meta scan" });
+		result = await harness.tool("delivery_next");
+		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
+		writePiSubagentMeta(artifactsDir, {
+			runId: "metarunid",
+			agent: "worker",
+			usage: { input: 50, output: 20, totalTokens: 70, cost: 0.007, turns: 3 },
+			transcriptPath: path.join(artifactsDir, "metarunid_worker_0_transcript.jsonl"),
+			task: `Implement.\n\nSave to ${plannedStep.artifact}. Do not call delivery_report.`,
+			timestamp: Date.now() + 1000,
+		});
+		// pass explicit usageDelta — should win
+		result = await harness.tool("delivery_report", {
+			phase: "IMPLEMENT",
+			verdict: "PASS",
+			summary: "implemented",
+			usageDelta: { input: 30, output: 10, totalTokens: 40, cost: 0.004, assistantMessages: 2, sessionFiles: 1 },
+			usageAttribution: "subagent-reported",
+		});
+		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		assert.equal(step.usageDelta.totalTokens, 40, "explicit wins over meta");
+		assert.equal(step.subagentRunId, undefined, "explicit path does not set meta runId");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 await runTest("parallel stepUsage records child usage without aggregate double counting", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-parallel-explicit-"));
 	const sessionFile = path.join(cwd, "session.jsonl");

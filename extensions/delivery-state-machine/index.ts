@@ -835,6 +835,116 @@ function resolveReportInputUsage(ctx: ExtensionContext, input: { usageDelta?: un
 		?? usageFromSubagentRunId(ctx, input.subagentRunId);
 }
 
+// pi-subagents meta file shape (only the fields we use)
+interface PiSubagentMeta {
+	runId: string;
+	agent?: string;
+	model?: string;
+	usage?: Record<string, unknown>;
+	transcriptPath?: string;
+	task?: string;
+	timestamp?: number;
+}
+
+function readPiSubagentMeta(file: string): PiSubagentMeta | undefined {
+	try {
+		const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+		if (!raw || typeof raw.runId !== "string") return undefined;
+		return raw as PiSubagentMeta;
+	} catch {
+		return undefined;
+	}
+}
+
+function piSubagentArtifactDirs(state: DeliveryState, ctx: ExtensionContext): string[] {
+	const roots = new Set<string>();
+	for (const root of [ctx.cwd, state.cwd, state.gitRoot]) {
+		if (root) roots.add(root);
+	}
+	if (state.gitRoot) {
+		const worktreeList = gitOutput(state.gitRoot, ["worktree", "list", "--porcelain"]);
+		for (const line of worktreeList?.split(/\r?\n/) ?? []) {
+			if (line.startsWith("worktree ")) roots.add(line.slice("worktree ".length));
+		}
+	}
+	return [...roots].map((root) => path.join(root, ".pi-subagents", "artifacts"));
+}
+
+function scanPiSubagentMetaFiles(state: DeliveryState, ctx: ExtensionContext): PiSubagentMeta[] {
+	const metas: PiSubagentMeta[] = [];
+	for (const artifactsDir of piSubagentArtifactDirs(state, ctx)) {
+		if (!fs.existsSync(artifactsDir)) continue;
+		try {
+			metas.push(...fs.readdirSync(artifactsDir)
+				.filter((name) => name.endsWith("_meta.json"))
+				.map((name) => readPiSubagentMeta(path.join(artifactsDir, name)))
+				.filter((m): m is PiSubagentMeta => m !== undefined));
+		} catch {
+			// Ignore unreadable artifact dirs; unavailable is safer than guessed attribution.
+		}
+	}
+	return metas;
+}
+
+function metaUsageToTotals(meta: PiSubagentMeta): UsageTotals | undefined {
+	const u = meta.usage;
+	if (!u || typeof u !== "object") return undefined;
+	const input = finiteNumber(u.input) ?? 0;
+	const output = finiteNumber(u.output) ?? 0;
+	const cacheRead = finiteNumber(u.cacheRead) ?? 0;
+	const cacheWrite = finiteNumber(u.cacheWrite) ?? 0;
+	const totalTokens = finiteNumber(u.totalTokens) ?? input + output + cacheRead + cacheWrite;
+	const cost = finiteNumber(u.cost) ?? 0;
+	// pi-subagents meta uses turns not assistantMessages
+	const assistantMessages = finiteNumber((u as any).assistantMessages) ?? (finiteNumber((u as any).turns) ?? (totalTokens > 0 || cost > 0 ? 1 : 0));
+	if (totalTokens === 0 && cost === 0) return undefined;
+	return { input, output, cacheRead, cacheWrite, totalTokens, cost, assistantMessages, sessionFiles: 0 };
+}
+
+function metaMatchesStep(meta: PiSubagentMeta, step: DeliveryStep, reportedAt: number): boolean {
+	// Must have completed by (or at) report time
+	if (meta.timestamp !== undefined && meta.timestamp > reportedAt + 5000) return false;
+	// Must have started after the step was planned
+	if (meta.timestamp !== undefined && step.startedAt > 0 && meta.timestamp < step.startedAt - 5000) return false;
+	// Agent must match if both known.
+	if (step.agent && meta.agent && step.agent !== meta.agent) return false;
+	// Primary: artifact path present in meta task text
+	if (step.artifact) {
+		return typeof meta.task === "string" && meta.task.includes(step.artifact);
+	}
+	return false;
+}
+
+function stepHasExplicitUsage(step: DeliveryStep): boolean {
+	return stepHasUsableUsageDelta(step)
+		&& (step.usageSource === "subagent"
+			|| step.usageSource === "manual"
+			|| step.usageAttribution === "subagent-reported"
+			|| step.usageAttribution === "exact");
+}
+
+function applySubagentMetaUsage(state: DeliveryState, ctx: ExtensionContext, steps: DeliveryStep[], reportedAt: number): void {
+	const metas = scanPiSubagentMetaFiles(state, ctx);
+	if (metas.length === 0) return;
+	for (const step of steps) {
+		if (stepHasExplicitUsage(step)) continue; // explicit delivery_report usage wins; best-effort/aggregate may be superseded.
+		if (step.agent === "aggregate") continue; // never assign meta to aggregate row
+		const candidates = metas
+			.filter((m) => metaMatchesStep(m, step, reportedAt))
+			.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+		if (candidates.length !== 1) continue; // skip if ambiguous
+		const meta = candidates[0]!;
+		const usage = metaUsageToTotals(meta);
+		if (!usage) continue;
+		applyExplicitUsageToStep(step, usage, {
+			attribution: "subagent-reported",
+			source: "subagent",
+			subagentRunId: meta.runId,
+			subagentSessionFile: meta.transcriptPath,
+		});
+	}
+}
+
 function usageDeltaForStep(step: DeliveryStep, usageAfter: UsageTotals | undefined): UsageTotals | undefined {
 	if (!usageAfter || !step.usageBefore) return undefined;
 	return subtractUsageTotals(usageAfter, step.usageBefore);
@@ -1218,6 +1328,7 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 	}
 	const currentPhaseSteps = state.steps.filter((step) => step.phase === params.phase && step.attempt === (steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)));
 	applyExplicitReportUsage(ctx, state, currentPhaseSteps, params);
+	applySubagentMetaUsage(state, ctx, currentPhaseSteps, endedAt);
 	state.updatedAt = Date.now();
 	return reportArtifact;
 }

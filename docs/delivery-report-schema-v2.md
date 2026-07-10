@@ -134,6 +134,8 @@ Token fallback policy is stable across delivery summaries and `/session-usage-al
 
 `delivery_report` can receive child-native usage explicitly. For single-child phases, callers may pass `usageDelta` directly, or pass `subagentSessionFile` / `subagentRunId` and let the state machine parse matching child session usage. For parallel phases, callers pass `stepUsage[]` entries keyed by `stepId`, `childIndex`, or child `artifact`; each entry may include either `usageDelta` or a resolvable `subagentSessionFile` / `subagentRunId`. Direct `usageDelta` takes precedence over session-file/run-id resolution.
 
+When explicit child usage metadata is absent, `delivery_report` also attempts deterministic local attribution from pi-subagents metadata files (`.pi-subagents/artifacts/*_meta.json`) in the delivery cwd and known git worktrees. A metadata file is matched to a delivery step only when the planned artifact path appears in `meta.task`, the agent matches when known, and the timestamp falls near the planned/report window. Matching metadata provides `usageDelta`, `subagentRunId`, and `subagentSessionFile` without relying on LLMs to copy run ids.
+
 ## Backwards compatibility
 
 - Consumers should prefer `delivery-report.json` when present.

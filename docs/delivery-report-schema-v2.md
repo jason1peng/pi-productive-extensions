@@ -132,6 +132,8 @@ interface UsageTotals {
 
 Token fallback policy is stable across delivery summaries and `/session-usage-all`: prefer numeric `usage.totalTokens`, then numeric `usage.total`, then `input + output + cacheRead + cacheWrite`.
 
+`delivery_report` can receive child-native usage explicitly. For single-child phases, callers may pass `usageDelta` directly, or pass `subagentSessionFile` / `subagentRunId` and let the state machine parse matching child session usage. For parallel phases, callers pass `stepUsage[]` entries keyed by `stepId`, `childIndex`, or child `artifact`; each entry may include either `usageDelta` or a resolvable `subagentSessionFile` / `subagentRunId`. Direct `usageDelta` takes precedence over session-file/run-id resolution.
+
 ## Backwards compatibility
 
 - Consumers should prefer `delivery-report.json` when present.

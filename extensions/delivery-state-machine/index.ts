@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { addUsageTotals, collectSessionUsage as collectSharedSessionUsage, emptyUsageTotals, subtractUsageTotals, type UsageTotals } from "../../shared/session-usage.ts";
+import { addUsageTotals, collectSessionUsage as collectSharedSessionUsage, collectUsageFromSessionFile, emptyUsageTotals, subtractUsageTotals, type UsageTotals } from "../../shared/session-usage.ts";
 import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportStep } from "../../shared/delivery-report.ts";
 import { loadPhaseConfigBundle, loadPhaseConfigs, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
@@ -172,11 +172,11 @@ const REPORT_PARAMS = Type.Object({
 		stepId: Type.Optional(Type.String({ description: "Delivery step id to attach usage to" })),
 		childIndex: Type.Optional(Type.Number({ description: "Parallel child index to attach usage to" })),
 		artifact: Type.Optional(Type.String({ description: "Artifact path associated with the step usage" })),
-		usageDelta: USAGE_TOTALS_PARAMS,
+		usageDelta: Type.Optional(USAGE_TOTALS_PARAMS),
 		usageAttribution: Type.Optional(USAGE_ATTRIBUTION_PARAMS),
 		usageSource: Type.Optional(USAGE_SOURCE_PARAMS),
-		subagentRunId: Type.Optional(Type.String()),
-		subagentSessionFile: Type.Optional(Type.String()),
+		subagentRunId: Type.Optional(Type.String({ description: "Subagent run id to resolve child-native usage from when usageDelta is omitted" })),
+		subagentSessionFile: Type.Optional(Type.String({ description: "Subagent session JSONL file to parse for child-native usage when usageDelta is omitted" })),
 	}))),
 	recommendedDecision: Type.Optional(
 		StringEnum(["repair", "stop", "accept_risk", "continue", "defer"] as const),
@@ -656,11 +656,12 @@ Parallel phase instruction:
 
 function reportInstructionForPhase(phase: RunnablePhase, parallelCount = 1): string {
 	const verdictGuidance = phase === "VERIFY" ? " and verdict PASS/FAIL/INCONCLUSIVE" : "";
+	const usageGuidance = "When the subagent result exposes usage, a run id, or a session JSONL path, pass it to delivery_report as usageDelta/subagentRunId/subagentSessionFile; for parallel phases, pass one stepUsage entry per child so child-native usage is attributed to child rows and parent overhead stays separate.";
 	if (parallelCount > 1) {
 		const aggregateName = PHASE_ARTIFACT_STEMS[phase];
-		return `After all ${parallelCount} children complete, parent/orchestrator confirms every details.next.parallel[].artifact file exists, is non-empty, and starts with RESULT/VERDICT. If a child returned inline output or the subagent output was saved elsewhere, copy it to that planned artifact path; if copying is not possible, pass the actual existing child artifact paths in delivery_report.artifact so the state can record existing paths. Then write a clean aggregate phase artifact such as ${aggregateName}.md with links/summaries for each child, and call delivery_report once with phase ${phase}${verdictGuidance}. When child artifacts are at the planned paths, set artifact to only the aggregate artifact path. For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding. delivery_report will reject parallel phase reports when child artifacts are missing or invalid to avoid stale delivery-report.json links.`;
+		return `After all ${parallelCount} children complete, parent/orchestrator confirms every details.next.parallel[].artifact file exists, is non-empty, and starts with RESULT/VERDICT. If a child returned inline output but did not write the expected artifact, save that output to the artifact path yourself; if a child artifact was intentionally saved elsewhere, pass the actual existing child artifact paths in delivery_report.artifact so the state can record actual paths. Then write a clean aggregate phase artifact such as ${aggregateName}.md that links/summarizes each child artifact, and call delivery_report once with phase ${phase}${verdictGuidance}. When child artifacts are at the planned paths, set artifact to only the aggregate artifact path. ${usageGuidance} For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding. delivery_report will reject parallel phase reports when child artifacts are missing or invalid to avoid stale delivery-report.json links.`;
 	}
-	return `After the child completes, parent/orchestrator calls delivery_report with phase ${phase}${verdictGuidance}.`;
+	return `After the child completes, parent/orchestrator calls delivery_report with phase ${phase}${verdictGuidance}. ${usageGuidance}`;
 }
 
 function worktreePolicyInstruction(state: DeliveryState): string | undefined {
@@ -808,6 +809,30 @@ function normalizeUsageTotals(value: unknown): UsageTotals | undefined {
 	const assistantMessages = finiteNumber(record.assistantMessages) ?? (totalTokens > 0 || cost > 0 ? 1 : 0);
 	const sessionFiles = finiteNumber(record.sessionFiles) ?? 0;
 	return { input, output, cacheRead, cacheWrite, totalTokens, cost, assistantMessages, sessionFiles };
+}
+
+function usageFromSessionFile(sessionFile: string | undefined): UsageTotals | undefined {
+	if (!sessionFile) return undefined;
+	const usage = collectUsageFromSessionFile(sessionFile);
+	return usageHasAssistantMessages(usage) ? usage : undefined;
+}
+
+function usageFromSubagentRunId(ctx: ExtensionContext, runId: string | undefined): UsageTotals | undefined {
+	if (!runId) return undefined;
+	const sessionFile = ctx.sessionManager.getSessionFile();
+	if (!sessionFile) return undefined;
+	const usage = emptyUsageTotals();
+	for (const row of collectSharedSessionUsage(sessionFile).rows) {
+		if (row.kind !== "subagent" || row.runId !== runId) continue;
+		addUsageTotals(usage, row);
+	}
+	return usageHasAssistantMessages(usage) ? usage : undefined;
+}
+
+function resolveReportInputUsage(ctx: ExtensionContext, input: { usageDelta?: unknown; subagentRunId?: string; subagentSessionFile?: string }): UsageTotals | undefined {
+	return normalizeUsageTotals(input.usageDelta)
+		?? usageFromSessionFile(input.subagentSessionFile)
+		?? usageFromSubagentRunId(ctx, input.subagentRunId);
 }
 
 function usageDeltaForStep(step: DeliveryStep, usageAfter: UsageTotals | undefined): UsageTotals | undefined {
@@ -1106,11 +1131,11 @@ function applyExplicitUsageToStep(step: DeliveryStep, usage: UsageTotals, option
 	return true;
 }
 
-function applyExplicitReportUsage(state: DeliveryState, steps: DeliveryStep[], params: DeliveryReportInput): boolean {
+function applyExplicitReportUsage(ctx: ExtensionContext, state: DeliveryState, steps: DeliveryStep[], params: DeliveryReportInput): boolean {
 	let changed = false;
 	const stepUsage = Array.isArray(params.stepUsage) ? params.stepUsage : [];
 	for (const input of stepUsage) {
-		const usage = normalizeUsageTotals(input.usageDelta);
+		const usage = resolveReportInputUsage(ctx, input);
 		if (!usage) continue;
 		const targets = steps.filter((step) => stepUsageInputMatchesStep(state, input, step));
 		for (const step of targets) {
@@ -1122,7 +1147,7 @@ function applyExplicitReportUsage(state: DeliveryState, steps: DeliveryStep[], p
 			}) || changed;
 		}
 	}
-	const usage = normalizeUsageTotals(params.usageDelta);
+	const usage = resolveReportInputUsage(ctx, params);
 	if (usage && steps.length === 1) {
 		changed = applyExplicitUsageToStep(steps[0]!, usage, {
 			attribution: params.usageAttribution,
@@ -1192,7 +1217,7 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 		if (!existing) state.steps.push(aggregate);
 	}
 	const currentPhaseSteps = state.steps.filter((step) => step.phase === params.phase && step.attempt === (steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)));
-	applyExplicitReportUsage(state, currentPhaseSteps, params);
+	applyExplicitReportUsage(ctx, state, currentPhaseSteps, params);
 	state.updatedAt = Date.now();
 	return reportArtifact;
 }

@@ -13,6 +13,7 @@ Start here when planning or implementing changes in this repository.
 
 - `docs/principles.md` — concise engineering standards for validation, tests, readability, and modularity.
 - `docs/delivery-report-schema-v2.md` — stable JSON report and project metadata contract shared by the delivery extension and report viewer.
+- `docs/paseo-extension-command-lifecycle.md` — deferred Paseo/Pi RPC lifecycle issue and the temporary `/cleanup` workaround.
 
 ## Component documentation
 

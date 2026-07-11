@@ -2,7 +2,9 @@
 
 Adds `/cleanup` for the common post-merge repo housekeeping flow.
 
-The command:
+For compatibility with RPC clients that wait for Pi's agent lifecycle, `/cleanup` starts an agent turn that invokes the `git_cleanup` tool. This also makes RPC agent cancellation reach the Git process. The extra model turn is a temporary workaround for the [Paseo extension-command lifecycle issue](../../docs/paseo-extension-command-lifecycle.md).
+
+The tool:
 
 1. Finds the repository's `main` worktree.
 2. Runs `git fetch origin main --prune` and `git pull --ff-only origin main` there.
@@ -10,7 +12,7 @@ The command:
 4. Deletes the matching local branch after the worktree is removed.
 5. Runs `git worktree prune`.
 
-Git commands run asynchronously through Pi's abortable process API. Local commands time out after 15 seconds, network fetch/pull commands after 60 seconds, and interactive credential prompts are disabled. The command reports fetch, pull, and removal progress and clears its status on success, failure, cancellation, or session shutdown.
+Git commands run asynchronously through Pi's abortable process API. Local commands time out after 15 seconds, network fetch/pull commands after 60 seconds, and interactive credential prompts are disabled. The tool streams progress and clears its status on success, failure, or cancellation.
 
 It skips the current worktree by default, worktrees with tracked modifications, and worktrees not merged or patch-equivalent to `origin/main`. Untracked-only worktrees are not skipped.
 

@@ -10,6 +10,8 @@ The command:
 4. Deletes the matching local branch after the worktree is removed.
 5. Runs `git worktree prune`.
 
+Git commands run asynchronously through Pi's abortable process API. Local commands time out after 15 seconds, network fetch/pull commands after 60 seconds, and interactive credential prompts are disabled. The command reports fetch, pull, and removal progress and clears its status on success, failure, cancellation, or session shutdown.
+
 It skips the current worktree by default, worktrees with tracked modifications, and worktrees not merged or patch-equivalent to `origin/main`. Untracked-only worktrees are not skipped.
 
 Options:

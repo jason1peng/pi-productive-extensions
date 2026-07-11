@@ -1,6 +1,9 @@
-import { execFileSync } from "node:child_process";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExecResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const LOCAL_COMMAND_TIMEOUT_MS = 15_000;
+const NETWORK_COMMAND_TIMEOUT_MS = 60_000;
+const STATUS_KEY = "git-cleanup";
 
 export interface CleanupOptions {
 	mainBranch: string;
@@ -24,13 +27,35 @@ export interface CleanupResult {
 	commands: string[];
 }
 
-function git(cwd: string, args: string[], options: { allowFailure?: boolean } = {}): string {
-	try {
-		return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-	} catch (error) {
-		if (options.allowFailure) return "";
-		throw error;
-	}
+export interface GitExecutorOptions {
+	cwd: string;
+	signal?: AbortSignal;
+	timeout: number;
+}
+
+export type GitExecutor = (args: string[], options: GitExecutorOptions) => Promise<ExecResult>;
+
+export interface CleanupRuntimeOptions {
+	exec: GitExecutor;
+	signal?: AbortSignal;
+	onProgress?: (message: string) => void;
+}
+
+async function git(
+	cwd: string,
+	args: string[],
+	runtime: CleanupRuntimeOptions,
+	options: { allowFailure?: boolean; timeout?: number } = {},
+): Promise<string> {
+	const result = await runtime.exec(args, {
+		cwd,
+		signal: runtime.signal,
+		timeout: options.timeout ?? LOCAL_COMMAND_TIMEOUT_MS,
+	});
+	if (result.code === 0) return result.stdout.trim();
+	if (options.allowFailure) return "";
+	const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command cancelled or timed out" : `exit code ${result.code}`);
+	throw new Error(`git ${args.join(" ")} failed: ${detail}`);
 }
 
 function shellQuote(value: string): string {
@@ -87,8 +112,8 @@ interface WorktreeDirtyState {
 	hasUntrackedOnly: boolean;
 }
 
-function dirtyState(worktreePath: string): WorktreeDirtyState {
-	const status = git(worktreePath, ["status", "--porcelain"], { allowFailure: true });
+async function dirtyState(worktreePath: string, runtime: CleanupRuntimeOptions): Promise<WorktreeDirtyState> {
+	const status = await git(worktreePath, ["status", "--porcelain"], runtime, { allowFailure: true });
 	const lines = status.split(/\r?\n/).filter(Boolean);
 	return {
 		hasTrackedChanges: lines.some((line) => !line.startsWith("??")),
@@ -96,26 +121,30 @@ function dirtyState(worktreePath: string): WorktreeDirtyState {
 	};
 }
 
-function isAncestor(cwd: string, maybeAncestor: string | undefined, descendant: string): boolean {
+async function isAncestor(cwd: string, maybeAncestor: string | undefined, descendant: string, runtime: CleanupRuntimeOptions): Promise<boolean> {
 	if (!maybeAncestor) return false;
-	try {
-		execFileSync("git", ["merge-base", "--is-ancestor", maybeAncestor, descendant], { cwd, stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
+	const result = await runtime.exec(["merge-base", "--is-ancestor", maybeAncestor, descendant], {
+		cwd,
+		signal: runtime.signal,
+		timeout: LOCAL_COMMAND_TIMEOUT_MS,
+	});
+	return result.code === 0;
 }
 
-function hasNoUniquePatch(cwd: string, branchHead: string | undefined, target: string): boolean {
+async function hasNoUniquePatch(cwd: string, branchHead: string | undefined, target: string, runtime: CleanupRuntimeOptions): Promise<boolean> {
 	if (!branchHead) return false;
-	const cherry = git(cwd, ["cherry", target, branchHead], { allowFailure: true });
+	const cherry = await git(cwd, ["cherry", target, branchHead], runtime, { allowFailure: true });
 	if (!cherry) return false;
 	return cherry.split(/\r?\n/).filter(Boolean).every((line) => line.startsWith("-"));
 }
 
-export function cleanupGitWorktrees(cwd: string, options: CleanupOptions): CleanupResult {
-	const currentRoot = git(cwd, ["rev-parse", "--show-toplevel"]);
-	const worktrees = parseWorktreeList(git(currentRoot, ["worktree", "list", "--porcelain"]));
+export async function cleanupGitWorktrees(
+	cwd: string,
+	options: CleanupOptions,
+	runtime: CleanupRuntimeOptions,
+): Promise<CleanupResult> {
+	const currentRoot = await git(cwd, ["rev-parse", "--show-toplevel"], runtime);
+	const worktrees = parseWorktreeList(await git(currentRoot, ["worktree", "list", "--porcelain"], runtime));
 	const mainRef = `refs/heads/${options.mainBranch}`;
 	const mainWorktree = worktrees.find((worktree) => worktree.branch === mainRef);
 	if (!mainWorktree) throw new Error(`No ${options.mainBranch} worktree found for this repository.`);
@@ -129,13 +158,15 @@ export function cleanupGitWorktrees(cwd: string, options: CleanupOptions): Clean
 		commands: [],
 	};
 
-	const runGit = (runCwd: string, args: string[]) => {
+	const runGit = async (runCwd: string, args: string[], timeout = LOCAL_COMMAND_TIMEOUT_MS) => {
 		result.commands.push(commandText(runCwd, args));
-		if (!options.dryRun) git(runCwd, args);
+		if (!options.dryRun) await git(runCwd, args, runtime, { timeout });
 	};
 
-	runGit(mainWorktree.path, ["fetch", "origin", options.mainBranch, "--prune"]);
-	runGit(mainWorktree.path, ["pull", "--ff-only", "origin", options.mainBranch]);
+	runtime.onProgress?.(`Fetching origin/${options.mainBranch}…`);
+	await runGit(mainWorktree.path, ["fetch", "origin", options.mainBranch, "--prune"], NETWORK_COMMAND_TIMEOUT_MS);
+	runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
+	await runGit(mainWorktree.path, ["pull", "--ff-only", "origin", options.mainBranch], NETWORK_COMMAND_TIMEOUT_MS);
 	result.pulled = !options.dryRun;
 
 	const target = `origin/${options.mainBranch}`;
@@ -146,22 +177,23 @@ export function cleanupGitWorktrees(cwd: string, options: CleanupOptions): Clean
 			result.skipped.push({ path: worktree.path, branch, reason: "current worktree" });
 			continue;
 		}
-		const dirty = dirtyState(worktree.path);
+		const dirty = await dirtyState(worktree.path, runtime);
 		if (dirty.hasTrackedChanges) {
 			result.skipped.push({ path: worktree.path, branch, reason: "tracked changes" });
 			continue;
 		}
-		const ancestorMerged = isAncestor(mainWorktree.path, worktree.head, target);
-		const patchEquivalent = !ancestorMerged && hasNoUniquePatch(mainWorktree.path, worktree.head, target);
+		const ancestorMerged = await isAncestor(mainWorktree.path, worktree.head, target, runtime);
+		const patchEquivalent = !ancestorMerged && await hasNoUniquePatch(mainWorktree.path, worktree.head, target, runtime);
 		if (!ancestorMerged && !patchEquivalent) {
 			result.skipped.push({ path: worktree.path, branch, reason: `not merged or patch-equivalent to ${target}` });
 			continue;
 		}
-		runGit(mainWorktree.path, ["worktree", "remove", ...(dirty.hasUntrackedOnly ? ["--force"] : []), worktree.path]);
-		if (branch) runGit(mainWorktree.path, ["branch", patchEquivalent ? "-D" : "-d", branch]);
+		runtime.onProgress?.(`Removing ${worktree.path}…`);
+		await runGit(mainWorktree.path, ["worktree", "remove", ...(dirty.hasUntrackedOnly ? ["--force"] : []), worktree.path]);
+		if (branch) await runGit(mainWorktree.path, ["branch", patchEquivalent ? "-D" : "-d", branch]);
 		result.removed.push({ path: worktree.path, branch });
 	}
-	runGit(mainWorktree.path, ["worktree", "prune"]);
+	await runGit(mainWorktree.path, ["worktree", "prune"]);
 	return result;
 }
 
@@ -187,15 +219,37 @@ function formatCleanupResult(result: CleanupResult, dryRun: boolean): string {
 }
 
 export default function gitCleanupExtension(pi: ExtensionAPI) {
+	let activeController: AbortController | undefined;
+	pi.on("session_shutdown", () => activeController?.abort());
+
 	pi.registerCommand("cleanup", {
 		description: "Fast-forward main and remove clean worktrees already merged into origin/main",
 		handler: async (args, ctx) => {
+			if (activeController) {
+				ctx.ui.notify("Cleanup is already running.", "warning");
+				return;
+			}
+			activeController = new AbortController();
+			const forwardAbort = () => activeController?.abort();
+			ctx.signal?.addEventListener("abort", forwardAbort, { once: true });
 			try {
 				const options = parseCleanupArgs(args);
-				const result = cleanupGitWorktrees(ctx.cwd, options);
+				const result = await cleanupGitWorktrees(ctx.cwd, options, {
+					signal: activeController.signal,
+					onProgress: (message) => {
+						ctx.ui.setStatus(STATUS_KEY, message);
+						ctx.ui.notify(message, "info");
+					},
+					exec: (gitArgs, execOptions) => pi.exec("env", ["GIT_TERMINAL_PROMPT=0", "git", ...gitArgs], execOptions),
+				});
 				ctx.ui.notify(formatCleanupResult(result, options.dryRun), "info");
 			} catch (error) {
-				ctx.ui.notify(`Cleanup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				const cancelled = activeController.signal.aborted;
+				ctx.ui.notify(cancelled ? "Cleanup cancelled." : `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`, cancelled ? "warning" : "error");
+			} finally {
+				ctx.signal?.removeEventListener("abort", forwardAbort);
+				activeController = undefined;
+				ctx.ui.setStatus(STATUS_KEY, undefined);
 			}
 		},
 	});

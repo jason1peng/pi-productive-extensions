@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import type { ExecResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 const LOCAL_COMMAND_TIMEOUT_MS = 15_000;
 const NETWORK_COMMAND_TIMEOUT_MS = 60_000;
@@ -218,39 +219,47 @@ function formatCleanupResult(result: CleanupResult, dryRun: boolean): string {
 	return lines.join("\n");
 }
 
-export default function gitCleanupExtension(pi: ExtensionAPI) {
-	let activeController: AbortController | undefined;
-	pi.on("session_shutdown", () => activeController?.abort());
+export function cleanupAgentPrompt(options: CleanupOptions): string {
+	return [
+		"Run the git_cleanup tool exactly once with these arguments, then briefly report its result.",
+		JSON.stringify(options),
+	].join("\n");
+}
 
-	pi.registerCommand("cleanup", {
-		description: "Fast-forward main and remove clean worktrees already merged into origin/main",
-		handler: async (args, ctx) => {
-			if (activeController) {
-				ctx.ui.notify("Cleanup is already running.", "warning");
-				return;
-			}
-			activeController = new AbortController();
-			const forwardAbort = () => activeController?.abort();
-			ctx.signal?.addEventListener("abort", forwardAbort, { once: true });
+export default function gitCleanupExtension(pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "git_cleanup",
+		label: "Git Cleanup",
+		description: "Fast-forward the main branch and remove clean worktrees already merged or patch-equivalent to it.",
+		parameters: Type.Object({
+			mainBranch: Type.String(),
+			dryRun: Type.Boolean(),
+			forceCurrent: Type.Boolean(),
+		}),
+		async execute(_toolCallId, options, signal, onUpdate, ctx) {
 			try {
-				const options = parseCleanupArgs(args);
 				const result = await cleanupGitWorktrees(ctx.cwd, options, {
-					signal: activeController.signal,
+					signal,
 					onProgress: (message) => {
 						ctx.ui.setStatus(STATUS_KEY, message);
-						ctx.ui.notify(message, "info");
+						onUpdate?.({ content: [{ type: "text", text: message }] });
 					},
 					exec: (gitArgs, execOptions) => pi.exec("env", ["GIT_TERMINAL_PROMPT=0", "git", ...gitArgs], execOptions),
 				});
-				ctx.ui.notify(formatCleanupResult(result, options.dryRun), "info");
-			} catch (error) {
-				const cancelled = activeController.signal.aborted;
-				ctx.ui.notify(cancelled ? "Cleanup cancelled." : `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`, cancelled ? "warning" : "error");
+				return {
+					content: [{ type: "text", text: formatCleanupResult(result, options.dryRun) }],
+					details: result,
+				};
 			} finally {
-				ctx.signal?.removeEventListener("abort", forwardAbort);
-				activeController = undefined;
 				ctx.ui.setStatus(STATUS_KEY, undefined);
 			}
+		},
+	});
+
+	pi.registerCommand("cleanup", {
+		description: "Run abortable git cleanup through the agent/tool lifecycle",
+		handler: async (args) => {
+			pi.sendUserMessage(cleanupAgentPrompt(parseCleanupArgs(args)), { deliverAs: "followUp" });
 		},
 	});
 }

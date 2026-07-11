@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { cleanupGitWorktrees, parseCleanupArgs, parseWorktreeList, type GitExecutor } from "../index.ts";
+import gitCleanupExtension, { cleanupAgentPrompt, cleanupGitWorktrees, parseCleanupArgs, parseWorktreeList, type GitExecutor } from "../index.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +46,32 @@ async function runTest(name: string, fn: () => Promise<void> | void) {
 await runTest("parseCleanupArgs supports dry-run and custom main", () => {
 	assert.deepEqual(parseCleanupArgs("--dry-run --main trunk"), { mainBranch: "trunk", dryRun: true, forceCurrent: false });
 	assert.deepEqual(parseCleanupArgs("-n --force-current"), { mainBranch: "main", dryRun: true, forceCurrent: true });
+});
+
+await runTest("cleanupAgentPrompt preserves parsed command options", () => {
+	assert.equal(
+		cleanupAgentPrompt({ mainBranch: "trunk", dryRun: true, forceCurrent: false }),
+		'Run the git_cleanup tool exactly once with these arguments, then briefly report its result.\n{"mainBranch":"trunk","dryRun":true,"forceCurrent":false}',
+	);
+});
+
+await runTest("/cleanup dispatches an agent turn configured to invoke the cleanup tool", async () => {
+	let registeredTool: { name: string } | undefined;
+	let registeredCommand: { handler: (args: string) => Promise<void> } | undefined;
+	let sent: { content: string; options: unknown } | undefined;
+	const pi = {
+		registerTool(tool: { name: string }) { registeredTool = tool; },
+		registerCommand(_name: string, command: { handler: (args: string) => Promise<void> }) { registeredCommand = command; },
+		sendUserMessage(content: string, options: unknown) { sent = { content, options }; },
+	};
+
+	gitCleanupExtension(pi as never);
+	assert.equal(registeredTool?.name, "git_cleanup");
+	await registeredCommand?.handler("--main trunk --dry-run");
+	assert.deepEqual(sent, {
+		content: cleanupAgentPrompt({ mainBranch: "trunk", dryRun: true, forceCurrent: false }),
+		options: { deliverAs: "followUp" },
+	});
 });
 
 await runTest("parseWorktreeList reads porcelain output", () => {

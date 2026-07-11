@@ -2,12 +2,36 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
-import { cleanupGitWorktrees, parseCleanupArgs, parseWorktreeList } from "../index.ts";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
+import { cleanupGitWorktrees, parseCleanupArgs, parseWorktreeList, type GitExecutor } from "../index.ts";
+
+const execFileAsync = promisify(execFile);
 
 function sh(cwd: string, args: string[]): string {
 	return execFileSync(args[0]!, args.slice(1), { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
+
+const execGit: GitExecutor = async (args, options) => {
+	try {
+		const result = await execFileAsync("git", args, {
+			cwd: options.cwd,
+			encoding: "utf8",
+			timeout: options.timeout,
+			signal: options.signal,
+			env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+		});
+		return { stdout: result.stdout, stderr: result.stderr, code: 0, killed: false };
+	} catch (error) {
+		const failure = error as Error & { stdout?: string; stderr?: string; code?: number | string; killed?: boolean };
+		return {
+			stdout: failure.stdout ?? "",
+			stderr: failure.stderr ?? failure.message,
+			code: typeof failure.code === "number" ? failure.code : 1,
+			killed: failure.killed ?? failure.name === "AbortError",
+		};
+	}
+};
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
 	try {
@@ -32,7 +56,7 @@ await runTest("parseWorktreeList reads porcelain output", () => {
 	]);
 });
 
-await runTest("cleanup removes merged worktrees with untracked-only artifacts and skips tracked changes", () => {
+await runTest("cleanup removes merged worktrees with untracked-only artifacts and skips tracked changes", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-"));
 	const remote = path.join(root, "remote.git");
 	const main = path.join(root, "repo");
@@ -64,7 +88,7 @@ await runTest("cleanup removes merged worktrees with untracked-only artifacts an
 		sh(main, ["git", "worktree", "add", "-b", "dirty-branch", dirty, "main"]);
 		fs.writeFileSync(path.join(dirty, "README.md"), "tracked dirty\n", "utf8");
 
-		const result = cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false });
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit });
 
 		assert.equal(fs.existsSync(merged), false);
 		assert.equal(fs.existsSync(untrackedOnly), false);
@@ -79,7 +103,7 @@ await runTest("cleanup removes merged worktrees with untracked-only artifacts an
 	}
 });
 
-await runTest("cleanup removes patch-equivalent worktrees from rewritten MR merges", () => {
+await runTest("cleanup removes patch-equivalent worktrees from rewritten MR merges", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-cherry-"));
 	const remote = path.join(root, "remote.git");
 	const main = path.join(root, "repo");
@@ -107,7 +131,7 @@ await runTest("cleanup removes patch-equivalent worktrees from rewritten MR merg
 		sh(main, ["git", "commit", "-m", "rewritten feature change"]);
 		sh(main, ["git", "push", "origin", "main"]);
 
-		const result = cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false });
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit });
 
 		assert.equal(fs.existsSync(feature), false);
 		assert.deepEqual(result.removed.map((item) => item.branch), ["feature-branch"]);
@@ -115,4 +139,32 @@ await runTest("cleanup removes patch-equivalent worktrees from rewritten MR merg
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
+});
+
+await runTest("cleanup forwards cancellation, uses a network timeout, and reports fetch progress", async () => {
+	const controller = new AbortController();
+	const calls: Array<{ args: string[]; timeout: number; signal?: AbortSignal }> = [];
+	const progress: string[] = [];
+	const executor: GitExecutor = async (args, options) => {
+		calls.push({ args, timeout: options.timeout, signal: options.signal });
+		if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
+		if (args[0] === "worktree") {
+			return { stdout: "worktree /repo\nHEAD abc\nbranch refs/heads/main\n", stderr: "", code: 0, killed: false };
+		}
+		controller.abort();
+		return { stdout: "", stderr: "", code: 1, killed: true };
+	};
+
+	await assert.rejects(
+		cleanupGitWorktrees(
+			"/repo",
+			{ mainBranch: "main", dryRun: false, forceCurrent: false },
+			{ exec: executor, signal: controller.signal, onProgress: (message) => progress.push(message) },
+		),
+		/command cancelled or timed out/,
+	);
+	const fetchCall = calls.find((call) => call.args[0] === "fetch");
+	assert.equal(fetchCall?.timeout, 60_000);
+	assert.equal(fetchCall?.signal, controller.signal);
+	assert.deepEqual(progress, ["Fetching origin/main…"]);
 });

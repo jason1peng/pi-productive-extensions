@@ -607,6 +607,30 @@ function phasePromptContext(state: DeliveryState) {
 	};
 }
 
+function projectHarnessPrompt(state: DeliveryState): string {
+	const root = projectRootForState(state.cwd ?? process.cwd(), state.gitRoot);
+	return `
+
+Project harness discovery and compliance (required):
+- Start discovery from the resolved repository or worktree root: ${root}.
+- Check common instruction and contributor entrypoints that exist (for example AGENTS.md, CLAUDE.md, GEMINI.md, README.md, and CONTRIBUTING.md), plus directory-scoped instruction files applicable to files changed, verified, reviewed, or closed.
+- Follow explicit mandatory references and phase-relevant links. Inspect package scripts, build files, CI configuration, templates, or workflow files only as needed to determine applicable expectations.
+- Respect documented scope and precedence. Report conflicts when precedence cannot be resolved. Apply only rules relevant to this phase; do not recursively read unrelated documentation.
+- Missing common entrypoints are not errors. A missing explicitly referenced file is a gap. Unreadable, conflicting, skipped, or violated mandatory instructions are blocking when compliance cannot be established safely.
+- Record outcome as \`applied\`, \`none discovered\`, or \`blocked\`. A reasonable attempt finding no applicable harness uses \`none discovered\` and may succeed.
+- VERIFY must fail for demonstrably skipped or violated applicable instructions and be INCONCLUSIVE when mandatory instructions cannot be read or conflicts prevent evaluating compliance. REVIEW must treat either condition as a must-fix blocker. IMPLEMENT and CLOSE cannot succeed with \`blocked\`.
+
+Every artifact must include:
+## Project harness discovery and compliance
+- Discovery scope checked:
+- Entry points discovered:
+- Mandatory references followed:
+- Phase-relevant rules applied:
+- Conflicts, gaps, or unreadable instructions:
+- Compliance status: compliant | blocked
+- Outcome: applied | none discovered | blocked`;
+}
+
 const CHILD_PROMPT_FOOTER = `
 
 Common workflow instruction:
@@ -695,7 +719,7 @@ function nextAction(state: DeliveryState): NextAction {
 
 	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
-	const childPrompt = `${config.childPrompt(context)}${CHILD_PROMPT_FOOTER}`;
+	const childPrompt = `${config.childPrompt(context)}${projectHarnessPrompt(state)}${CHILD_PROMPT_FOOTER}`;
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
@@ -1108,13 +1132,57 @@ function isSameArtifactPath(a: string, b: string): boolean {
 	return path.resolve(a) === path.resolve(b);
 }
 
-function artifactReadiness(artifact?: string): { ok: true; verdict?: Verdict } | { ok: false; reason: string } {
+type HarnessOutcome = "applied" | "none discovered" | "blocked";
+
+const HARNESS_EVIDENCE_FIELDS = [
+	"Discovery scope checked",
+	"Entry points discovered",
+	"Mandatory references followed",
+	"Phase-relevant rules applied",
+	"Conflicts, gaps, or unreadable instructions",
+] as const;
+
+function artifactHarnessEvidence(artifact: string): { outcome: HarnessOutcome; contradiction?: string } | undefined {
+	try {
+		const text = fs.readFileSync(artifact, "utf8");
+		const heading = /^## Project harness discovery and compliance[ \t]*\r?$/mi.exec(text);
+		if (!heading) return undefined;
+		const remainder = text.slice(heading.index + heading[0].length);
+		const nextSection = /^##\s+/m.exec(remainder);
+		const section = nextSection ? remainder.slice(0, nextSection.index) : remainder;
+		for (const field of HARNESS_EVIDENCE_FIELDS) {
+			const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			if (!new RegExp(`^- ${escaped}:[ \\t]*([^ \\t\\r\\n].*)$`, "mi").test(section)) return undefined;
+		}
+		const compliance = /^- Compliance status:[ \t]*(compliant|blocked)[ \t]*\r?$/mi.exec(section)?.[1]?.toLowerCase();
+		const outcome = /^- Outcome:[ \t]*(applied|none discovered|blocked)[ \t]*\r?$/mi.exec(section)?.[1]?.toLowerCase() as HarnessOutcome | undefined;
+		if (!compliance || !outcome) return undefined;
+		const contradictory = (compliance === "blocked") !== (outcome === "blocked");
+		return {
+			outcome,
+			contradiction: contradictory
+				? `project harness Compliance status ${compliance} contradicts Outcome ${outcome}`
+				: undefined,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function artifactHarnessOutcome(artifact: string): HarnessOutcome | undefined {
+	return artifactHarnessEvidence(artifact)?.outcome;
+}
+
+function artifactReadiness(artifact?: string, requireHarness = false): { ok: true; verdict?: Verdict; harnessOutcome?: HarnessOutcome } | { ok: false; reason: string } {
 	if (!artifact) return { ok: false, reason: "missing artifact path" };
 	if (!fs.existsSync(artifact)) return { ok: false, reason: "artifact file does not exist" };
 	if (!fs.statSync(artifact).isFile()) return { ok: false, reason: "artifact path is not a file" };
 	const verdict = artifactVerdict(artifact);
 	if (!verdict) return { ok: false, reason: "artifact does not start with RESULT/VERDICT" };
-	return { ok: true, verdict };
+	const harnessEvidence = artifactHarnessEvidence(artifact);
+	if (requireHarness && !harnessEvidence) return { ok: false, reason: "artifact lacks a valid Project harness discovery and compliance section/outcome" };
+	if (requireHarness && harnessEvidence?.contradiction) return { ok: false, reason: harnessEvidence.contradiction };
+	return { ok: true, verdict, harnessOutcome: harnessEvidence?.outcome };
 }
 
 function existingChildArtifactRefs(state: DeliveryState, artifact: string | undefined, aggregatePath: string | undefined): string[] {
@@ -1138,11 +1206,11 @@ function reconcileParallelChildArtifacts(state: DeliveryState, steps: DeliverySt
 	});
 }
 
-function parallelChildArtifactIssues(steps: DeliveryStep[]): string[] {
+function parallelChildArtifactIssues(steps: DeliveryStep[], requireHarness = false): string[] {
 	return steps
 		.filter((step) => step.childIndex !== undefined)
 		.map((step) => {
-			const readiness = artifactReadiness(step.artifact);
+			const readiness = artifactReadiness(step.artifact, requireHarness);
 			if (readiness.ok) return undefined;
 			const childNumber = (step.childIndex ?? 0) + 1;
 			const total = step.childCount ?? steps.length;
@@ -1154,6 +1222,22 @@ function parallelChildArtifactIssues(steps: DeliveryStep[]): string[] {
 function markdownLinkForArtifact(state: DeliveryState, artifact: string): string {
 	const relative = state.artifactDir && path.isAbsolute(artifact) ? path.relative(state.artifactDir, artifact) : artifact;
 	return `[${mdEscape(path.basename(relative) || relative)}](${relative.replace(/ /g, "%20")})`;
+}
+
+function derivedParallelReviewVerdict(steps: DeliveryStep[]): "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL" {
+	const verdicts = steps.map((step) => artifactVerdict(step.artifact));
+	const unsupported = verdicts.find((verdict) => verdict !== "PASS" && verdict !== "PASS_WITH_NON_BLOCKING_NOTES" && verdict !== "FAIL");
+	if (unsupported) {
+		throw new Error(`Cannot report REVIEW: child RESULT verdict ${unsupported} is not valid for REVIEW; expected PASS, PASS_WITH_NON_BLOCKING_NOTES, or FAIL`);
+	}
+	// Child readiness is checked before derivation, so an absent verdict is an invariant
+	// violation rather than a verdict that can silently weaken the aggregate.
+	if (verdicts.some((verdict) => verdict === undefined)) {
+		throw new Error("Cannot report REVIEW: every child artifact must have a supported RESULT verdict");
+	}
+	if (verdicts.some((verdict) => verdict === "FAIL")) return "FAIL";
+	if (verdicts.some((verdict) => verdict === "PASS_WITH_NON_BLOCKING_NOTES")) return "PASS_WITH_NON_BLOCKING_NOTES";
+	return "PASS";
 }
 
 function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string }, steps: DeliveryStep[]): string {
@@ -1170,10 +1254,17 @@ function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: Runnab
 			return `- Reviewer ${childNumber}/${total} (${agent}): ${childVerdict ?? "artifact verdict unavailable"} — ${link}`;
 		})
 		.join("\n") || "none";
+	const childOutcomes = steps.map((step) => step.artifact ? artifactHarnessOutcome(step.artifact) : undefined);
+	const harnessOutcome: HarnessOutcome = childOutcomes.includes("blocked")
+		? "blocked"
+		: childOutcomes.length > 0 && childOutcomes.every((outcome) => outcome === "none discovered")
+			? "none discovered"
+			: "applied";
+	const harnessSection = `## Project harness discovery and compliance\n- Discovery scope checked: parallel child artifacts\n- Entry points discovered: see child artifacts\n- Mandatory references followed: see child artifacts\n- Phase-relevant rules applied: aggregate preserves each child's evidence\n- Conflicts, gaps, or unreadable instructions: see child artifacts\n- Compliance status: ${harnessOutcome === "blocked" ? "blocked" : "compliant"}\n- Outcome: ${harnessOutcome}`;
 	if (params.phase === "REVIEW") {
-		return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Must-fix findings\n${isFail(verdict) ? params.summary : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none"}\n\n## Evidence reviewed\n${childLines}\n\n## Risk checks\n- Aggregate review verdict derived from preserved parallel reviewer artifacts.\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n`;
+		return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Must-fix findings\n${isFail(verdict) ? params.summary : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none"}\n\n## Evidence reviewed\n${childLines}\n\n## Risk checks\n- Aggregate review verdict derived from preserved parallel reviewer artifacts.\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n\n${harnessSection}\n`;
 	}
-	return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Evidence\n${childLines}\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n`;
+	return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Evidence\n${childLines}\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n\n${harnessSection}\n`;
 }
 
 interface ReportStepUsageInput {
@@ -1204,12 +1295,9 @@ interface DeliveryReportInput {
 function ensureAggregateArtifactForParallelReport(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string; artifact?: string }, steps: DeliveryStep[]): string | undefined {
 	const aggregatePath = aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase));
 	if (!aggregatePath) return params.artifact;
-	const refs = splitArtifactRefs(params.artifact);
-	if (refs.length === 1) {
-		const candidate = path.isAbsolute(refs[0]!) ? refs[0]! : path.join(state.artifactDir!, refs[0]!);
-		if (isSameArtifactPath(candidate, aggregatePath) && fs.existsSync(candidate)) return candidate;
-	}
-	if (fs.existsSync(aggregatePath)) return aggregatePath;
+	// The aggregate is derived evidence, not caller-owned evidence. Regenerate it even
+	// when the caller has already created the planned path so its structured harness
+	// status cannot contradict the validated child artifacts.
 	fs.writeFileSync(aggregatePath, aggregateArtifactMarkdown(state, params, steps), "utf8");
 	return aggregatePath;
 }
@@ -1281,12 +1369,38 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 	const aggregatePath = parallel ? aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)) : undefined;
 	if (parallel) {
 		reconcileParallelChildArtifacts(state, steps, params.artifact, aggregatePath);
-		const childArtifactIssues = parallelChildArtifactIssues(steps);
+		const childArtifactIssues = parallelChildArtifactIssues(steps, isPass(params.verdict));
 		if (childArtifactIssues.length) {
 			throw new Error(`Cannot report ${params.phase}: parallel child artifacts are missing or invalid. Save each child output to details.next.parallel[].artifact or pass actual existing child artifact paths in artifact before reporting. Issues: ${childArtifactIssues.join("; ")}`);
 		}
+		if (params.phase === "REVIEW") {
+			const derivedVerdict = derivedParallelReviewVerdict(steps);
+			if (params.verdict !== derivedVerdict) {
+				throw new Error(`Cannot report REVIEW with verdict ${params.verdict ?? "missing"}: child RESULT verdicts require aggregate verdict ${derivedVerdict}`);
+			}
+		}
 	}
 	const reportArtifact = parallel ? ensureAggregateArtifactForParallelReport(state, { ...params, phase: params.phase }, steps) : params.artifact;
+	if (!parallel && reportArtifact && params.verdict) {
+		const readiness = artifactReadiness(artifactAbsolutePath(state, reportArtifact));
+		if (!readiness.ok) throw new Error(`Cannot report ${params.phase}: ${readiness.reason} (${reportArtifact})`);
+		if (readiness.verdict !== params.verdict) {
+			throw new Error(`Cannot report ${params.phase} with verdict ${params.verdict}: artifact RESULT is ${readiness.verdict}`);
+		}
+	}
+	if (isPass(params.verdict)) {
+		if (!reportArtifact) throw new Error(`Cannot report successful ${params.phase}: missing artifact path`);
+		const artifacts = (parallel ? [...steps.map((step) => step.artifact), reportArtifact] : [reportArtifact])
+			.filter((item): item is string => Boolean(item));
+		for (const artifact of new Set(artifacts)) {
+			const readiness = artifactReadiness(artifactAbsolutePath(state, artifact), true);
+			if (!readiness.ok) throw new Error(`Cannot report successful ${params.phase}: ${readiness.reason} (${artifact})`);
+			if (readiness.harnessOutcome === "blocked") throw new Error(`Cannot report successful ${params.phase}: project harness outcome is blocked (${artifact})`);
+			if (!parallel && readiness.verdict !== params.verdict) {
+				throw new Error(`Cannot report successful ${params.phase} with verdict ${params.verdict}: artifact RESULT is ${readiness.verdict}`);
+			}
+		}
+	}
 	const endedAt = Date.now();
 	for (const step of steps) {
 		step.status = "reported";

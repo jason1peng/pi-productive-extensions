@@ -91,6 +91,20 @@ While an active delivery is not in `CLOSE`/`RETRO`/`DONE`, the extension blocks 
 
 Structured report JSON uses schema version 2. The stable contract is documented in [../../docs/delivery-report-schema-v2.md](../../docs/delivery-report-schema-v2.md), and shared report/usage types live under `../../shared/`.
 
+### Project harness discovery
+
+Every runnable child prompt includes a shared project-harness discovery block. Discovery starts at the resolved repository or worktree root and checks project instruction/contributor entry points that exist, applicable directory-scoped instructions, and mandatory or phase-relevant references. Package scripts, build files, CI configuration, templates, and workflows are inspected only when needed to identify the rules or commands for that phase; children should not recursively read unrelated documentation.
+
+Discovery is mandatory, but a project harness is not required. Each new phase artifact records one outcome in a `## Project harness discovery and compliance` section:
+
+- `applied` — applicable instructions were found and followed;
+- `none discovered` — a reasonable bounded search found no applicable instructions; this may still pass;
+- `blocked` — required instructions were unreadable, conflicting, missing after an explicit reference, or could not be followed safely.
+
+A missing common entry point is not a blocker by itself. Directory-scoped rules apply according to their documented scope and precedence. Demonstrably skipped or violated applicable rules block verification and review; unresolved mandatory-instruction uncertainty makes verification inconclusive and blocks review approval. Every new phase report is rejected when its artifact omits the section, any required evidence field, or a valid outcome. Explicit `none` values are valid evidence, and `none discovered` is a valid successful outcome; only successful verdicts are rejected for an outcome of `blocked`. Parallel review validates every child before generating and validating the aggregate. Historical report artifacts remain readable without migration.
+
+The shared block is appended after built-in and user/global phase prompt resolution. A full user-space child-prompt override can add project-specific guidance but cannot remove the discovery attempt or artifact evidence requirement.
+
 Delivery state-machine tools are hardcoded in `index.ts` and are intended for the parent/orchestrator session:
 
 - `delivery_start`

@@ -507,6 +507,28 @@ function artifactGuidance(state: DeliveryState): string {
 	return `\n\nArtifact guidance:\n- User-scope artifact directory for this delivery run: ${state.artifactDir}.\n- Save or report the artifact path under this directory, e.g. 01-implementation.md, 02-verification.md, 03-review.md, 04-close.md, 05-retro.md.\n- Start the artifact with exactly one result line: RESULT: PASS, RESULT: PASS_WITH_NON_BLOCKING_NOTES, RESULT: FAIL, RESULT: INCONCLUSIVE, RESULT: DONE, or RESULT: MR_CREATED.\n- Use the phase-specific headings from the child prompt, in that order, and write \`none\` for empty Findings, Residual risks, or Recommendation sections.\n- Use Markdown bullet lists for checklist/evidence items and fenced code blocks only for short command output snippets. Do not wrap the whole artifact in a code block.\n- Keep the first paragraph of the summary/outcome concise enough for a report card, and put long logs behind artifact links or short fenced snippets.`;
 }
 
+const PROJECT_HARNESS_PROMPT_BLOCK = `
+
+Project harness discovery and compliance (required):
+- Start from the resolved repository or worktree root.
+- Check common instruction and contributor entry points that actually exist, including AGENTS.md, CLAUDE.md, GEMINI.md, README.md, and CONTRIBUTING.md, plus directory-scoped instruction files applicable to the files in this phase.
+- Follow mandatory references and phase-relevant links from discovered entry points. Inspect package scripts, build files, CI configuration, templates, or workflow files only as needed to determine applicable commands and expectations.
+- Respect documented scope and precedence. If mandatory instructions are unreadable, conflicting, or cannot be followed safely, treat compliance as blocked and report the conflict or gap.
+- Apply only rules relevant to this phase. Avoid recursively reading unrelated project documentation.
+- A missing common entry point is not an error. Record a missing file as a gap only when project instructions explicitly reference it or otherwise make it expected.
+- Record outcome \`applied\` when applicable instructions were followed, \`none discovered\` when a reasonable bounded search found none, or \`blocked\` when required instructions cannot be evaluated or followed safely.
+- Do not report success when applicable instructions were skipped or violated. VERIFY must fail for a demonstrated violation and be inconclusive when mandatory compliance cannot be determined. REVIEW must treat skipped or violated applicable instructions, and unresolvable mandatory-instruction uncertainty, as must-fix. RETRO should assess earlier discovery without failing merely because no harness existed.
+- Include this exact section in the artifact, using \`none\` where appropriate:
+
+    ## Project harness discovery and compliance
+    - Discovery scope checked:
+    - Entry points discovered:
+    - Mandatory references followed:
+    - Phase-relevant rules applied:
+    - Conflicts, gaps, or unreadable instructions:
+    - Outcome: applied | none discovered | blocked
+`;
+
 function isPass(verdict?: Verdict): boolean {
 	return verdict === "PASS" || verdict === "PASS_WITH_NON_BLOCKING_NOTES" || verdict === "DONE" || verdict === "MR_CREATED";
 }
@@ -695,7 +717,7 @@ function nextAction(state: DeliveryState): NextAction {
 
 	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
-	const childPrompt = `${config.childPrompt(context)}${CHILD_PROMPT_FOOTER}`;
+	const childPrompt = `${config.childPrompt(context)}${PROJECT_HARNESS_PROMPT_BLOCK}${CHILD_PROMPT_FOOTER}`;
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
@@ -1117,6 +1139,56 @@ function artifactReadiness(artifact?: string): { ok: true; verdict?: Verdict } |
 	return { ok: true, verdict };
 }
 
+type ProjectHarnessOutcome = "applied" | "none discovered" | "blocked";
+
+const PROJECT_HARNESS_EVIDENCE_FIELDS = [
+	"Discovery scope checked",
+	"Entry points discovered",
+	"Mandatory references followed",
+	"Phase-relevant rules applied",
+	"Conflicts, gaps, or unreadable instructions",
+] as const;
+
+function projectHarnessOutcome(artifact?: string): { ok: true; outcome: ProjectHarnessOutcome } | { ok: false; reason: string } {
+	const readiness = artifactReadiness(artifact);
+	if (!readiness.ok) return readiness;
+	let text: string;
+	try {
+		text = fs.readFileSync(artifact!, "utf8");
+	} catch {
+		return { ok: false, reason: "artifact could not be read" };
+	}
+	const heading = /^## Project harness discovery and compliance\s*$/im.exec(text);
+	if (!heading) return { ok: false, reason: "missing ## Project harness discovery and compliance section" };
+	const remainder = text.slice(heading.index + heading[0].length);
+	const nextHeading = /^##\s/m.exec(remainder);
+	const section = nextHeading ? remainder.slice(0, nextHeading.index) : remainder;
+	for (const field of PROJECT_HARNESS_EVIDENCE_FIELDS) {
+		const value = new RegExp(`^- ${field}:[ \\t]*(.*)$`, "im").exec(section)?.[1]?.trim();
+		if (!value) return { ok: false, reason: `Project harness discovery and compliance section has a missing or empty ${field} field` };
+	}
+	const outcome = /^- Outcome:[ \t]*(applied|none discovered|blocked)[ \t]*$/im.exec(section)?.[1]?.toLowerCase() as ProjectHarnessOutcome | undefined;
+	if (!outcome) return { ok: false, reason: "Project harness discovery and compliance section has a missing or invalid Outcome" };
+	return { ok: true, outcome };
+}
+
+function requireHarnessEvidence(state: DeliveryState, phase: RunnablePhase, verdict: Verdict | undefined, artifacts: Array<string | undefined>) {
+	const candidates = artifacts.filter((artifact): artifact is string => Boolean(artifact)).map((artifact) => artifactAbsolutePath(state, artifact));
+	const reportKind = isPass(verdict) ? `${phase} success` : phase;
+	if (!candidates.length) {
+		throw new Error(`Cannot report ${reportKind}: project harness evidence is invalid (missing artifact path).`);
+	}
+	for (const candidate of candidates) {
+		const evidence = projectHarnessOutcome(candidate);
+		if (!evidence.ok) {
+			throw new Error(`Cannot report ${reportKind}: project harness evidence is invalid for ${candidate}: ${evidence.reason}.`);
+		}
+		if (isPass(verdict) && evidence.outcome === "blocked") {
+			throw new Error(`Cannot report ${phase} success: project harness outcome blocked contradicts the successful verdict.`);
+		}
+	}
+}
+
 function existingChildArtifactRefs(state: DeliveryState, artifact: string | undefined, aggregatePath: string | undefined): string[] {
 	return splitArtifactRefs(artifact)
 		.map((ref) => artifactAbsolutePath(state, ref))
@@ -1158,6 +1230,17 @@ function markdownLinkForArtifact(state: DeliveryState, artifact: string): string
 
 function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string }, steps: DeliveryStep[]): string {
 	const verdict = params.verdict ?? "INCONCLUSIVE";
+	const childHarnessOutcomes = steps
+		.filter((step) => step.childIndex !== undefined)
+		.map((step) => {
+			const evidence = projectHarnessOutcome(step.artifact);
+			if (!evidence.ok) throw new Error(`Cannot aggregate ${params.phase}: invalid project harness evidence for ${step.artifact ?? "missing artifact"}: ${evidence.reason}.`);
+			return evidence.outcome;
+		});
+	const harnessOutcome: ProjectHarnessOutcome = childHarnessOutcomes.includes("blocked")
+		? "blocked"
+		: childHarnessOutcomes.includes("applied") ? "applied" : "none discovered";
+	const harnessSection = `\n\n## Project harness discovery and compliance\n- Discovery scope checked: see linked child artifacts\n- Entry points discovered: see linked child artifacts\n- Mandatory references followed: see linked child artifacts\n- Phase-relevant rules applied: aggregate reflects all child reviews\n- Conflicts, gaps, or unreadable instructions: ${harnessOutcome === "blocked" ? "see linked child artifacts" : "none"}\n- Outcome: ${harnessOutcome}\n`;
 	const childLines = steps
 		.filter((step) => step.childIndex !== undefined)
 		.sort((a, b) => (a.childIndex ?? 0) - (b.childIndex ?? 0))
@@ -1171,9 +1254,9 @@ function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: Runnab
 		})
 		.join("\n") || "none";
 	if (params.phase === "REVIEW") {
-		return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Must-fix findings\n${isFail(verdict) ? params.summary : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none"}\n\n## Evidence reviewed\n${childLines}\n\n## Risk checks\n- Aggregate review verdict derived from preserved parallel reviewer artifacts.\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n`;
+		return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Must-fix findings\n${isFail(verdict) ? params.summary : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none"}\n\n## Evidence reviewed\n${childLines}\n\n## Risk checks\n- Aggregate review verdict derived from preserved parallel reviewer artifacts.\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}${harnessSection}`;
 	}
-	return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Evidence\n${childLines}\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n`;
+	return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Evidence\n${childLines}\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}${harnessSection}`;
 }
 
 interface ReportStepUsageInput {
@@ -1285,8 +1368,10 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 		if (childArtifactIssues.length) {
 			throw new Error(`Cannot report ${params.phase}: parallel child artifacts are missing or invalid. Save each child output to details.next.parallel[].artifact or pass actual existing child artifact paths in artifact before reporting. Issues: ${childArtifactIssues.join("; ")}`);
 		}
+		requireHarnessEvidence(state, params.phase, params.verdict, steps.filter((step) => step.childIndex !== undefined).map((step) => step.artifact));
 	}
 	const reportArtifact = parallel ? ensureAggregateArtifactForParallelReport(state, { ...params, phase: params.phase }, steps) : params.artifact;
+	requireHarnessEvidence(state, params.phase, params.verdict, [reportArtifact]);
 	const endedAt = Date.now();
 	for (const step of steps) {
 		step.status = "reported";

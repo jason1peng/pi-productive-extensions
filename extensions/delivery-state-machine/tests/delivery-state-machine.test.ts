@@ -44,7 +44,7 @@ async function withTemporaryUserExtensionFile<T>(relativePath: string, content: 
 	}
 }
 
-function createHarness(options: { cwd?: string; sessionFile?: string; branchEntries?: any[] } = {}) {
+function createHarness(options: { cwd?: string; sessionFile?: string; branchEntries?: any[]; autoReportArtifacts?: boolean } = {}) {
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, { handler: (args: string, ctx: FakeContext) => Promise<void> }>();
 	const eventHandlers = new Map<string, (event: unknown, ctx: FakeContext) => Promise<void>>();
@@ -90,11 +90,34 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		await handler(event, ctx);
 	}
 
+	let latestState: any;
 	async function tool(name: string, params: Record<string, unknown> = {}) {
 		const registered = tools.get(name);
 		if (!registered) throw new Error(`Tool not registered: ${name}`);
-		const result = await registered.execute(`test-${name}`, params, undefined, undefined, ctx);
+		const effectiveParams = { ...params };
+		if (name === "delivery_report" && options.autoReportArtifacts !== false) {
+			if (!latestState) {
+				const status = tools.get("delivery_status");
+				latestState = (await status?.execute("test-status", {}, undefined, undefined, ctx))?.details?.state;
+			}
+			const phase = String(effectiveParams.phase);
+			const phaseSteps = latestState?.steps?.filter((step: any) => step.phase === phase && step.status === "planned") ?? [];
+			const planned = phaseSteps.find((step: any) => step.childIndex === undefined);
+			const stems: Record<string, string> = { IMPLEMENT: "01-implementation", VERIFY: "02-verification", REVIEW: "03-review", CLOSE: "04-close", RETRO: "05-retro" };
+			const completed = latestState?.history?.filter((entry: any) => entry.event === "report" && entry.phase === phase).length ?? 0;
+			const fallbackArtifact = latestState?.artifactDir && phaseSteps.length < 2
+				? path.join(latestState.artifactDir, `${stems[phase]}${completed ? `-${completed + 1}` : ""}.md`)
+				: undefined;
+			const artifact = planned?.artifact ?? fallbackArtifact;
+			if (!effectiveParams.artifact && artifact) {
+				fs.mkdirSync(path.dirname(artifact), { recursive: true });
+				fs.writeFileSync(artifact, successfulArtifact(String(effectiveParams.verdict)), "utf8");
+				effectiveParams.artifact = artifact;
+			}
+		}
+		const result = await registered.execute(`test-${name}`, effectiveParams, undefined, undefined, ctx);
 		const artifactDir = result?.details?.state?.artifactDir;
+		latestState = result?.details?.state ?? latestState;
 		if (artifactDir) artifactDirs.add(artifactDir);
 		return result;
 	}
@@ -110,6 +133,10 @@ async function runTest(name: string, fn: () => Promise<void>) {
 		for (const dir of artifactDirs) fs.rmSync(dir, { recursive: true, force: true });
 		artifactDirs.clear();
 	}
+}
+
+function successfulArtifact(verdict = "PASS", outcome = "applied") {
+	return `RESULT: ${verdict}\n\n## Summary\ntest artifact\n\n## Project harness discovery and compliance\n- Discovery scope checked: repository root and applicable changed-file directories\n- Entry points discovered: README.md\n- Mandatory references followed: none\n- Phase-relevant rules applied: test rules\n- Conflicts, gaps, or unreadable instructions: none\n- Outcome: ${outcome}\n`;
 }
 
 await runTest("phase prompts define stable artifact contracts", async () => {
@@ -133,6 +160,101 @@ await runTest("delivery child prompts include central RESULT artifact guidance",
 	assert.equal(result.details.next.acceptance, false);
 	assert.match(result.details.next.childPrompt, /Start the artifact with exactly one result line: RESULT:/);
 	assert.match(result.details.next.childPrompt, /Use the phase-specific headings/);
+});
+
+await runTest("shared project harness discovery survives user prompt overrides", async () => {
+	await withTemporaryUserExtensionFile("phases/implement.md", `---\nphase: IMPLEMENT\n---\n\n## Child prompt\n\nCUSTOM IMPLEMENT PROMPT\n`, async () => {
+		const harness = createHarness();
+		const result = await harness.tool("delivery_start", { task: "harness prompt smoke" });
+		const prompt = result.details.next.childPrompt as string;
+		assert.match(prompt, /CUSTOM IMPLEMENT PROMPT/);
+		assert.match(prompt, /Project harness discovery and compliance/);
+		assert.match(prompt, /resolved repository or worktree root/);
+		assert.match(prompt, /directory-scoped instruction files/);
+		assert.match(prompt, /none discovered/);
+		assert.match(prompt, /Avoid recursively reading unrelated project documentation/);
+		assert.doesNotMatch(prompt, /docs\/index\.md|docs\/git-operations\.md/);
+	});
+});
+
+await runTest("every runnable phase prompt includes project harness discovery", async () => {
+	const harness = createHarness();
+	let result = await harness.tool("delivery_start", { task: "all phase harness prompt smoke" });
+	assert.match(result.details.next.childPrompt, /Project harness discovery and compliance/);
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	result = await harness.tool("delivery_next");
+	assert.equal(result.details.next.phase, "VERIFY");
+	assert.match(result.details.next.childPrompt, /Project harness discovery and compliance/);
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	result = await harness.tool("delivery_next");
+	assert.equal(result.details.next.phase, "REVIEW");
+	for (const launch of result.details.next.parallel) {
+		assert.match(launch.childPrompt, /Project harness discovery and compliance/);
+		writeReviewArtifact(launch.artifact, "PASS", "review passed");
+	}
+	await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "reviewed" });
+	result = await harness.tool("delivery_next");
+	assert.equal(result.details.next.phase, "CLOSE");
+	assert.match(result.details.next.childPrompt, /Project harness discovery and compliance/);
+	await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed" });
+	result = await harness.tool("delivery_next");
+	assert.equal(result.details.next.phase, "RETRO");
+	assert.match(result.details.next.childPrompt, /Project harness discovery and compliance/);
+});
+
+await runTest("successful reports require complete valid project harness evidence", async () => {
+	const harness = createHarness({ autoReportArtifacts: false });
+	let result = await harness.tool("delivery_start", { task: "harness report validation smoke" });
+	await assert.rejects(
+		() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "missing artifact" }),
+		/project harness evidence.*missing artifact path/i,
+	);
+	const artifact = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT").artifact as string;
+	fs.writeFileSync(artifact, `RESULT: PASS\n\n## Summary\nmissing harness section\n`, "utf8");
+	await assert.rejects(
+		() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "missing section", artifact }),
+		/missing.*Project harness discovery and compliance/i,
+	);
+	for (const field of ["Discovery scope checked", "Entry points discovered", "Mandatory references followed", "Phase-relevant rules applied", "Conflicts, gaps, or unreadable instructions"]) {
+		const incomplete = successfulArtifact().replace(new RegExp(`^- ${field}:.*$`, "m"), `- ${field}:`);
+		fs.writeFileSync(artifact, incomplete, "utf8");
+		await assert.rejects(
+			() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: `empty ${field}`, artifact }),
+			new RegExp(`missing or empty ${field}`, "i"),
+		);
+	}
+	fs.writeFileSync(artifact, successfulArtifact("PASS", "invalid"), "utf8");
+	await assert.rejects(
+		() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "invalid outcome", artifact }),
+		/missing or invalid Outcome/i,
+	);
+	fs.writeFileSync(artifact, successfulArtifact("PASS", "blocked"), "utf8");
+	await assert.rejects(
+		() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "contradictory evidence", artifact }),
+		/blocked.*successful verdict/i,
+	);
+	fs.writeFileSync(artifact, successfulArtifact("PASS", "none discovered"), "utf8");
+	result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "valid no-harness evidence", artifact });
+	assert.equal(result.details.state.phase, "VERIFY");
+});
+
+await runTest("failed and inconclusive reports also require project harness evidence", async () => {
+	const harness = createHarness({ autoReportArtifacts: false });
+	const result = await harness.tool("delivery_start", { task: "non-success harness validation smoke" });
+	const artifact = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT").artifact as string;
+	fs.writeFileSync(artifact, `RESULT: FAIL\n\n## Summary\nmissing harness section\n`, "utf8");
+	await assert.rejects(
+		() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "FAIL", summary: "missing section", artifact }),
+		/missing.*Project harness discovery and compliance/i,
+	);
+	fs.writeFileSync(artifact, successfulArtifact("INCONCLUSIVE", "invalid"), "utf8");
+	await assert.rejects(
+		() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "INCONCLUSIVE", summary: "invalid outcome", artifact }),
+		/missing or invalid Outcome/i,
+	);
+	fs.writeFileSync(artifact, successfulArtifact("FAIL", "blocked"), "utf8");
+	const reported = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "FAIL", summary: "valid blocked evidence", artifact });
+	assert.equal(reported.details.state.history.at(-1).verdict, "FAIL");
 });
 
 await runTest("delivery usage accounting uses the shared parser and token fallback", async () => {
@@ -572,7 +694,7 @@ await runTest("delivery summary writes full journey with failure and repair", as
 });
 
 function writeReviewArtifact(filePath: string, verdict: "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL", summary: string) {
-	fs.writeFileSync(filePath, `RESULT: ${verdict}\n\n## Summary\n${summary}\n\n## Must-fix findings\n${verdict === "FAIL" ? `- ${summary}` : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? `- ${summary}` : "none"}\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- checked\n\n## Recommendation\n${verdict === "FAIL" ? "repair" : "none"}\n`, "utf8");
+	fs.writeFileSync(filePath, `RESULT: ${verdict}\n\n## Summary\n${summary}\n\n## Must-fix findings\n${verdict === "FAIL" ? `- ${summary}` : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? `- ${summary}` : "none"}\n\n## Evidence reviewed\n- diff\n\n## Risk checks\n- checked\n\n## Recommendation\n${verdict === "FAIL" ? "repair" : "none"}\n\n## Project harness discovery and compliance\n- Discovery scope checked: repository root and changed-file directories\n- Entry points discovered: README.md\n- Mandatory references followed: none\n- Phase-relevant rules applied: review rules\n- Conflicts, gaps, or unreadable instructions: none\n- Outcome: applied\n`, "utf8");
 }
 
 function appendAssistantUsage(sessionFile: string, usage: Record<string, unknown>) {
@@ -1116,6 +1238,8 @@ await runTest("parallel reviewer aggregate report preserves child verdict artifa
 	assert.equal(path.basename(aggregateStep?.artifact), "03-review.md");
 	const aggregateText = fs.readFileSync(aggregateStep.artifact, "utf8");
 	assert.match(aggregateText, /^RESULT: FAIL/);
+	assert.match(aggregateText, /## Project harness discovery and compliance/);
+	assert.match(aggregateText, /- Outcome: applied/);
 	assert.match(aggregateText, /Reviewer 1\/2 .*FAIL.*03-review-1-01-reviewer\.md/);
 	assert.match(aggregateText, /Reviewer 2\/2 .*PASS.*03-review-1-02-reviewer-openai-gpt-5-5\.md/);
 	assert.match(text, /03-review-1-01-reviewer\.md/);
@@ -1148,6 +1272,32 @@ await runTest("parallel review report rejects missing child artifacts before rec
 	assert.equal(status.details.state.phase, "REVIEW");
 	assert.deepEqual(reviewSteps.map((step: any) => step.status), ["planned", "planned"]);
 	assert.deepEqual(reviewSteps.map((step: any) => step.artifact), plannedReviewSteps.map((step: any) => step.artifact));
+});
+
+await runTest("parallel review rejects invalid child harness evidence before writing an aggregate", async () => {
+	const harness = createHarness();
+
+	await harness.tool("delivery_start", { task: "parallel invalid harness evidence smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	const next = await harness.tool("delivery_next");
+	const plannedReviewSteps = next.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+	writeReviewArtifact(plannedReviewSteps[0].artifact, "FAIL", "Reviewer 1 found a blocker.");
+	writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "Reviewer 2 found no blockers.");
+	const invalidChild = fs.readFileSync(plannedReviewSteps[0].artifact, "utf8").replace(/\n## Project harness discovery and compliance[\s\S]*$/, "\n");
+	fs.writeFileSync(plannedReviewSteps[0].artifact, invalidChild, "utf8");
+	const aggregate = path.join(next.details.state.artifactDir, "03-review.md");
+
+	await assert.rejects(
+		() => harness.tool("delivery_report", {
+			phase: "REVIEW",
+			verdict: "FAIL",
+			summary: "one reviewer failed without harness evidence",
+			recommendedDecision: "repair",
+		}),
+		/REVIEW.*project harness evidence.*missing.*Project harness discovery and compliance/i,
+	);
+	assert.equal(fs.existsSync(aggregate), false);
 });
 
 await runTest("parallel review report can record actual existing child artifact paths", async () => {

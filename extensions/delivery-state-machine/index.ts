@@ -2222,8 +2222,11 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptSnippet: "Advance delivery workflow after a subagent result",
 		promptGuidelines: [
 			"Use delivery_report immediately after each delivery subagent finishes, with verdict and evidence summary.",
-			"For VERIFY/REVIEW failures still within the original task or accepted plan, pass recommendedDecision='repair' so the state machine routes back to IMPLEMENT automatically.",
-			"Ask the user/parent before repair only when the fix would change scope, conflict with the plan, require product judgment, exceed max rounds, or needs accept-risk/stop/defer.",
+			"Auto-repair only a supported VERIFY/REVIEW must-fix finding that cites the accepted requirement or invariant, a realistic supported-model reproducer, and the safeguard/test gap; then pass recommendedDecision='repair' to route back to IMPLEMENT.",
+			"Do not blindly trust a verdict label: preserve unsupported/adversarial scenarios and optional hardening as non-blocking notes, but report a supported must-fix finding as FAIL.",
+			"Ask the user/parent before adopting a new product, safety, concurrency, or threat-model contract, or when that decision is necessary to judge or continue the task.",
+			"If pi-subagents reports spawn exhaustion, do not report PASS or substitute parent self-verification for an independent gate; a new Pi session is required.",
+			"Never downgrade a genuine in-scope defect because it is inconvenient or expensive; ask before repair only when it conflicts with the accepted plan, exceeds max rounds, or needs accept-risk/stop/defer.",
 		],
 		parameters: REPORT_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

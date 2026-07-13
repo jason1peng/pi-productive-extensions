@@ -146,6 +146,54 @@ await runTest("phase prompts define stable artifact contracts", async () => {
 	}
 });
 
+await runTest("review-scope prompts preserve broad discovery with bounded blocking", async () => {
+	const extensionDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+	const verifyPrompt = fs.readFileSync(path.join(extensionDir, "phases", "verify.md"), "utf8");
+	const reviewPrompt = fs.readFileSync(path.join(extensionDir, "phases", "review.md"), "utf8");
+	const deliverPrompt = fs.readFileSync(path.join(extensionDir, "prompts", "deliver.md"), "utf8");
+	const indexSource = fs.readFileSync(path.join(extensionDir, "index.ts"), "utf8");
+
+	for (const prompt of [verifyPrompt, reviewPrompt]) {
+		assert.match(prompt, /accepted user task and explicit decisions/i);
+		assert.match(prompt, /documented product or repository invariants/i);
+		assert.match(prompt, /accepted implementation plan/i);
+		assert.match(prompt, /supported operating and threat model/i);
+		assert.match(prompt, /explicit exclusions/i);
+		assert.match(prompt, /requirement or invariant violation[\s\S]*blocking/i);
+		assert.match(prompt, /realistic regression in the supported workflow[\s\S]*blocking/i);
+		assert.match(prompt, /unsupported\/adversarial scenario or optional hardening[\s\S]*non-blocking/i);
+		assert.match(prompt, /contract change[\s\S]*parent\/user judgment/i);
+		assert.match(prompt, /every must-fix finding must identify/i);
+		assert.match(prompt, /exact accepted requirement or invariant violated/i);
+		assert.match(prompt, /realistic reproducer inside the supported operating model/i);
+		assert.match(prompt, /why existing safeguards and tests are insufficient/i);
+		assert.match(prompt, /unsupported concurrency[\s\S]*non-blocking/i);
+		assert.match(prompt, /realistic data loss within the supported workflow[\s\S]*blocking/i);
+		assert.match(prompt, /missing plan item[\s\S]*higher-level accepted requirement or invariant[\s\S]*blocking/i);
+	}
+
+	assert.match(verifyPrompt, /`Must-fix findings`, `Non-blocking concerns \/ hardening`, and `Decisions needed`/i);
+	assert.match(reviewPrompt, /put a `Decisions needed` label in the Summary/i);
+
+	const reviewOrchestrator = reviewPrompt.match(/## Orchestrator instruction\n\n([\s\S]*?)\n\n## Child prompt/)?.[1];
+	assert.ok(reviewOrchestrator, "review prompt includes orchestrator guidance");
+	assert.match(reviewOrchestrator, /do not blindly trust .*must-fix label/i);
+	assert.match(reviewOrchestrator, /only when .*supported must-fix finding[\s\S]*exact accepted requirement or invariant[\s\S]*realistic reproducer[\s\S]*safeguards and tests/i);
+	assert.match(reviewOrchestrator, /unsupported\/adversarial[\s\S]*non-blocking/i);
+	assert.match(reviewOrchestrator, /contract question[\s\S]*parent\/user judgment/i);
+	assert.doesNotMatch(reviewOrchestrator, /if any reviewer finds a must-fix issue/i);
+
+	for (const parentGuidance of [deliverPrompt, indexSource]) {
+		assert.match(parentGuidance, /auto-repair only/i);
+		assert.match(parentGuidance, /do not blindly trust (?:a )?verdict label/i);
+		assert.match(parentGuidance, /new product, safety, concurrency, or threat-model contract/i);
+		assert.match(parentGuidance, /spawn exhaustion/i);
+		assert.match(parentGuidance, /do not report PASS/i);
+		assert.match(parentGuidance, /do not report PASS (?:or|and do not) substitute parent self-verification/i);
+		assert.match(parentGuidance, /new Pi session is required/i);
+	}
+});
+
 await runTest("every runnable child prompt includes bounded project harness discovery from the resolved root", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-harness-root-"));
 	try {

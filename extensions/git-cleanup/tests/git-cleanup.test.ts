@@ -250,6 +250,59 @@ await runTest("dry-run and live preflight preserve a planning checkout when remo
 	}
 });
 
+await runTest("dry-run and live preflight preserve a planning checkout when switching to local main would overwrite ignored content", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-switch-ignore-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const integrator = path.join(root, "integrator");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, ".gitignore"), "generated.txt\n", "utf8");
+		sh(primary, ["git", "add", ".gitignore"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		const initial = sh(primary, ["git", "rev-parse", "HEAD"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+
+		fs.writeFileSync(path.join(primary, "generated.txt"), "tracked on local main\n", "utf8");
+		sh(primary, ["git", "add", "-f", "generated.txt"]);
+		sh(primary, ["git", "commit", "-m", "track generated on main"]);
+		sh(primary, ["git", "push", "origin", "main"]);
+		sh(primary, ["git", "switch", "-c", "plan/switch-overwrite", initial]);
+		fs.writeFileSync(path.join(primary, "plan.md"), "the plan\n", "utf8");
+		sh(primary, ["git", "add", "plan.md"]);
+		sh(primary, ["git", "commit", "-m", "planning change"]);
+		fs.writeFileSync(path.join(primary, "generated.txt"), "local sentinel\n", "utf8");
+
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "plan.md"), "the plan\n", "utf8");
+		sh(integrator, ["git", "add", "plan.md"]);
+		sh(integrator, ["git", "commit", "-m", "integrate planning change"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+
+		for (const dryRun of [true, false]) {
+			const localRefsBefore = sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"]);
+			const headBefore = sh(primary, ["git", "rev-parse", "HEAD"]);
+			await assert.rejects(
+				cleanupGitWorktrees(primary, { mainBranch: "main", dryRun, forceCurrent: false }, { exec: execGit }),
+				/local untracked or ignored content would be overwritten/,
+			);
+			assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/switch-overwrite");
+			assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), headBefore);
+			assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"]), localRefsBefore);
+			assert.equal(fs.readFileSync(path.join(primary, "generated.txt"), "utf8"), "local sentinel\n");
+		}
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("cleanup restores a clean primary checkout from a merged planning branch and ends on latest main", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-primary-"));
 	const remote = path.join(root, "remote.git");

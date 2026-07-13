@@ -146,13 +146,13 @@ function pathsConflict(left: string, right: string): boolean {
 	return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
-async function assertNoUntrackedFastForwardOverwrite(cwd: string, from: string, to: string, runtime: CleanupRuntimeOptions): Promise<void> {
+async function assertNoUntrackedOverwrite(cwd: string, from: string, to: string, runtime: CleanupRuntimeOptions): Promise<void> {
 	const changed = nulPaths(await git(cwd, ["diff", "--name-only", "-z", from, to], runtime));
 	const local = await untrackedAndIgnoredPaths(cwd, runtime);
 	const conflicts = local.filter((localPath) => changed.some((changedPath) => pathsConflict(localPath, changedPath)));
 	if (conflicts.length > 0) {
 		throw new Error(
-			`Cannot fast-forward this worktree: local untracked or ignored content would be overwritten (${conflicts.slice(0, 3).join(", ")}` +
+			`Cannot update this worktree: local untracked or ignored content would be overwritten (${conflicts.slice(0, 3).join(", ")}` +
 			`${conflicts.length > 3 ? ", …" : ""}). The content was preserved; relocate it and rerun /cleanup.`,
 		);
 	}
@@ -277,7 +277,8 @@ export async function cleanupGitWorktrees(
 		if (!merged && !equivalent) {
 			throw new Error(`Primary planning branch ${displacedBranch} is not merged or patch-equivalent to current origin/${options.mainBranch}; it was preserved.`);
 		}
-		await assertNoUntrackedFastForwardOverwrite(primaryPath, localMainHead, target, runtime);
+		await assertNoUntrackedOverwrite(primaryPath, primaryWorktree.head, localMainHead, runtime);
+		await assertNoUntrackedOverwrite(primaryPath, localMainHead, target, runtime);
 		runtime.onProgress?.(`Switching primary worktree to ${options.mainBranch} without overwriting ignored files…`);
 		await runGit(primaryPath, ["switch", "--no-overwrite-ignore", options.mainBranch]);
 		mainWorktree = { ...primaryWorktree, branch: mainRef };
@@ -286,7 +287,7 @@ export async function cleanupGitWorktrees(
 		await runGit(primaryPath, ["branch", equivalent ? "-D" : "-d", displacedBranch!]);
 	} else {
 		runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
-		await assertNoUntrackedFastForwardOverwrite(mainWorktree.path, localMainHead, target, runtime);
+		await assertNoUntrackedOverwrite(mainWorktree.path, localMainHead, target, runtime);
 		await runGit(mainWorktree.path, ["merge", "--ff-only", target], NETWORK_COMMAND_TIMEOUT_MS);
 	}
 	result.pulled = !options.dryRun;

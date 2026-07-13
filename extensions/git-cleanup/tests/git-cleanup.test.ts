@@ -131,7 +131,7 @@ await runTest("cleanup removes merged worktrees with untracked-only artifacts an
 	}
 });
 
-await runTest("cleanup deletes only runtime artifacts and lets normal removal block unrecognized files", async () => {
+await runTest("cleanup preserves worktrees containing unrecognized untracked or ignored files", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-unrecognized-"));
 	const remote = path.join(root, "remote.git");
 	const main = path.join(root, "main");
@@ -144,106 +144,33 @@ await runTest("cleanup deletes only runtime artifacts and lets normal removal bl
 		sh(main, ["git", "config", "user.email", "test@example.com"]);
 		sh(main, ["git", "config", "user.name", "Test User"]);
 		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
-		sh(main, ["git", "add", "README.md"]);
+		fs.writeFileSync(path.join(main, ".gitignore"), "keep-me.log\n", "utf8");
+		sh(main, ["git", "add", "README.md", ".gitignore"]);
 		sh(main, ["git", "commit", "-m", "initial"]);
 		sh(main, ["git", "push", "-u", "origin", "main"]);
 		sh(main, ["git", "worktree", "add", "-b", "candidate", candidate, "main"]);
 		fs.mkdirSync(path.join(candidate, ".pi-subagents", "runtime"), { recursive: true });
 		fs.writeFileSync(path.join(candidate, ".pi-subagents", "runtime", "state.log"), "runtime\n", "utf8");
-		fs.writeFileSync(path.join(candidate, "keep-me.txt"), "unrecognized\n", "utf8");
+		fs.writeFileSync(path.join(candidate, "keep-me.txt"), "untracked\n", "utf8");
+		fs.writeFileSync(path.join(candidate, "keep-me.log"), "ignored\n", "utf8");
 
 		const recordingExec: GitExecutor = async (args, options) => {
 			calls.push(args);
 			return execGit(args, options);
 		};
 		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: recordingExec });
-		assert.equal(result.skipped.some((item) => item.branch === "candidate" && item.reason.includes("restored and preserved")), true);
-		assert.equal(fs.existsSync(path.join(candidate, ".pi-subagents")), false);
-		assert.equal(fs.readFileSync(path.join(candidate, "keep-me.txt"), "utf8"), "unrecognized\n");
+		assert.equal(result.skipped.some((item) => item.branch === "candidate" && item.reason === "untracked or ignored content"), true);
+		assert.equal(fs.existsSync(path.join(candidate, ".pi-subagents")), true);
+		assert.equal(fs.readFileSync(path.join(candidate, "keep-me.txt"), "utf8"), "untracked\n");
+		assert.equal(fs.readFileSync(path.join(candidate, "keep-me.log"), "utf8"), "ignored\n");
 		assert.equal(fs.existsSync(candidate), true);
 		assert.match(sh(main, ["git", "branch"]), /candidate/);
-		assert.equal(calls.some((args) => args[0] === "clean" && args.at(-1) === ".pi-subagents/"), true);
-		assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove" && args.includes("--force")), false);
+		assert.equal(calls.some((args) => args[0] === "clean" && args.at(-1) === ".pi-subagents/"), false);
+		assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
-
-async function assertLateWorktreeSentinelIsPreserved(kind: "ordinary untracked" | "ignored") {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), `git-cleanup-late-${kind === "ignored" ? "ignored" : "untracked"}-`));
-	const remote = path.join(root, "remote.git");
-	const main = path.join(root, "main");
-	const candidate = path.join(root, "candidate");
-	const sentinelName = kind === "ignored" ? "late-ignored.sentinel" : "late-untracked.sentinel";
-	const sentinel = path.join(candidate, sentinelName);
-	const sentinelContents = `${kind} content\n`;
-	let injectedAfterIgnoredScan = false;
-	let quarantineMoveCompleted = false;
-	let normalRemoveAttempted = false;
-	try {
-		sh(root, ["git", "init", "--bare", remote]);
-		sh(root, ["git", "clone", remote, main]);
-		sh(main, ["git", "checkout", "-b", "main"]);
-		sh(main, ["git", "config", "user.email", "test@example.com"]);
-		sh(main, ["git", "config", "user.name", "Test User"]);
-		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
-		fs.writeFileSync(path.join(main, ".gitignore"), "late-ignored.sentinel\n", "utf8");
-		sh(main, ["git", "add", "README.md", ".gitignore"]);
-		sh(main, ["git", "commit", "-m", "initial"]);
-		sh(main, ["git", "push", "-u", "origin", "main"]);
-		sh(main, ["git", "worktree", "add", "-b", "candidate", candidate, "main"]);
-		const runtimeArtifact = path.join(candidate, ".pi-subagents", "runtime", "state.json");
-		fs.mkdirSync(path.dirname(runtimeArtifact), { recursive: true });
-		fs.writeFileSync(runtimeArtifact, "runtime\n", "utf8");
-
-		const lateWriteExec: GitExecutor = async (args, options) => {
-			const result = await execGit(args, options);
-			if (
-				!injectedAfterIgnoredScan
-				&& result.code === 0
-				&& args[0] === "ls-files"
-				&& args.includes("--ignored")
-				&& args.includes("-z")
-				&& fs.realpathSync(options.cwd) === fs.realpathSync(candidate)
-			) {
-				assert.equal(fs.existsSync(path.join(candidate, ".pi-subagents")), false, "runtime clean must finish before the sentinel hook");
-				fs.writeFileSync(sentinel, sentinelContents, "utf8");
-				injectedAfterIgnoredScan = true;
-			}
-			if (args[0] === "worktree" && args[1] === "move" && result.code === 0 && args[3]?.includes(".pi-cleanup-quarantine-")) quarantineMoveCompleted = true;
-			if (args[0] === "worktree" && args[1] === "remove") normalRemoveAttempted = true;
-			return result;
-		};
-
-		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: lateWriteExec });
-		assert.equal(injectedAfterIgnoredScan, true);
-		assert.equal(quarantineMoveCompleted, true, JSON.stringify(result.skipped));
-		assert.equal(normalRemoveAttempted, false);
-		assert.equal(result.removed.some((item) => item.branch === "candidate"), false);
-		assert.equal(result.skipped.some((item) => item.branch === "candidate" && item.reason.includes("restored and preserved")), true);
-		assert.equal(fs.readFileSync(sentinel, "utf8"), sentinelContents);
-		assert.equal(fs.existsSync(candidate), true);
-		const canonicalCandidate = fs.realpathSync(candidate);
-		assert.match(sh(main, ["git", "worktree", "list", "--porcelain"]), new RegExp(`worktree ${canonicalCandidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-		assert.equal(sh(main, ["git", "show-ref", "--verify", "--hash", "refs/heads/candidate"]).length > 0, true);
-		if (kind === "ignored") {
-			assert.equal(sh(candidate, ["git", "check-ignore", sentinelName]), sentinelName);
-		} else {
-			assert.match(sh(candidate, ["git", "status", "--porcelain"]), /^\?\? late-untracked\.sentinel$/m);
-		}
-	} finally {
-		fs.rmSync(root, { recursive: true, force: true });
-	}
-}
-
-await runTest("quarantine preserves an ordinary untracked file injected after the prior ignored scan", async () => {
-	await assertLateWorktreeSentinelIsPreserved("ordinary untracked");
-});
-
-await runTest("quarantine preserves an ignored file injected after the prior ignored scan", async () => {
-	await assertLateWorktreeSentinelIsPreserved("ignored");
-});
-
 
 await runTest("primary restoration preserves ignored content that main would overwrite", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-primary-ignore-"));
@@ -362,7 +289,6 @@ await runTest("cleanup restores a clean primary checkout from a merged planning 
 		assert.equal(fs.realpathSync(result.mainWorktree!), fs.realpathSync(primary));
 		assert.equal(fs.readFileSync(runtimeArtifact, "utf8"), "primary runtime artifact\n");
 		assert.equal(fs.existsSync(primary), true);
-		assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname)", "refs/pi-cleanup/targets"]), "");
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
@@ -492,7 +418,6 @@ await runTest("cleanup preflights a diverged local main before switching the pri
 		);
 		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/diverged-main");
 		assert.match(sh(primary, ["git", "branch"]), /plan\/diverged-main/);
-		assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname)", "refs/pi-cleanup/targets"]), "");
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
@@ -543,7 +468,7 @@ await runTest("dry-run reads current remote main without changing refs and match
 		assert.deepEqual(dryResult.removed.map((item) => item.branch), ["feature"]);
 		assert.equal(dryResult.skipped.length, 0);
 		assert.equal(dryResult.commands.some((command) => command.includes("'switch' '--no-overwrite-ignore' 'main'")), true);
-		assert.equal(dryResult.commands.some((command) => command.includes("'update-ref' '-d' 'refs/heads/plan/dry-run'")), true);
+		assert.equal(dryResult.commands.some((command) => command.includes("'branch'") && command.includes("'plan/dry-run'")), true);
 		assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)"]), refsBefore);
 		assert.equal(sh(primary, ["git", "worktree", "list", "--porcelain"]), worktreesBefore);
 		assert.equal(sh(primary, ["git", "symbolic-ref", "HEAD"]), symbolicHeadBefore);
@@ -649,101 +574,6 @@ await runTest("cleanup rejects patch-equivalent candidate ranges containing a me
 	}
 });
 
-await runTest("cleanup preserves a displaced patch-equivalent planning branch that moves before deletion", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-plan-race-"));
-	const remote = path.join(root, "remote.git");
-	const primary = path.join(root, "primary");
-	const integrator = path.join(root, "integrator");
-	try {
-		sh(root, ["git", "init", "--bare", remote]);
-		sh(root, ["git", "clone", remote, primary]);
-		sh(primary, ["git", "checkout", "-b", "main"]);
-		sh(primary, ["git", "config", "user.email", "test@example.com"]);
-		sh(primary, ["git", "config", "user.name", "Test User"]);
-		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
-		sh(primary, ["git", "add", "README.md"]);
-		sh(primary, ["git", "commit", "-m", "initial"]);
-		sh(primary, ["git", "push", "-u", "origin", "main"]);
-		const movedHead = sh(primary, ["git", "rev-parse", "main"]);
-		sh(primary, ["git", "switch", "-c", "plan/racing"]);
-		fs.writeFileSync(path.join(primary, "plan.md"), "plan\n", "utf8");
-		sh(primary, ["git", "add", "plan.md"]);
-		sh(primary, ["git", "commit", "-m", "plan"]);
-
-		sh(root, ["git", "clone", remote, integrator]);
-		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
-		sh(integrator, ["git", "config", "user.name", "Test User"]);
-		sh(integrator, ["git", "switch", "main"]);
-		fs.writeFileSync(path.join(integrator, "plan.md"), "plan\n", "utf8");
-		sh(integrator, ["git", "add", "plan.md"]);
-		sh(integrator, ["git", "commit", "-m", "rewritten plan"]);
-		sh(integrator, ["git", "push", "origin", "main"]);
-
-		let moved = false;
-		const racingExec: GitExecutor = async (args, options) => {
-			const result = await execGit(args, options);
-			if (!moved && result.code === 0 && args[0] === "switch" && args.at(-1) === "main") {
-				moved = true;
-				sh(primary, ["git", "update-ref", "refs/heads/plan/racing", movedHead]);
-			}
-			return result;
-		};
-		await assert.rejects(
-			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: racingExec }),
-			(error: Error) => error.message.includes("plan/racing") && error.message.includes("moved from expected HEAD") && error.message.includes("branch was preserved"),
-		);
-		assert.equal(sh(primary, ["git", "rev-parse", "refs/heads/plan/racing"]), movedHead);
-		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "main");
-	} finally {
-		fs.rmSync(root, { recursive: true, force: true });
-	}
-});
-
-await runTest("cleanup preserves a linked-worktree patch-equivalent branch that moves before deletion", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-worktree-race-"));
-	const remote = path.join(root, "remote.git");
-	const main = path.join(root, "main");
-	const feature = path.join(root, "feature");
-	try {
-		sh(root, ["git", "init", "--bare", remote]);
-		sh(root, ["git", "clone", remote, main]);
-		sh(main, ["git", "checkout", "-b", "main"]);
-		sh(main, ["git", "config", "user.email", "test@example.com"]);
-		sh(main, ["git", "config", "user.name", "Test User"]);
-		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
-		sh(main, ["git", "add", "README.md"]);
-		sh(main, ["git", "commit", "-m", "initial"]);
-		sh(main, ["git", "push", "-u", "origin", "main"]);
-		const movedHead = sh(main, ["git", "rev-parse", "main"]);
-		sh(main, ["git", "worktree", "add", "-b", "feature-racing", feature, "main"]);
-		fs.writeFileSync(path.join(feature, "feature.txt"), "feature\n", "utf8");
-		sh(feature, ["git", "add", "feature.txt"]);
-		sh(feature, ["git", "commit", "-m", "feature"]);
-		fs.writeFileSync(path.join(main, "feature.txt"), "feature\n", "utf8");
-		sh(main, ["git", "add", "feature.txt"]);
-		sh(main, ["git", "commit", "-m", "rewritten feature"]);
-		sh(main, ["git", "push", "origin", "main"]);
-
-		let moved = false;
-		const racingExec: GitExecutor = async (args, options) => {
-			const result = await execGit(args, options);
-			if (!moved && result.code === 0 && args[0] === "worktree" && args[1] === "remove") {
-				moved = true;
-				sh(main, ["git", "update-ref", "refs/heads/feature-racing", movedHead]);
-			}
-			return result;
-		};
-		await assert.rejects(
-			cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: racingExec }),
-			(error: Error) => error.message.includes("feature-racing") && error.message.includes("moved from expected HEAD") && error.message.includes("branch was preserved"),
-		);
-		assert.equal(fs.existsSync(feature), false);
-		assert.equal(sh(main, ["git", "rev-parse", "refs/heads/feature-racing"]), movedHead);
-	} finally {
-		fs.rmSync(root, { recursive: true, force: true });
-	}
-});
-
 await runTest("cleanup propagates a linked-worktree status failure before mutating anything", async () => {
 	const calls: Array<{ args: string[]; cwd: string }> = [];
 	const executor: GitExecutor = async (args, options) => {
@@ -765,6 +595,7 @@ await runTest("cleanup propagates a linked-worktree status failure before mutati
 		if (args[0] === "status" && options.cwd === "/repo-feature") {
 			return { stdout: "", stderr: "status unavailable", code: 128, killed: false };
 		}
+		if (args[0] === "ls-files") return { stdout: "", stderr: "", code: 0, killed: false };
 		throw new Error(`unexpected git call: ${args.join(" ")}`);
 	};
 
@@ -777,173 +608,6 @@ await runTest("cleanup propagates a linked-worktree status failure before mutati
 	assert.equal(calls.some((call) => call.args[0] === "worktree" && ["remove", "prune"].includes(call.args[1]!)), false);
 });
 
-await runTest("live cleanup uses its private fetched OID when origin/main moves before resolution", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-target-race-"));
-	const remote = path.join(root, "remote.git");
-	const main = path.join(root, "main");
-	const feature = path.join(root, "feature");
-	const integrator = path.join(root, "integrator");
-	try {
-		sh(root, ["git", "init", "--bare", remote]);
-		sh(root, ["git", "clone", remote, main]);
-		sh(main, ["git", "checkout", "-b", "main"]);
-		sh(main, ["git", "config", "user.email", "test@example.com"]);
-		sh(main, ["git", "config", "user.name", "Test User"]);
-		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
-		sh(main, ["git", "add", "README.md"]);
-		sh(main, ["git", "commit", "-m", "initial"]);
-		sh(main, ["git", "push", "-u", "origin", "main"]);
-		const staleTarget = sh(main, ["git", "rev-parse", "main"]);
-
-		sh(main, ["git", "worktree", "add", "-b", "feature", feature, "main"]);
-		fs.writeFileSync(path.join(feature, "feature.txt"), "feature\n", "utf8");
-		sh(feature, ["git", "add", "feature.txt"]);
-		sh(feature, ["git", "commit", "-m", "feature"]);
-
-		sh(root, ["git", "clone", remote, integrator]);
-		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
-		sh(integrator, ["git", "config", "user.name", "Test User"]);
-		sh(integrator, ["git", "switch", "main"]);
-		fs.writeFileSync(path.join(integrator, "feature.txt"), "feature\n", "utf8");
-		sh(integrator, ["git", "add", "feature.txt"]);
-		sh(integrator, ["git", "commit", "-m", "rewritten feature"]);
-		sh(integrator, ["git", "push", "origin", "main"]);
-		const fetchedTarget = sh(integrator, ["git", "rev-parse", "HEAD"]);
-		sh(main, ["git", "fetch", "origin", "main"]);
-		assert.equal(sh(main, ["git", "rev-parse", "origin/main"]), fetchedTarget);
-
-		let movedTrackingRef = false;
-		let resolvedPrivateRef = false;
-		const racingExec: GitExecutor = async (args, options) => {
-			const result = await execGit(args, options);
-			if (!movedTrackingRef && result.code === 0 && args[0] === "fetch" && args.some((arg) => arg.startsWith("refs/heads/main:refs/pi-cleanup/targets/"))) {
-				movedTrackingRef = true;
-				sh(main, ["git", "update-ref", "refs/remotes/origin/main", staleTarget]);
-			} else if (result.code === 0 && args[0] === "rev-parse" && args[2]?.startsWith("refs/pi-cleanup/targets/") && args[2]?.endsWith("^{commit}")) {
-				resolvedPrivateRef = true;
-				assert.equal(result.stdout.trim(), fetchedTarget);
-			}
-			return result;
-		};
-		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: racingExec });
-
-		assert.equal(movedTrackingRef, true);
-		assert.equal(resolvedPrivateRef, true);
-		assert.equal(sh(main, ["git", "rev-parse", "HEAD"]), fetchedTarget);
-		assert.equal(sh(main, ["git", "rev-parse", "origin/main"]), staleTarget);
-		assert.equal(fs.existsSync(feature), false);
-		assert.deepEqual(result.removed.map((item) => item.branch), ["feature"]);
-		assert.equal(result.commands.some((command) => command.includes(`'merge' '--ff-only' '${fetchedTarget}'`)), true);
-		assert.equal(sh(main, ["git", "for-each-ref", "--format=%(refname)", "refs/pi-cleanup/targets"]), "");
-	} finally {
-		fs.rmSync(root, { recursive: true, force: true });
-	}
-});
-
-await runTest("cleanup reports both an operation failure and a leaked private ref when CAS deletion also fails", async () => {
-	const calls: string[][] = [];
-	let privateRef: string | undefined;
-	let privateRefStillExists = false;
-	const localMain = "a".repeat(40);
-	const fetchedMain = "b".repeat(40);
-	const executor: GitExecutor = async (args) => {
-		calls.push(args);
-		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
-			return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
-		}
-		if (args[0] === "worktree" && args[1] === "list") {
-			return { stdout: `worktree /repo\nHEAD ${localMain}\nbranch refs/heads/main\n`, stderr: "", code: 0, killed: false };
-		}
-		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
-		if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "refs/heads/main") {
-			return { stdout: `${localMain}\n`, stderr: "", code: 0, killed: false };
-		}
-		if (args[0] === "fetch") {
-			privateRef = args.find((arg) => arg.startsWith("refs/heads/main:refs/pi-cleanup/targets/"))?.split(":", 2)[1];
-			assert.ok(privateRef);
-			privateRefStillExists = true;
-			return { stdout: "", stderr: "", code: 0, killed: false };
-		}
-		if (args[0] === "rev-parse" && args[2] === `${privateRef}^{commit}`) {
-			return { stdout: `${fetchedMain}\n`, stderr: "", code: 0, killed: false };
-		}
-		if (args[0] === "merge-base") {
-			return { stdout: "", stderr: "injected non-fast-forward", code: 1, killed: false };
-		}
-		if (args[0] === "update-ref" && args[1] === "-d" && args[2] === privateRef) {
-			return { stdout: "", stderr: "injected private-ref CAS deletion failure", code: 1, killed: false };
-		}
-		throw new Error(`unexpected git call: ${args.join(" ")}`);
-	};
-
-	await assert.rejects(
-		cleanupGitWorktrees("/repo", { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: executor }),
-		(error: Error) => {
-			assert.ok(error instanceof AggregateError);
-			assert.equal(error.errors.length, 2);
-			assert.match(error.message, /cannot be fast-forwarded/);
-			assert.match(error.message, /injected private-ref CAS deletion failure/);
-			assert.match(error.message, /may still exist in the repository/);
-			assert.match(error.message, new RegExp(privateRef!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-			assert.match(error.message, /git show-ref --verify/);
-			assert.match(error.message, /git update-ref -d/);
-			return true;
-		},
-	);
-	assert.equal(privateRefStillExists, true, "the injected CAS failure leaves the private ref present");
-	assert.equal(calls.some((args) => args[0] === "update-ref" && args[2] === privateRef), true);
-});
-
-await runTest("private-ref inspection failures are aggregated instead of being treated as absence", async () => {
-	const calls: string[][] = [];
-	const localMain = "a".repeat(40);
-	const executor: GitExecutor = async (args) => {
-		calls.push(args);
-		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
-		if (args[0] === "worktree" && args[1] === "list") {
-			return { stdout: `worktree /repo\nHEAD ${localMain}\nbranch refs/heads/main\n`, stderr: "", code: 0, killed: false };
-		}
-		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
-		if (args[0] === "rev-parse" && args[2] === "refs/heads/main") return { stdout: `${localMain}\n`, stderr: "", code: 0, killed: false };
-		if (args[0] === "fetch") return { stdout: "", stderr: "injected fetch failure", code: 128, killed: false };
-		if (args[0] === "show-ref") return { stdout: "", stderr: "injected inspection failure", code: 128, killed: false };
-		throw new Error(`unexpected git call: ${args.join(" ")}`);
-	};
-
-	await assert.rejects(
-		cleanupGitWorktrees("/repo", { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: executor }),
-		(error: Error) => {
-			assert.ok(error instanceof AggregateError);
-			assert.equal(error.errors.length, 2);
-			assert.match(error.message, /injected fetch failure/);
-			assert.match(error.message, /injected inspection failure/);
-			assert.match(error.message, /may still exist/);
-			return true;
-		},
-	);
-	assert.equal(calls.some((args) => args[0] === "show-ref" && args.includes("--verify")), true);
-});
-
-await runTest("verified private-ref absence preserves the original operation failure", async () => {
-	const localMain = "a".repeat(40);
-	const executor: GitExecutor = async (args) => {
-		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
-		if (args[0] === "worktree" && args[1] === "list") {
-			return { stdout: `worktree /repo\nHEAD ${localMain}\nbranch refs/heads/main\n`, stderr: "", code: 0, killed: false };
-		}
-		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
-		if (args[0] === "rev-parse" && args[2] === "refs/heads/main") return { stdout: `${localMain}\n`, stderr: "", code: 0, killed: false };
-		if (args[0] === "fetch") return { stdout: "", stderr: "injected fetch failure", code: 128, killed: false };
-		if (args[0] === "show-ref") return { stdout: "", stderr: "", code: 1, killed: false };
-		throw new Error(`unexpected git call: ${args.join(" ")}`);
-	};
-
-	await assert.rejects(
-		cleanupGitWorktrees("/repo", { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: executor }),
-		(error: Error) => !(error instanceof AggregateError) && /injected fetch failure/.test(error.message),
-	);
-});
-
 await runTest("cleanup forwards cancellation, uses a network timeout, and reports fetch progress", async () => {
 	const controller = new AbortController();
 	const calls: Array<{ args: string[]; timeout: number; signal?: AbortSignal }> = [];
@@ -954,7 +618,7 @@ await runTest("cleanup forwards cancellation, uses a network timeout, and report
 		if (args[0] === "worktree") {
 			return { stdout: "worktree /repo\nHEAD abc\nbranch refs/heads/main\n", stderr: "", code: 0, killed: false };
 		}
-		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
+		if (args[0] === "status" || args[0] === "ls-files") return { stdout: "", stderr: "", code: 0, killed: false };
 		controller.abort();
 		return { stdout: "", stderr: "", code: 1, killed: true };
 	};

@@ -12,14 +12,15 @@ This plan assumes the following behavior:
 
 1. Wrong-phase, duplicate, missing-verdict, and phase-invalid reports are rejected without changing state or files.
 2. `IMPLEMENT: FAIL` enters `WAITING_DECISION` and never advances to `VERIFY`.
-3. `continue` reruns the failed phase without code changes.
-4. `accept_risk` is the only decision that bypasses a failed gate, and it records the accepted risk.
-5. New phase reports require local artifact files at their exact planned paths. External MR/PR URLs belong inside the `CLOSE` artifact.
-6. New artifacts must start with `RESULT: ...`; legacy artifact reading remains permissive.
-7. Parallel execution is supported only for `VERIFY` and `REVIEW`. `IMPLEMENT` remains single-writer, while `CLOSE` remains single-closer.
-8. A parent aggregate verdict may be more conservative than child verdicts, but never more optimistic.
-9. Phase artifact or aggregate write failures block the report. Derived summary-report write failures produce a warning but do not reverse an otherwise completed transition.
-10. Persisted state compatibility and `delivery-report.json` schema version 2 are preserved during this work.
+3. The user-facing decision set is reduced to `repair`, `accept_risk`, and `stop`; legacy `continue` and `defer` inputs remain parseable for persisted/API compatibility but are not offered in prompts or recommended by the workflow.
+4. `repair` explicitly authorizes one additional complete repair cycle when any required IMPLEMENT, VERIFY, or REVIEW budget is exhausted. The machine extends only the required limits, preserves counters/history, and records the user-authorized extension instead of resetting the delivery.
+5. `accept_risk` is the only decision that bypasses a failed gate, and it records the accepted risk; `stop` terminates the delivery.
+6. New phase reports require local artifact files at their exact planned paths. External MR/PR URLs belong inside the `CLOSE` artifact.
+7. New artifacts must start with `RESULT: ...`; legacy artifact reading remains permissive.
+8. Parallel execution is supported only for `VERIFY` and `REVIEW`. `IMPLEMENT` remains single-writer, while `CLOSE` remains single-closer.
+9. A parent aggregate verdict may be more conservative than child verdicts, but never more optimistic.
+10. Phase artifact or aggregate write failures block the report. Derived summary-report write failures produce a warning but do not reverse an otherwise completed transition.
+11. Persisted state compatibility and `delivery-report.json` schema version 2 are preserved during this work.
 
 The `fresh-verifier` installation approach requires an explicit decision in Stage 5.
 
@@ -29,7 +30,8 @@ The `fresh-verifier` installation approach requires an explicit decision in Stag
 
 - Phase and verdict validation
 - Atomic report processing
-- Repair-budget enforcement
+- Repair-budget enforcement and explicit user-authorized budget extension
+- Simplified user-facing decision semantics with compatibility handling for legacy decisions
 - Single and parallel artifact contracts
 - Trusted project configuration
 - CLOSE command guard correctness
@@ -111,7 +113,11 @@ Add tests that reproduce every confirmed correctness issue before changing produ
 - Child `PASS_WITH_NON_BLOCKING_NOTES` plus REVIEW `PASS` is rejected.
 - A parent may conservatively report `FAIL` when all children pass.
 - Review repair cannot schedule a VERIFY attempt beyond its limit.
-- Repair works at `maxRounds - 1` and stops at exhaustion.
+- Automatic repair works at `maxRounds - 1` and waits for a user decision at exhaustion.
+- User-selected `repair` at exhaustion authorizes exactly one additional complete repair cycle, extends only required phase limits, preserves attempt counters/history, and records the authorization.
+- Repeated exhausted repairs require a new explicit user authorization; non-repair decisions never extend budgets.
+- User-facing prompts offer only `repair`, `accept_risk`, and `stop`.
+- Legacy `continue` and `defer` tool inputs follow their documented compatibility mapping without appearing in prompts.
 - Parallel IMPLEMENT and CLOSE launch configurations are rejected.
 
 ### Artifact tests
@@ -184,12 +190,14 @@ validate input
 - Centralize all phase and repair-budget checks.
 - Add `implement` to the pending-issue source union without changing the surrounding JSON shape or schema version.
 - Make decision semantics explicit:
-  - `repair`: return through `IMPLEMENT` when required budgets remain;
-  - `continue`: rerun the failed phase without code changes;
-  - `accept_risk`: record the risk and advance;
-  - `stop` and `defer`: stop the delivery.
+  - `repair`: return through `IMPLEMENT`; when a required budget is exhausted, explicit user selection authorizes one additional complete repair cycle by increasing only the necessary phase limits, without resetting attempts or delivery history;
+  - `accept_risk`: record the unresolved issue and advance;
+  - `stop`: terminate the delivery;
+  - legacy `continue` and `defer`: retain a documented compatibility mapping for existing callers and persisted interactions, but do not expose them in user-facing decision prompts.
+- Record every user-authorized budget extension in history with its affected phases and old/new limits.
+- Never extend budgets for `accept_risk`, `stop`, clarification, or other non-repair feedback.
 - Prohibit `accept_risk` from treating a failed implementation as a verified candidate.
-- Require remaining IMPLEMENT, VERIFY, and REVIEW capacity before scheduling a review repair.
+- Require remaining IMPLEMENT, VERIFY, and REVIEW capacity for automatic repair; at exhaustion, enter `WAITING_DECISION` and make explicit `repair` capable of extending the complete required cycle.
 - Route a code-changing CLOSE repair through IMPLEMENT → VERIFY → REVIEW.
 - Make report generation consume immutable state and remove post-persist state mutation.
 
@@ -443,8 +451,8 @@ Perform a live Pi smoke test covering:
 1. start a delivery;
 2. reject an out-of-order report;
 3. complete IMPLEMENT with an exact artifact;
-4. fail VERIFY and repair;
-5. reject a contradictory parallel REVIEW;
+4. fail VERIFY at exhausted budgets, choose `repair`, confirm one additional cycle is authorized and succeeds without resetting history;
+5. confirm the decision prompt exposes only `repair`, `accept_risk`, and `stop`, then reject a contradictory parallel REVIEW;
 6. reach CLOSE only after valid verification and review;
 7. reconstruct state from the session;
 8. open the generated structured report in report-viewer.
@@ -486,8 +494,8 @@ Any correctness, persistence, security, artifact-integrity, package-discovery, o
 ## Execution checklist
 
 - [x] **Stage 0:** create the dedicated worktree from fetched `origin/main`, run `npm run verify`, confirm the pre-change tracked baseline is clean, and record `COMPATIBILITY_BASELINE.md`.
-- [ ] **Stage 1:** add the transition, round-budget, artifact-integrity, and persistence regressions; capture the expected failures; confirm production files remain zero-diff.
-- [ ] **Stage 2:** implement the workflow-atomic report pipeline using existing-compatible artifact inspection and write mechanics; pass the Stage 2-owned regressions while retaining the documented Stage 3 expected failures; complete the transition atomicity, dominance, budget, persistence, and write-order review.
+- [ ] **Stage 1:** add transition, decision-menu, user-authorized round-extension, artifact-integrity, and persistence regressions; capture the expected failures; confirm production files remain zero-diff.
+- [ ] **Stage 2:** implement the workflow-atomic report pipeline, three-choice user-facing decision contract, and explicit one-cycle repair authorization using existing-compatible artifact inspection and write mechanics; pass the Stage 2-owned regressions while retaining the documented Stage 3 expected failures; complete the transition atomicity, dominance, budget, persistence, and write-order review.
 - [ ] **Stage 3:** enforce exact artifact contracts and filesystem-atomic aggregate replacement; pass all remaining Stage 3-owned regressions; prove path containment and local-link completeness; pass the mandatory post-Stage-3 review gate.
 - [ ] **Stage 4:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summaries, and standard truncation; pass focused runtime tests.
 - [ ] **Stage 5:** confirm the `fresh-verifier` installation decision; implement the approved setup/discovery path; pass the isolated Pi/package smoke test and mandatory post-Stage-5 review gate.

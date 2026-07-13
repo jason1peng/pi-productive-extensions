@@ -24,6 +24,8 @@ This plan assumes the following behavior:
 
 The `fresh-verifier` installation approach requires an explicit decision in Stage 5.
 
+The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` must merge before this plan resumes. Its prompt-scope regressions join Stage 1, but this plan retains ownership of atomic report processing and transition/verdict/repair behavior in Stage 2, structured artifact validation in Stage 3, runtime reliability in Stages 4–5, and modularization in Stage 6. Resume from a new latest-`main` worktree and rerun Stage 0, updating `COMPATIBILITY_BASELINE.md` only where the prerequisite changes recorded expectations.
+
 ## Scope boundaries
 
 ### In scope
@@ -107,8 +109,13 @@ Add tests that reproduce every confirmed correctness issue before changing produ
 - `RETRO` accepts only `DONE`.
 - Rejected reports leave phase, history, steps, counters, pending issue, accepted risks, and files unchanged.
 
-### Parallel and round tests
+### Review-scope, parallel, and round tests
 
+- Prompt contracts preserve all four concern destinations: blocking requirement/invariant violations, blocking supported-workflow regressions, non-blocking unsupported/adversarial hardening, and parent/user contract decisions.
+- Every must-fix finding requires a cited accepted requirement/invariant, realistic supported-model reproducer, and safeguard/test gap.
+- Unsupported concurrency and hostile external mutation remain non-blocking unless the accepted contract includes them; supported-workflow destructive data loss remains blocking.
+- Contract expansion requests parent/user judgment rather than automatic repair, while genuine in-scope failures still auto-route with `recommendedDecision=repair`.
+- Subagent launch exhaustion cannot become synthetic PASS, silent parent self-verification, or an unacknowledged fallback.
 - Child `FAIL` plus parent `PASS` is rejected.
 - Child `PASS_WITH_NON_BLOCKING_NOTES` plus REVIEW `PASS` is rejected.
 - A parent may conservatively report `FAIL` when all children pass.
@@ -223,7 +230,7 @@ A rejected report must not:
 
 ### Review gate
 
-Require independent review of workflow transition atomicity, verdict dominance, budget boundaries, persistence compatibility, and the ordering of existing-compatible aggregate writes before live-state replacement. Filesystem-atomic aggregate replacement is reviewed with Stage 3. Do not begin general modularization until this gate passes.
+Require independent review of workflow transition atomicity, verdict dominance, budget boundaries, persistence compatibility, and the ordering of existing-compatible aggregate writes before live-state replacement. Apply the bounded-review rule under Mandatory review gates. Filesystem-atomic aggregate replacement is reviewed with Stage 3. Do not begin general modularization until this gate passes.
 
 ## Stage 3 — Enforce exact artifact contracts
 
@@ -329,7 +336,7 @@ Keep the stricter bundled `fresh-verifier` and add an explicit `/delivery-setup`
 - installs the bundled agent in the user agent directory;
 - reports whether the installed copy matches the bundled version.
 
-Make `/deliver` fail early with a clear setup command when the configured `fresh-verifier` cannot be found. Retain manual-copy instructions for non-interactive environments.
+Make `/deliver` fail early with a clear setup command when the configured `fresh-verifier` cannot be found. Retain manual-copy instructions for non-interactive environments. Precise session-spawn reservation or approximate capacity accounting remains deferred until pi-subagents exposes a reliable capacity interface; exhaustion must block the independent gate and require a new Pi session rather than produce synthetic PASS or parent fallback.
 
 ### Alternative requiring approval
 
@@ -459,9 +466,11 @@ Perform a live Pi smoke test covering:
 
 ## Mandatory review gates
 
+For every gate below, reviewers may investigate broadly but must adjudicate findings against the accepted stage scope, documented invariants, and supported operating model. Unsupported hardening is non-blocking; contract expansion requires parent/user judgment. Every must-fix finding must cite the violated requirement/invariant, a realistic supported-workflow reproducer, and the safeguard/test gap.
+
 ### After Stage 3
 
-Review:
+Apply the bounded-review rule above. Review:
 
 - transition and report atomicity;
 - verdict matrix and aggregate dominance;
@@ -471,7 +480,7 @@ Review:
 
 ### After Stage 5
 
-Review:
+Apply the bounded-review rule above. Review:
 
 - project trust handling;
 - guard bypass coverage;
@@ -481,7 +490,7 @@ Review:
 
 ### After Stage 6
 
-Review:
+Apply the bounded-review rule above. Review:
 
 - module dependency direction;
 - absence of circular imports;

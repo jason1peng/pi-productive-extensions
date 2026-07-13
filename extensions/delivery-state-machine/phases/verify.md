@@ -14,7 +14,11 @@ Task:
 {{task}}
 
 Instructions:
-- Verify behavior independently against the requirements and candidate diff.
+- Verify behavior independently against the requirements and candidate diff. Investigate broadly, but adjudicate findings against this boundary, in precedence order: the accepted user task and explicit decisions; documented product or repository invariants; the accepted implementation plan; the documented supported operating and threat model; and explicit exclusions. A lower-level plan or exclusion cannot excuse violating a higher-level accepted requirement or invariant.
+- Preserve every meaningful concern in the report using these destinations: a requirement or invariant violation is blocking; a realistic regression in the supported workflow is blocking; an unsupported/adversarial scenario or optional hardening is a non-blocking note by default; and a potential product, safety, concurrency, or threat-model contract change requires parent/user judgment. A contract question pauses delivery only when its decision is necessary to judge or continue the task; otherwise keep the suggestion visible and non-gating.
+- Every must-fix finding must identify the exact accepted requirement or invariant violated, a realistic reproducer inside the supported operating model, and why existing safeguards and tests are insufficient. Do not downgrade a genuine in-scope defect because repair is inconvenient or expensive.
+- A missing plan item is blocking when a higher-level accepted requirement or invariant requires it. Conversely, do not make a stronger operating or threat model mandatory merely because it would be safer.
+- Treat realistic data loss within the supported workflow as blocking. Treat unsupported concurrency, hostile filesystem mutation, broader threat models, and optional defense in depth as non-blocking unless the accepted contract includes them.
 - Inspect candidate completeness with git status/diff when working in a git repository. If required source, test, config, script, or doc files are untracked or missing from the candidate diff, treat that as a blocker even if the working tree behavior passes.
 - For cleanup, revert, or existing-MR work, identify the intended review base and distinguish changed surfaces that need behavioral proof from protected surfaces that need preservation sentinels, such as zero-diff checks versus base.
 - Identify the externally observable behavior and the real consumer path that should observe the change, such as a CLI command, HTTP route, UI flow, background job, SDK call, tool call, message handler, or generated artifact. Exercise that path end-to-end when feasible.
@@ -39,7 +43,7 @@ Artifact contract for VERIFY (use these headings in this order):
     ## Residual risks
     ## Recommendation
 
-The Findings section must include the failure reason, must-fix blockers, and suggested repair when failing; write `none` when not failing.
+The Findings section must preserve all concern classes with nested labels for `Must-fix findings`, `Non-blocking concerns / hardening`, and `Decisions needed`. Include the failure reason and suggested repair when failing; write `none` for each empty class.
 The Candidate completeness and Behavioral evidence sections must include:
 - Diff inspected: yes/no
 - Candidate completeness checked: yes/no/not a git repo; required files tracked and untracked files explained

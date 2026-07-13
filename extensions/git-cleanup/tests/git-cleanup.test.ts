@@ -206,7 +206,7 @@ await runTest("primary restoration preserves ignored content that main would ove
 	}
 });
 
-await runTest("fast-forward preflight preserves ignored content that remote main would overwrite", async () => {
+await runTest("dry-run and live preflight preserve a planning checkout when remote main would overwrite ignored content", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-ff-ignore-"));
 	const remote = path.join(root, "remote.git");
 	const primary = path.join(root, "primary");
@@ -221,6 +221,7 @@ await runTest("fast-forward preflight preserves ignored content that remote main
 		sh(primary, ["git", "add", ".gitignore"]);
 		sh(primary, ["git", "commit", "-m", "initial"]);
 		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		sh(primary, ["git", "switch", "-c", "plan/preserve-overwrite"]);
 		fs.writeFileSync(path.join(primary, "generated.txt"), "local sentinel\n", "utf8");
 
 		sh(root, ["git", "clone", remote, integrator]);
@@ -232,13 +233,18 @@ await runTest("fast-forward preflight preserves ignored content that remote main
 		sh(integrator, ["git", "commit", "-m", "track generated"]);
 		sh(integrator, ["git", "push", "origin", "main"]);
 
-		await assert.rejects(
-			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
-			/local untracked or ignored content would be overwritten/,
-		);
-		assert.equal(fs.readFileSync(path.join(primary, "generated.txt"), "utf8"), "local sentinel\n");
-		assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), sh(primary, ["git", "rev-parse", "refs/heads/main"]));
-		assert.notEqual(sh(primary, ["git", "rev-parse", "HEAD"]), sh(integrator, ["git", "rev-parse", "HEAD"]));
+		for (const dryRun of [true, false]) {
+			const localRefsBefore = sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"]);
+			const headBefore = sh(primary, ["git", "rev-parse", "HEAD"]);
+			await assert.rejects(
+				cleanupGitWorktrees(primary, { mainBranch: "main", dryRun, forceCurrent: false }, { exec: execGit }),
+				/local untracked or ignored content would be overwritten/,
+			);
+			assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/preserve-overwrite");
+			assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), headBefore);
+			assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"]), localRefsBefore);
+			assert.equal(fs.readFileSync(path.join(primary, "generated.txt"), "utf8"), "local sentinel\n");
+		}
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

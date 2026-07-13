@@ -277,16 +277,16 @@ export async function cleanupGitWorktrees(
 		if (!merged && !equivalent) {
 			throw new Error(`Primary planning branch ${displacedBranch} is not merged or patch-equivalent to current origin/${options.mainBranch}; it was preserved.`);
 		}
+		await assertNoUntrackedFastForwardOverwrite(primaryPath, localMainHead, target, runtime);
 		runtime.onProgress?.(`Switching primary worktree to ${options.mainBranch} without overwriting ignored files…`);
 		await runGit(primaryPath, ["switch", "--no-overwrite-ignore", options.mainBranch]);
 		mainWorktree = { ...primaryWorktree, branch: mainRef };
 		runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
-		if (!options.dryRun) await assertNoUntrackedFastForwardOverwrite(primaryPath, localMainHead, target, runtime);
 		await runGit(primaryPath, ["merge", "--ff-only", target], NETWORK_COMMAND_TIMEOUT_MS);
 		await runGit(primaryPath, ["branch", equivalent ? "-D" : "-d", displacedBranch!]);
 	} else {
 		runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
-		if (!options.dryRun) await assertNoUntrackedFastForwardOverwrite(mainWorktree.path, localMainHead, target, runtime);
+		await assertNoUntrackedFastForwardOverwrite(mainWorktree.path, localMainHead, target, runtime);
 		await runGit(mainWorktree.path, ["merge", "--ff-only", target], NETWORK_COMMAND_TIMEOUT_MS);
 	}
 	result.pulled = !options.dryRun;

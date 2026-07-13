@@ -687,7 +687,7 @@ function reportInstructionForPhase(phase: RunnablePhase, parallelCount = 1): str
 
 function worktreePolicyInstruction(state: DeliveryState): string | undefined {
 	if (state.phase !== "IMPLEMENT") return undefined;
-	return "Before launching implementation, ensure repository work happens in a dedicated git worktree created from latest main unless this delivery is continuing the same task or an amended requirement. If the current cwd/branch is not that worktree, create/switch to one or launch the child with that worktree cwd when supported. For non-git or non-repo tasks, record why this policy is not applicable.";
+	return "A planning-only MR on a plan/<slug> branch may be created and submitted directly from the stable primary checkout without a dedicated planning worktree. After that plan is approved or merged, implementation and delivery must use a dedicated git worktree created from the latest fetched main, never from the planning branch. Otherwise, before launching implementation, ensure repository work happens in a dedicated git worktree created from the latest fetched main unless this delivery is continuing the same task or an amended requirement. If the current cwd/branch is not that worktree, create/switch to one or launch the child with that worktree cwd when supported. For non-git or non-repo tasks, record why this policy is not applicable.";
 }
 
 function fallbackNextPrompt(state: DeliveryState): string {
@@ -2160,7 +2160,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptSnippet: "Start a controlled implement-verify-review-close-retro delivery workflow",
 		promptGuidelines: [
 			"Use delivery_start when the user asks to deliver a task through the state-machine workflow.",
-			"Before implementation, unless this is the same task or an amended requirement, ensure repo work happens in a dedicated git worktree created from latest main; for non-git/non-repo tasks, record why this is not applicable.",
+			"A planning-only MR on a plan/<slug> branch may be created and submitted directly from the stable primary checkout without a dedicated planning worktree. After plan approval or merge, implementation and delivery must use a dedicated git worktree created from the latest fetched main, never from the planning branch. Otherwise, before implementation, unless this is the same task or an amended requirement, use a dedicated worktree from the latest fetched main; for non-git/non-repo tasks, record why this is not applicable.",
 			"After delivery_start, use delivery_next before launching each subagent and delivery_report after each subagent returns.",
 			"Pass only details.next.childPrompt to subagents; parent-only launch/report instructions stay with the orchestrator.",
 			"When launching delivery subagents, pass details.next.acceptance/details.next.parallel[].acceptance when present; delivery owns artifact/verdict gates and disables pi-subagents acceptance.",

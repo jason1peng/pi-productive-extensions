@@ -65,7 +65,7 @@ Delivery run artifacts are stored under `~/.pi/delivery-run/projects/<project-id
 
 `IMPLEMENT -> VERIFY -> REVIEW -> CLOSE -> RETRO -> DONE`
 
-For new repository tasks, implementation should happen in a dedicated git worktree created from latest `main`, unless the delivery is continuing the same task or amending its requirement. Non-git/non-repo tasks should record why the worktree policy is not applicable. The delivery status line includes the current working branch when the current cwd is inside a git worktree.
+A planning-only MR on a `plan/<slug>` branch may be created and submitted directly from the stable primary checkout; a dedicated worktree solely for planning is not required. After the plan is approved or merged, implementation and delivery must use a dedicated git worktree created from the latest fetched `main`, never from the planning branch. The same implementation-worktree requirement applies to new repository tasks unless the delivery is continuing the same task or amending its requirement. Non-git/non-repo tasks should record why the worktree policy is not applicable. The delivery status line includes the current working branch when the current cwd is inside a git worktree.
 
 `VERIFY` or `REVIEW` failures that are still within the original task or accepted plan should be reported with `recommendedDecision: repair`; the machine then routes back to `IMPLEMENT` automatically with the pending issue attached. `IMPLEMENT` is the only writer phase: it can perform the original task, address verifier findings, or fix accepted review blockers.
 

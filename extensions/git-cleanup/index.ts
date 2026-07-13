@@ -46,14 +46,14 @@ async function git(
 	cwd: string,
 	args: string[],
 	runtime: CleanupRuntimeOptions,
-	options: { allowFailure?: boolean; timeout?: number } = {},
+	options: { allowFailure?: boolean; rawOutput?: boolean; timeout?: number } = {},
 ): Promise<string> {
 	const result = await runtime.exec(args, {
 		cwd,
 		signal: runtime.signal,
 		timeout: options.timeout ?? LOCAL_COMMAND_TIMEOUT_MS,
 	});
-	if (result.code === 0) return result.stdout.trim();
+	if (result.code === 0) return options.rawOutput ? result.stdout : result.stdout.trim();
 	if (options.allowFailure) return "";
 	const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command cancelled or timed out" : `exit code ${result.code}`);
 	throw new Error(`git ${args.join(" ")} failed: ${detail}`);
@@ -136,8 +136,8 @@ function nulPaths(output: string): string[] {
 
 async function untrackedAndIgnoredPaths(cwd: string, runtime: CleanupRuntimeOptions): Promise<string[]> {
 	const [untracked, ignored] = await Promise.all([
-		git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], runtime),
-		git(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], runtime),
+		git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], runtime, { rawOutput: true }),
+		git(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], runtime, { rawOutput: true }),
 	]);
 	return [...new Set([...nulPaths(untracked), ...nulPaths(ignored)])];
 }
@@ -147,7 +147,7 @@ function pathsConflict(left: string, right: string): boolean {
 }
 
 async function assertNoUntrackedOverwrite(cwd: string, from: string, to: string, runtime: CleanupRuntimeOptions): Promise<void> {
-	const changed = nulPaths(await git(cwd, ["diff", "--name-only", "-z", from, to], runtime));
+	const changed = nulPaths(await git(cwd, ["diff", "--name-only", "-z", from, to], runtime, { rawOutput: true }));
 	const local = await untrackedAndIgnoredPaths(cwd, runtime);
 	const conflicts = local.filter((localPath) => changed.some((changedPath) => pathsConflict(localPath, changedPath)));
 	if (conflicts.length > 0) {

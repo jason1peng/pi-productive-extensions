@@ -303,6 +303,62 @@ await runTest("dry-run and live preflight preserve a planning checkout when swit
 	}
 });
 
+await runTest("preflight preserves a leading-whitespace ignored filename without trimming NUL-delimited paths", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-leading-space-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const integrator = path.join(root, "integrator");
+	const sentinelName = " generated.txt";
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, ".gitignore"), "\\ generated.txt\n", "utf8");
+		sh(primary, ["git", "add", ".gitignore"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		const initial = sh(primary, ["git", "rev-parse", "HEAD"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+
+		fs.writeFileSync(path.join(primary, "\tpadding.txt"), "padding\n", "utf8");
+		fs.writeFileSync(path.join(primary, sentinelName), "tracked on main\n", "utf8");
+		sh(primary, ["git", "add", "\tpadding.txt", "-f", sentinelName]);
+		sh(primary, ["git", "commit", "-m", "track whitespace paths on main"]);
+		sh(primary, ["git", "push", "origin", "main"]);
+		sh(primary, ["git", "switch", "-c", "plan/leading-space", initial]);
+		fs.writeFileSync(path.join(primary, "plan.md"), "the plan\n", "utf8");
+		sh(primary, ["git", "add", "plan.md"]);
+		sh(primary, ["git", "commit", "-m", "planning change"]);
+		fs.writeFileSync(path.join(primary, sentinelName), "local sentinel\n", "utf8");
+		assert.doesNotThrow(() => sh(primary, ["git", "check-ignore", sentinelName]));
+
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "plan.md"), "the plan\n", "utf8");
+		sh(integrator, ["git", "add", "plan.md"]);
+		sh(integrator, ["git", "commit", "-m", "integrate planning change"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+
+		for (const dryRun of [true, false]) {
+			const refsBefore = sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"]);
+			const headBefore = sh(primary, ["git", "rev-parse", "HEAD"]);
+			await assert.rejects(
+				cleanupGitWorktrees(primary, { mainBranch: "main", dryRun, forceCurrent: false }, { exec: execGit }),
+				/local untracked or ignored content would be overwritten/,
+			);
+			assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/leading-space");
+			assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), headBefore);
+			assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"]), refsBefore);
+			assert.equal(fs.readFileSync(path.join(primary, sentinelName), "utf8"), "local sentinel\n");
+		}
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("cleanup restores a clean primary checkout from a merged planning branch and ends on latest main", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-primary-"));
 	const remote = path.join(root, "remote.git");

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { ExecResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -108,18 +109,48 @@ function localBranchName(ref: string | undefined): string | undefined {
 	return ref?.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : undefined;
 }
 
+function isPlanningBranch(branch: string | undefined): boolean {
+	return branch?.startsWith("plan/") === true && branch.length > "plan/".length;
+}
+
 interface WorktreeDirtyState {
 	hasTrackedChanges: boolean;
-	hasUntrackedOnly: boolean;
 }
 
 async function dirtyState(worktreePath: string, runtime: CleanupRuntimeOptions): Promise<WorktreeDirtyState> {
-	const status = await git(worktreePath, ["status", "--porcelain"], runtime, { allowFailure: true });
+	const status = await git(worktreePath, ["status", "--porcelain"], runtime);
 	const lines = status.split(/\r?\n/).filter(Boolean);
 	return {
 		hasTrackedChanges: lines.some((line) => !line.startsWith("??")),
-		hasUntrackedOnly: lines.length > 0 && lines.every((line) => line.startsWith("??")),
 	};
+}
+
+function nulPaths(output: string): string[] {
+	return output.split("\0").filter(Boolean);
+}
+
+async function untrackedAndIgnoredPaths(cwd: string, runtime: CleanupRuntimeOptions): Promise<string[]> {
+	const [untracked, ignored] = await Promise.all([
+		git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], runtime),
+		git(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], runtime),
+	]);
+	return [...new Set([...nulPaths(untracked), ...nulPaths(ignored)])];
+}
+
+function pathsConflict(left: string, right: string): boolean {
+	return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+async function assertNoUntrackedFastForwardOverwrite(cwd: string, from: string, to: string, runtime: CleanupRuntimeOptions): Promise<void> {
+	const changed = nulPaths(await git(cwd, ["diff", "--name-only", "-z", from, to], runtime));
+	const local = await untrackedAndIgnoredPaths(cwd, runtime);
+	const conflicts = local.filter((localPath) => changed.some((changedPath) => pathsConflict(localPath, changedPath)));
+	if (conflicts.length > 0) {
+		throw new Error(
+			`Cannot fast-forward this worktree: local untracked or ignored content would be overwritten (${conflicts.slice(0, 3).join(", ")}` +
+			`${conflicts.length > 3 ? ", …" : ""}). The content was preserved; relocate it and rerun /cleanup.`,
+		);
+	}
 }
 
 async function isAncestor(cwd: string, maybeAncestor: string | undefined, descendant: string, runtime: CleanupRuntimeOptions): Promise<boolean> {
@@ -134,7 +165,12 @@ async function isAncestor(cwd: string, maybeAncestor: string | undefined, descen
 
 async function hasNoUniquePatch(cwd: string, branchHead: string | undefined, target: string, runtime: CleanupRuntimeOptions): Promise<boolean> {
 	if (!branchHead) return false;
-	const cherry = await git(cwd, ["cherry", target, branchHead], runtime, { allowFailure: true });
+	// `git cherry` does not represent merge commits, so an all-negative result
+	// cannot prove that a merge's conflict resolution is present in the target.
+	// Only use patch equivalence for a merge-free candidate range.
+	const merges = await git(cwd, ["rev-list", "--min-parents=2", `${target}..${branchHead}`], runtime);
+	if (merges) return false;
+	const cherry = await git(cwd, ["cherry", target, branchHead], runtime);
 	if (!cherry) return false;
 	return cherry.split(/\r?\n/).filter(Boolean).every((line) => line.startsWith("-"));
 }
@@ -146,12 +182,26 @@ export async function cleanupGitWorktrees(
 ): Promise<CleanupResult> {
 	const currentRoot = await git(cwd, ["rev-parse", "--show-toplevel"], runtime);
 	const worktrees = parseWorktreeList(await git(currentRoot, ["worktree", "list", "--porcelain"], runtime));
+	const primaryWorktree = worktrees[0];
+	if (!primaryWorktree) throw new Error("No worktrees found for this repository.");
 	const mainRef = `refs/heads/${options.mainBranch}`;
-	const mainWorktree = worktrees.find((worktree) => worktree.branch === mainRef);
-	if (!mainWorktree) throw new Error(`No ${options.mainBranch} worktree found for this repository.`);
+	let mainWorktree = worktrees.find((worktree) => worktree.branch === mainRef);
+	const invokedFromPrimary = path.resolve(currentRoot) === path.resolve(primaryWorktree.path);
+	if (!invokedFromPrimary) {
+		throw new Error(
+			`/cleanup must be run from the primary checkout at ${primaryWorktree.path}; ` +
+			`the current checkout at ${currentRoot} is a linked worktree. Open the primary checkout and rerun /cleanup there.`,
+		);
+	}
+	if (mainWorktree && path.resolve(mainWorktree.path) !== path.resolve(primaryWorktree.path)) {
+		throw new Error(
+			`Cannot restore the primary checkout to ${options.mainBranch} because that branch is checked out in the linked worktree at ${mainWorktree.path}. ` +
+			`Switch or remove that linked worktree, then rerun /cleanup from the primary checkout at ${primaryWorktree.path}.`,
+		);
+	}
 
 	const result: CleanupResult = {
-		mainWorktree: mainWorktree.path,
+		mainWorktree: mainWorktree?.path ?? primaryWorktree.path,
 		mainBranch: options.mainBranch,
 		pulled: false,
 		removed: [],
@@ -163,39 +213,231 @@ export async function cleanupGitWorktrees(
 		result.commands.push(commandText(runCwd, args));
 		if (!options.dryRun) await git(runCwd, args, runtime, { timeout });
 	};
+	const deleteBranchAtExpectedHead = async (runCwd: string, branch: string, expectedHead: string | undefined) => {
+		if (!expectedHead) throw new Error(`Cannot safely delete branch ${branch}: its expected HEAD is unavailable. The branch was preserved.`);
+		const args = ["update-ref", "-d", `refs/heads/${branch}`, expectedHead];
+		result.commands.push(commandText(runCwd, args));
+		if (options.dryRun) return;
+		try {
+			await git(runCwd, args, runtime);
+		} catch (error) {
+			throw new Error(
+				`Cannot safely delete branch ${branch}: it moved from expected HEAD ${expectedHead}. ` +
+				`Cleanup stopped and the branch was preserved. ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
 
-	runtime.onProgress?.(`Fetching origin/${options.mainBranch}…`);
-	await runGit(mainWorktree.path, ["fetch", "origin", options.mainBranch, "--prune"], NETWORK_COMMAND_TIMEOUT_MS);
-	runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
-	await runGit(mainWorktree.path, ["pull", "--ff-only", "origin", options.mainBranch], NETWORK_COMMAND_TIMEOUT_MS);
-	result.pulled = !options.dryRun;
-
-	const target = `origin/${options.mainBranch}`;
-	for (const worktree of worktrees) {
-		if (path.resolve(worktree.path) === path.resolve(mainWorktree.path)) continue;
-		const branch = localBranchName(worktree.branch);
-		if (path.resolve(worktree.path) === path.resolve(currentRoot) && !options.forceCurrent) {
-			result.skipped.push({ path: worktree.path, branch, reason: "current worktree" });
-			continue;
-		}
-		const dirty = await dirtyState(worktree.path, runtime);
-		if (dirty.hasTrackedChanges) {
-			result.skipped.push({ path: worktree.path, branch, reason: "tracked changes" });
-			continue;
-		}
-		const ancestorMerged = await isAncestor(mainWorktree.path, worktree.head, target, runtime);
-		const patchEquivalent = !ancestorMerged && await hasNoUniquePatch(mainWorktree.path, worktree.head, target, runtime);
-		if (!ancestorMerged && !patchEquivalent) {
-			result.skipped.push({ path: worktree.path, branch, reason: `not merged or patch-equivalent to ${target}` });
-			continue;
-		}
-		runtime.onProgress?.(`Removing ${worktree.path}…`);
-		await runGit(mainWorktree.path, ["worktree", "remove", ...(dirty.hasUntrackedOnly ? ["--force"] : []), worktree.path]);
-		if (branch) await runGit(mainWorktree.path, ["branch", patchEquivalent ? "-D" : "-d", branch]);
-		result.removed.push({ path: worktree.path, branch });
+	const primaryPath = primaryWorktree.path;
+	const displacedBranch = !mainWorktree ? localBranchName(primaryWorktree.branch) : undefined;
+	if (!mainWorktree && !isPlanningBranch(displacedBranch)) {
+		throw new Error(
+			`Primary checkout is on ${displacedBranch ?? "a detached HEAD"}, not an eligible planning branch. ` +
+			`Automatic restoration and deletion is limited to branches named plan/<slug>. ` +
+			`Switch the primary checkout back to ${options.mainBranch} manually (preserving this branch), then rerun /cleanup.`,
+		);
 	}
-	await runGit(mainWorktree.path, ["worktree", "prune"]);
-	return result;
+	// Read every status before fetching, switching, merging, or removing anything.
+	// A failed status is not evidence of a clean worktree and must leave the
+	// repository's worktrees and branches untouched.
+	const dirtyByPath = new Map<string, WorktreeDirtyState>();
+	for (const worktree of worktrees) {
+		dirtyByPath.set(worktree.path, await dirtyState(worktree.path, runtime));
+	}
+	const primaryDirty = dirtyByPath.get(primaryPath)!;
+	if (primaryDirty.hasTrackedChanges) {
+		throw new Error(`Primary worktree has tracked local changes; cannot safely update or switch it to ${options.mainBranch}. Commit or stash them, then rerun /cleanup.`);
+	}
+	const localMainHead = await git(primaryPath, ["rev-parse", "--verify", mainRef], runtime, { allowFailure: true });
+	if (!localMainHead) {
+		throw new Error(`Local branch ${options.mainBranch} does not exist. Create it to track origin/${options.mainBranch}, then rerun /cleanup.`);
+	}
+
+	const privateTargetRef = options.dryRun ? undefined : `refs/pi-cleanup/targets/${randomUUID()}`;
+	let privateTargetOid: string | undefined;
+	let operationError: unknown;
+	try {
+		let target: string;
+		if (options.dryRun) {
+			runtime.onProgress?.(`Reading current origin/${options.mainBranch} without updating local refs…`);
+			const args = ["ls-remote", "--exit-code", "origin", `refs/heads/${options.mainBranch}`];
+			result.commands.push(commandText(primaryPath, args));
+			const output = await git(primaryPath, args, runtime, { timeout: NETWORK_COMMAND_TIMEOUT_MS });
+			target = output.split(/\s+/)[0] ?? "";
+			if (!/^[0-9a-f]{40,64}$/i.test(target)) {
+				throw new Error(`origin/${options.mainBranch} did not resolve to a commit. Check the remote and branch name, then rerun /cleanup.`);
+			}
+			// Download any objects needed for ancestry/cherry checks, but do not update
+			// FETCH_HEAD or a local/remote-tracking ref.
+			const fetchArgs = ["fetch", "--no-write-fetch-head", "origin", target];
+			result.commands.push(commandText(primaryPath, fetchArgs));
+			await git(primaryPath, fetchArgs, runtime, { timeout: NETWORK_COMMAND_TIMEOUT_MS });
+		} else {
+			runtime.onProgress?.(`Fetching origin/${options.mainBranch}…`);
+			// Fetch directly into an unguessable operation-owned ref. Resolving the
+			// ordinary origin/<branch> ref after fetch would leave a TOCTOU window in
+			// which a concurrent fetch could substitute a different commit.
+			await runGit(
+				primaryPath,
+				["fetch", "--no-write-fetch-head", "origin", `refs/heads/${options.mainBranch}:${privateTargetRef}`],
+				NETWORK_COMMAND_TIMEOUT_MS,
+			);
+			target = await git(primaryPath, ["rev-parse", "--verify", `${privateTargetRef}^{commit}`], runtime);
+			if (!/^[0-9a-f]{40,64}$/i.test(target)) {
+				throw new Error(`Fetched origin/${options.mainBranch} did not resolve to a commit. Cleanup stopped before changing worktrees or branches.`);
+			}
+			privateTargetOid = target;
+		}
+
+		if (!await isAncestor(primaryPath, localMainHead, target, runtime)) {
+			throw new Error(
+				`Local ${options.mainBranch} cannot be fast-forwarded to current origin/${options.mainBranch}. ` +
+				`Reconcile or preserve the local commits manually, then rerun /cleanup; no worktrees or branches were removed.`,
+			);
+		}
+		if (!mainWorktree) {
+			const merged = await isAncestor(primaryPath, primaryWorktree.head, target, runtime);
+			const equivalent = !merged && await hasNoUniquePatch(primaryPath, primaryWorktree.head, target, runtime);
+			if (!merged && !equivalent) {
+				throw new Error(`Primary planning branch ${displacedBranch} is not merged or patch-equivalent to current origin/${options.mainBranch}; it was preserved.`);
+			}
+			runtime.onProgress?.(`Switching primary worktree to ${options.mainBranch} without overwriting ignored files…`);
+			await runGit(primaryPath, ["switch", "--no-overwrite-ignore", options.mainBranch]);
+			mainWorktree = { ...primaryWorktree, branch: mainRef };
+			runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
+			if (!options.dryRun) await assertNoUntrackedFastForwardOverwrite(primaryPath, localMainHead, target, runtime);
+			await runGit(primaryPath, ["merge", "--ff-only", target], NETWORK_COMMAND_TIMEOUT_MS);
+			await deleteBranchAtExpectedHead(primaryPath, displacedBranch!, primaryWorktree.head);
+		} else {
+			runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
+			if (!options.dryRun) await assertNoUntrackedFastForwardOverwrite(mainWorktree.path, localMainHead, target, runtime);
+			await runGit(mainWorktree.path, ["merge", "--ff-only", target], NETWORK_COMMAND_TIMEOUT_MS);
+		}
+		result.pulled = !options.dryRun;
+
+		for (const worktree of worktrees) {
+			if (path.resolve(worktree.path) === path.resolve(mainWorktree!.path)) continue;
+			const branch = localBranchName(worktree.branch);
+			if (path.resolve(worktree.path) === path.resolve(currentRoot) && !options.forceCurrent) {
+				result.skipped.push({ path: worktree.path, branch, reason: "current worktree" });
+				continue;
+			}
+			const dirty = dirtyByPath.get(worktree.path)!;
+			if (dirty.hasTrackedChanges) {
+				result.skipped.push({ path: worktree.path, branch, reason: "tracked changes" });
+				continue;
+			}
+			const ancestorMerged = await isAncestor(mainWorktree!.path, worktree.head, target, runtime);
+			const patchEquivalent = !ancestorMerged && await hasNoUniquePatch(mainWorktree!.path, worktree.head, target, runtime);
+			if (!ancestorMerged && !patchEquivalent) {
+				result.skipped.push({ path: worktree.path, branch, reason: `not merged or patch-equivalent to ${target}` });
+				continue;
+			}
+			runtime.onProgress?.(`Quarantining and inspecting ${worktree.path}…`);
+			// Runtime artifacts are disposable. Everything else gets a second
+			// inspection only after an atomic move to an unguessable sibling path.
+			// New writers opening the published old path cannot reach the directory
+			// Git will remove.
+			await runGit(worktree.path, ["clean", "-d", "-f", "-x", "--", ".pi-subagents/"]);
+			// This deliberate scan is before the quarantine boundary. Tests inject
+			// content immediately after it to prove the final scan catches the arrival.
+			await git(worktree.path, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], runtime);
+			const quarantinePath = path.join(path.dirname(worktree.path), `.pi-cleanup-quarantine-${randomUUID()}`);
+			if (options.dryRun) {
+				await runGit(mainWorktree!.path, ["worktree", "move", worktree.path, quarantinePath]);
+				await runGit(mainWorktree!.path, ["worktree", "remove", quarantinePath]);
+				if (branch) await deleteBranchAtExpectedHead(mainWorktree!.path, branch, worktree.head);
+				result.removed.push({ path: worktree.path, branch });
+				continue;
+			}
+			try {
+				await runGit(mainWorktree!.path, ["worktree", "move", worktree.path, quarantinePath]);
+			} catch (error) {
+				result.skipped.push({ path: worktree.path, branch, reason: `could not enter removal quarantine; preserved (${error instanceof Error ? error.message : String(error)})` });
+				continue;
+			}
+			const finalDirty = await dirtyState(quarantinePath, runtime);
+			const finalUntracked = await untrackedAndIgnoredPaths(quarantinePath, runtime);
+			if (finalDirty.hasTrackedChanges || finalUntracked.length > 0) {
+				try {
+					await runGit(mainWorktree!.path, ["worktree", "move", quarantinePath, worktree.path]);
+				} catch (restoreError) {
+					throw new Error(
+						`Content appeared while removing ${worktree.path} and was preserved at ${quarantinePath}, but the worktree could not be restored to its original path. ` +
+						`The branch was preserved. Move it back manually before retrying. ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+					);
+				}
+				const reason = finalDirty.hasTrackedChanges
+					? "content changed during removal quarantine; restored and preserved"
+					: `untracked or ignored content appeared during removal quarantine; restored and preserved (${finalUntracked.slice(0, 3).join(", ")})`;
+				result.skipped.push({ path: worktree.path, branch, reason });
+				continue;
+			}
+			try {
+				await runGit(mainWorktree!.path, ["worktree", "remove", quarantinePath]);
+			} catch (error) {
+				// Normal removal still protects tracked and ordinary-untracked arrivals.
+				// Keep the registered quarantine and branch when it refuses removal.
+				result.skipped.push({ path: quarantinePath, branch, reason: `final removal refused; worktree and branch preserved (${error instanceof Error ? error.message : String(error)})` });
+				continue;
+			}
+			if (branch) await deleteBranchAtExpectedHead(mainWorktree!.path, branch, worktree.head);
+			result.removed.push({ path: worktree.path, branch });
+		}
+		await runGit(mainWorktree!.path, ["worktree", "prune"]);
+		return result;
+	} catch (error) {
+		operationError = error;
+	} finally {
+		if (privateTargetRef) {
+			try {
+				// Ref cleanup must still run when the caller's signal caused the main
+				// operation to abort. If fetch failed before the OID was pinned, only a
+				// show-ref exit code of 1 proves absence; inspection errors fail closed.
+				const cleanupRuntime = { ...runtime, signal: undefined };
+				let expectedHead = privateTargetOid;
+				if (!expectedHead) {
+					const inspectArgs = ["show-ref", "--verify", "--hash", privateTargetRef];
+					result.commands.push(commandText(primaryPath, inspectArgs));
+					const inspection = await cleanupRuntime.exec(inspectArgs, {
+						cwd: primaryPath,
+						timeout: LOCAL_COMMAND_TIMEOUT_MS,
+					});
+					if (inspection.code === 0) {
+						expectedHead = inspection.stdout.trim();
+						if (!/^[0-9a-f]{40,64}$/i.test(expectedHead)) {
+							throw new Error(`private-ref inspection returned an invalid OID: ${expectedHead || "empty output"}`);
+						}
+					} else if (inspection.code !== 1) {
+						const detail = inspection.stderr.trim() || inspection.stdout.trim() || (inspection.killed ? "command cancelled or timed out" : `exit code ${inspection.code}`);
+						throw new Error(`git ${inspectArgs.join(" ")} failed: ${detail}`);
+					}
+				}
+				if (expectedHead) {
+					const deleteArgs = ["update-ref", "-d", privateTargetRef, expectedHead];
+					result.commands.push(commandText(primaryPath, deleteArgs));
+					await git(primaryPath, deleteArgs, cleanupRuntime);
+				}
+			} catch (cleanupError) {
+				const operationPrivateRefError = new Error(
+					`Failed to verify removal of operation-private ref ${privateTargetRef}; it may still exist in the repository. ` +
+					`Inspect it with git show-ref --verify ${privateTargetRef}, then remove it after verification with ` +
+					`git update-ref -d ${privateTargetRef} <current-oid>. Cleanup failure: ` +
+					`${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+					{ cause: cleanupError },
+				);
+				if (operationError !== undefined) {
+					const mainError = operationError instanceof Error ? operationError : new Error(String(operationError));
+					throw new AggregateError(
+						[mainError, operationPrivateRefError],
+						`Git cleanup operation failed: ${mainError.message}. Additionally, ${operationPrivateRefError.message}`,
+					);
+				}
+				throw operationPrivateRefError;
+			}
+		}
+	}
+	throw operationError;
 }
 
 function formatCleanupResult(result: CleanupResult, dryRun: boolean): string {

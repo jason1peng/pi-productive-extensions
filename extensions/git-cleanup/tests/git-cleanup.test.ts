@@ -124,6 +124,441 @@ await runTest("cleanup removes merged worktrees with untracked-only artifacts an
 		const branches = sh(main, ["git", "branch"]);
 		assert.doesNotMatch(branches, /merged-branch/);
 		assert.doesNotMatch(branches, /untracked-branch/);
+		assert.equal(result.commands.some((command) => command.includes("'clean' '-d' '-f' '-x' '--' '.pi-subagents/'")), true);
+		assert.equal(result.commands.some((command) => command.includes("'worktree' 'remove' '--force'")), false);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup deletes only runtime artifacts and lets normal removal block unrecognized files", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-unrecognized-"));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "main");
+	const candidate = path.join(root, "candidate");
+	const calls: string[][] = [];
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		sh(main, ["git", "add", "README.md"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+		sh(main, ["git", "worktree", "add", "-b", "candidate", candidate, "main"]);
+		fs.mkdirSync(path.join(candidate, ".pi-subagents", "runtime"), { recursive: true });
+		fs.writeFileSync(path.join(candidate, ".pi-subagents", "runtime", "state.log"), "runtime\n", "utf8");
+		fs.writeFileSync(path.join(candidate, "keep-me.txt"), "unrecognized\n", "utf8");
+
+		const recordingExec: GitExecutor = async (args, options) => {
+			calls.push(args);
+			return execGit(args, options);
+		};
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: recordingExec });
+		assert.equal(result.skipped.some((item) => item.branch === "candidate" && item.reason.includes("restored and preserved")), true);
+		assert.equal(fs.existsSync(path.join(candidate, ".pi-subagents")), false);
+		assert.equal(fs.readFileSync(path.join(candidate, "keep-me.txt"), "utf8"), "unrecognized\n");
+		assert.equal(fs.existsSync(candidate), true);
+		assert.match(sh(main, ["git", "branch"]), /candidate/);
+		assert.equal(calls.some((args) => args[0] === "clean" && args.at(-1) === ".pi-subagents/"), true);
+		assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove" && args.includes("--force")), false);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+async function assertLateWorktreeSentinelIsPreserved(kind: "ordinary untracked" | "ignored") {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), `git-cleanup-late-${kind === "ignored" ? "ignored" : "untracked"}-`));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "main");
+	const candidate = path.join(root, "candidate");
+	const sentinelName = kind === "ignored" ? "late-ignored.sentinel" : "late-untracked.sentinel";
+	const sentinel = path.join(candidate, sentinelName);
+	const sentinelContents = `${kind} content\n`;
+	let injectedAfterIgnoredScan = false;
+	let quarantineMoveCompleted = false;
+	let normalRemoveAttempted = false;
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		fs.writeFileSync(path.join(main, ".gitignore"), "late-ignored.sentinel\n", "utf8");
+		sh(main, ["git", "add", "README.md", ".gitignore"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+		sh(main, ["git", "worktree", "add", "-b", "candidate", candidate, "main"]);
+		const runtimeArtifact = path.join(candidate, ".pi-subagents", "runtime", "state.json");
+		fs.mkdirSync(path.dirname(runtimeArtifact), { recursive: true });
+		fs.writeFileSync(runtimeArtifact, "runtime\n", "utf8");
+
+		const lateWriteExec: GitExecutor = async (args, options) => {
+			const result = await execGit(args, options);
+			if (
+				!injectedAfterIgnoredScan
+				&& result.code === 0
+				&& args[0] === "ls-files"
+				&& args.includes("--ignored")
+				&& args.includes("-z")
+				&& fs.realpathSync(options.cwd) === fs.realpathSync(candidate)
+			) {
+				assert.equal(fs.existsSync(path.join(candidate, ".pi-subagents")), false, "runtime clean must finish before the sentinel hook");
+				fs.writeFileSync(sentinel, sentinelContents, "utf8");
+				injectedAfterIgnoredScan = true;
+			}
+			if (args[0] === "worktree" && args[1] === "move" && result.code === 0 && args[3]?.includes(".pi-cleanup-quarantine-")) quarantineMoveCompleted = true;
+			if (args[0] === "worktree" && args[1] === "remove") normalRemoveAttempted = true;
+			return result;
+		};
+
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: lateWriteExec });
+		assert.equal(injectedAfterIgnoredScan, true);
+		assert.equal(quarantineMoveCompleted, true, JSON.stringify(result.skipped));
+		assert.equal(normalRemoveAttempted, false);
+		assert.equal(result.removed.some((item) => item.branch === "candidate"), false);
+		assert.equal(result.skipped.some((item) => item.branch === "candidate" && item.reason.includes("restored and preserved")), true);
+		assert.equal(fs.readFileSync(sentinel, "utf8"), sentinelContents);
+		assert.equal(fs.existsSync(candidate), true);
+		const canonicalCandidate = fs.realpathSync(candidate);
+		assert.match(sh(main, ["git", "worktree", "list", "--porcelain"]), new RegExp(`worktree ${canonicalCandidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		assert.equal(sh(main, ["git", "show-ref", "--verify", "--hash", "refs/heads/candidate"]).length > 0, true);
+		if (kind === "ignored") {
+			assert.equal(sh(candidate, ["git", "check-ignore", sentinelName]), sentinelName);
+		} else {
+			assert.match(sh(candidate, ["git", "status", "--porcelain"]), /^\?\? late-untracked\.sentinel$/m);
+		}
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+}
+
+await runTest("quarantine preserves an ordinary untracked file injected after the prior ignored scan", async () => {
+	await assertLateWorktreeSentinelIsPreserved("ordinary untracked");
+});
+
+await runTest("quarantine preserves an ignored file injected after the prior ignored scan", async () => {
+	await assertLateWorktreeSentinelIsPreserved("ignored");
+});
+
+
+await runTest("primary restoration preserves ignored content that main would overwrite", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-primary-ignore-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const integrator = path.join(root, "integrator");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, ".gitignore"), "generated.txt\n", "utf8");
+		fs.writeFileSync(path.join(primary, "generated.txt"), "tracked on main\n", "utf8");
+		sh(primary, ["git", "add", ".gitignore", "-f", "generated.txt"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		sh(primary, ["git", "switch", "-c", "plan/ignored-sentinel"]);
+		sh(primary, ["git", "rm", "generated.txt"]);
+		sh(primary, ["git", "commit", "-m", "merged planning deletion"]);
+		sh(primary, ["git", "push", "origin", "plan/ignored-sentinel:main"]);
+		fs.writeFileSync(path.join(primary, "generated.txt"), "local sentinel\n", "utf8");
+
+		await assert.rejects(
+			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
+			/overwritten by checkout|would be overwritten/i,
+		);
+		assert.equal(fs.readFileSync(path.join(primary, "generated.txt"), "utf8"), "local sentinel\n");
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/ignored-sentinel");
+		assert.match(sh(primary, ["git", "branch"]), /plan\/ignored-sentinel/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("fast-forward preflight preserves ignored content that remote main would overwrite", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-ff-ignore-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const integrator = path.join(root, "integrator");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, ".gitignore"), "generated.txt\n", "utf8");
+		sh(primary, ["git", "add", ".gitignore"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		fs.writeFileSync(path.join(primary, "generated.txt"), "local sentinel\n", "utf8");
+
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "generated.txt"), "remote tracked\n", "utf8");
+		sh(integrator, ["git", "add", "-f", "generated.txt"]);
+		sh(integrator, ["git", "commit", "-m", "track generated"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+
+		await assert.rejects(
+			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
+			/local untracked or ignored content would be overwritten/,
+		);
+		assert.equal(fs.readFileSync(path.join(primary, "generated.txt"), "utf8"), "local sentinel\n");
+		assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), sh(primary, ["git", "rev-parse", "refs/heads/main"]));
+		assert.notEqual(sh(primary, ["git", "rev-parse", "HEAD"]), sh(integrator, ["git", "rev-parse", "HEAD"]));
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup restores a clean primary checkout from a merged planning branch and ends on latest main", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-primary-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "session-repo");
+	const mergedWorktree = path.join(root, "merged-worktree");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
+		sh(primary, ["git", "add", "README.md"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+
+		sh(primary, ["git", "switch", "-c", "plan/planning-mr"]);
+		fs.writeFileSync(path.join(primary, "plan.md"), "the plan\n", "utf8");
+		sh(primary, ["git", "add", "plan.md"]);
+		sh(primary, ["git", "commit", "-m", "planning MR"]);
+		sh(primary, ["git", "push", "origin", "plan/planning-mr"]);
+
+		const integrator = path.join(root, "integrator");
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "plan.md"), "the plan\n", "utf8");
+		sh(integrator, ["git", "add", "plan.md"]);
+		sh(integrator, ["git", "commit", "-m", "squashed planning MR"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+
+		sh(primary, ["git", "worktree", "add", "-b", "already-merged", mergedWorktree, "main"]);
+		const runtimeArtifact = path.join(primary, ".pi-subagents", "runtime", "active.json");
+		fs.mkdirSync(path.dirname(runtimeArtifact), { recursive: true });
+		fs.writeFileSync(runtimeArtifact, "primary runtime artifact\n", "utf8");
+		const result = await cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit });
+
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "main");
+		assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), sh(primary, ["git", "rev-parse", "origin/main"]));
+		assert.doesNotMatch(sh(primary, ["git", "branch"]), /plan\/planning-mr|already-merged/);
+		assert.equal(fs.existsSync(mergedWorktree), false);
+		assert.equal(fs.realpathSync(result.mainWorktree!), fs.realpathSync(primary));
+		assert.equal(fs.readFileSync(runtimeArtifact, "utf8"), "primary runtime artifact\n");
+		assert.equal(fs.existsSync(primary), true);
+		assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname)", "refs/pi-cleanup/targets"]), "");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup requires the primary checkout and reports main checked out in a linked worktree", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-linked-main-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const mainWorktree = path.join(root, "linked-main");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
+		sh(primary, ["git", "add", "README.md"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		sh(primary, ["git", "switch", "-c", "plan/planning-mr"]);
+		sh(primary, ["git", "worktree", "add", mainWorktree, "main"]);
+
+		await assert.rejects(
+			cleanupGitWorktrees(mainWorktree, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
+			(error: Error) => error.message.includes("must be run from the primary checkout") && error.message.includes(primary),
+		);
+		await assert.rejects(
+			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
+			(error: Error) => error.message.includes("main") && error.message.includes("checked out in the linked worktree") && error.message.includes(mainWorktree),
+		);
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/planning-mr");
+		assert.equal(sh(mainWorktree, ["git", "branch", "--show-current"]), "main");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup refuses to displace a dirty primary planning checkout", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-primary-dirty-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "session-repo");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
+		sh(primary, ["git", "add", "README.md"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		sh(primary, ["git", "switch", "-c", "plan/planning-mr"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "tracked local change\n", "utf8");
+
+		await assert.rejects(
+			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
+			/has tracked local changes/,
+		);
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/planning-mr");
+		assert.equal(fs.readFileSync(path.join(primary, "README.md"), "utf8"), "tracked local change\n");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup preserves a merged non-planning branch in the primary checkout", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-primary-policy-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
+		sh(primary, ["git", "add", "README.md"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		sh(primary, ["git", "switch", "-c", "release/maintenance"]);
+
+		await assert.rejects(
+			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
+			(error: Error) => error.message.includes("plan/<slug>") && error.message.includes("preserving this branch"),
+		);
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "release/maintenance");
+		assert.match(sh(primary, ["git", "branch"]), /release\/maintenance/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup preflights a diverged local main before switching the primary planning branch", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-diverged-main-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const integrator = path.join(root, "integrator");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
+		sh(primary, ["git", "add", "README.md"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "remote.txt"), "remote\n", "utf8");
+		sh(integrator, ["git", "add", "remote.txt"]);
+		sh(integrator, ["git", "commit", "-m", "remote main"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+
+		fs.writeFileSync(path.join(primary, "local-main.txt"), "local\n", "utf8");
+		sh(primary, ["git", "add", "local-main.txt"]);
+		sh(primary, ["git", "commit", "-m", "local main"]);
+		sh(primary, ["git", "switch", "-c", "plan/diverged-main"]);
+
+		await assert.rejects(
+			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit }),
+			(error: Error) => error.message.includes("cannot be fast-forwarded") && error.message.includes("no worktrees or branches were removed"),
+		);
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "plan/diverged-main");
+		assert.match(sh(primary, ["git", "branch"]), /plan\/diverged-main/);
+		assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname)", "refs/pi-cleanup/targets"]), "");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("dry-run reads current remote main without changing refs and matches live cleanup", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-dry-remote-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const feature = path.join(root, "feature");
+	const integrator = path.join(root, "integrator");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
+		sh(primary, ["git", "add", "README.md"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		sh(primary, ["git", "fetch", "origin", "main"]);
+		const fetchHeadBefore = fs.readFileSync(path.join(primary, ".git", "FETCH_HEAD"), "utf8");
+		sh(primary, ["git", "worktree", "add", "-b", "feature", feature, "main"]);
+		fs.writeFileSync(path.join(feature, "feature.txt"), "feature\n", "utf8");
+		sh(feature, ["git", "add", "feature.txt"]);
+		sh(feature, ["git", "commit", "-m", "feature"]);
+		sh(primary, ["git", "switch", "-c", "plan/dry-run"]);
+
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "feature.txt"), "feature\n", "utf8");
+		sh(integrator, ["git", "add", "feature.txt"]);
+		sh(integrator, ["git", "commit", "-m", "squashed feature"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+
+		const staleOriginMain = sh(primary, ["git", "rev-parse", "origin/main"]);
+		assert.notEqual(staleOriginMain, sh(integrator, ["git", "rev-parse", "HEAD"]));
+		const refsBefore = sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)"]);
+		const worktreesBefore = sh(primary, ["git", "worktree", "list", "--porcelain"]);
+		const symbolicHeadBefore = sh(primary, ["git", "symbolic-ref", "HEAD"]);
+		const headBefore = sh(primary, ["git", "rev-parse", "HEAD"]);
+		assert.equal(symbolicHeadBefore, "refs/heads/plan/dry-run");
+		const dryResult = await cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: true, forceCurrent: false }, { exec: execGit });
+
+		assert.deepEqual(dryResult.removed.map((item) => item.branch), ["feature"]);
+		assert.equal(dryResult.skipped.length, 0);
+		assert.equal(dryResult.commands.some((command) => command.includes("'switch' '--no-overwrite-ignore' 'main'")), true);
+		assert.equal(dryResult.commands.some((command) => command.includes("'update-ref' '-d' 'refs/heads/plan/dry-run'")), true);
+		assert.equal(sh(primary, ["git", "for-each-ref", "--format=%(refname) %(objectname)"]), refsBefore);
+		assert.equal(sh(primary, ["git", "worktree", "list", "--porcelain"]), worktreesBefore);
+		assert.equal(sh(primary, ["git", "symbolic-ref", "HEAD"]), symbolicHeadBefore);
+		assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), headBefore);
+		assert.equal(fs.readFileSync(path.join(primary, ".git", "FETCH_HEAD"), "utf8"), fetchHeadBefore);
+		assert.equal(sh(primary, ["git", "rev-parse", "origin/main"]), staleOriginMain);
+		assert.equal(fs.existsSync(feature), true);
+
+		const liveResult = await cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit });
+		assert.deepEqual(liveResult.removed, dryResult.removed);
+		assert.deepEqual(liveResult.skipped, dryResult.skipped);
+		assert.equal(fs.existsSync(feature), false);
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "main");
+		assert.doesNotMatch(sh(primary, ["git", "branch"]), /plan\/dry-run|feature/);
+		assert.equal(sh(primary, ["git", "rev-parse", "HEAD"]), sh(integrator, ["git", "rev-parse", "HEAD"]));
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
@@ -167,6 +602,348 @@ await runTest("cleanup removes patch-equivalent worktrees from rewritten MR merg
 	}
 });
 
+await runTest("cleanup rejects patch-equivalent candidate ranges containing a merge commit", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-merge-range-"));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "main");
+	const candidate = path.join(root, "candidate");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		sh(main, ["git", "add", "README.md"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+
+		sh(main, ["git", "worktree", "add", "-b", "merge-candidate", candidate, "main"]);
+		fs.writeFileSync(path.join(candidate, "feature.txt"), "feature\n", "utf8");
+		sh(candidate, ["git", "add", "feature.txt"]);
+		sh(candidate, ["git", "commit", "-m", "feature"]);
+		const featureCommit = sh(candidate, ["git", "rev-parse", "HEAD"]);
+		sh(candidate, ["git", "branch", "merge-side", "main"]);
+		sh(candidate, ["git", "switch", "merge-side"]);
+		fs.writeFileSync(path.join(candidate, "side.txt"), "side\n", "utf8");
+		sh(candidate, ["git", "add", "side.txt"]);
+		sh(candidate, ["git", "commit", "-m", "side"]);
+		const sideCommit = sh(candidate, ["git", "rev-parse", "HEAD"]);
+		sh(candidate, ["git", "switch", "merge-candidate"]);
+		sh(candidate, ["git", "merge", "--no-ff", "--no-commit", "merge-side"]);
+		fs.writeFileSync(path.join(candidate, "resolution.txt"), "unique merge resolution\n", "utf8");
+		sh(candidate, ["git", "add", "resolution.txt"]);
+		sh(candidate, ["git", "commit", "-m", "merge with unique resolution"]);
+
+		sh(main, ["git", "cherry-pick", featureCommit]);
+		sh(main, ["git", "cherry-pick", sideCommit]);
+		sh(main, ["git", "push", "origin", "main"]);
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit });
+
+		assert.equal(fs.existsSync(candidate), true);
+		assert.equal(fs.readFileSync(path.join(candidate, "resolution.txt"), "utf8"), "unique merge resolution\n");
+		assert.equal(result.removed.some((item) => item.branch === "merge-candidate"), false);
+		assert.equal(result.skipped.some((item) => item.branch === "merge-candidate" && item.reason.includes("not merged or patch-equivalent")), true);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup preserves a displaced patch-equivalent planning branch that moves before deletion", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-plan-race-"));
+	const remote = path.join(root, "remote.git");
+	const primary = path.join(root, "primary");
+	const integrator = path.join(root, "integrator");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, primary]);
+		sh(primary, ["git", "checkout", "-b", "main"]);
+		sh(primary, ["git", "config", "user.email", "test@example.com"]);
+		sh(primary, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(primary, "README.md"), "initial\n", "utf8");
+		sh(primary, ["git", "add", "README.md"]);
+		sh(primary, ["git", "commit", "-m", "initial"]);
+		sh(primary, ["git", "push", "-u", "origin", "main"]);
+		const movedHead = sh(primary, ["git", "rev-parse", "main"]);
+		sh(primary, ["git", "switch", "-c", "plan/racing"]);
+		fs.writeFileSync(path.join(primary, "plan.md"), "plan\n", "utf8");
+		sh(primary, ["git", "add", "plan.md"]);
+		sh(primary, ["git", "commit", "-m", "plan"]);
+
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "plan.md"), "plan\n", "utf8");
+		sh(integrator, ["git", "add", "plan.md"]);
+		sh(integrator, ["git", "commit", "-m", "rewritten plan"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+
+		let moved = false;
+		const racingExec: GitExecutor = async (args, options) => {
+			const result = await execGit(args, options);
+			if (!moved && result.code === 0 && args[0] === "switch" && args.at(-1) === "main") {
+				moved = true;
+				sh(primary, ["git", "update-ref", "refs/heads/plan/racing", movedHead]);
+			}
+			return result;
+		};
+		await assert.rejects(
+			cleanupGitWorktrees(primary, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: racingExec }),
+			(error: Error) => error.message.includes("plan/racing") && error.message.includes("moved from expected HEAD") && error.message.includes("branch was preserved"),
+		);
+		assert.equal(sh(primary, ["git", "rev-parse", "refs/heads/plan/racing"]), movedHead);
+		assert.equal(sh(primary, ["git", "branch", "--show-current"]), "main");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup preserves a linked-worktree patch-equivalent branch that moves before deletion", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-worktree-race-"));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "main");
+	const feature = path.join(root, "feature");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		sh(main, ["git", "add", "README.md"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+		const movedHead = sh(main, ["git", "rev-parse", "main"]);
+		sh(main, ["git", "worktree", "add", "-b", "feature-racing", feature, "main"]);
+		fs.writeFileSync(path.join(feature, "feature.txt"), "feature\n", "utf8");
+		sh(feature, ["git", "add", "feature.txt"]);
+		sh(feature, ["git", "commit", "-m", "feature"]);
+		fs.writeFileSync(path.join(main, "feature.txt"), "feature\n", "utf8");
+		sh(main, ["git", "add", "feature.txt"]);
+		sh(main, ["git", "commit", "-m", "rewritten feature"]);
+		sh(main, ["git", "push", "origin", "main"]);
+
+		let moved = false;
+		const racingExec: GitExecutor = async (args, options) => {
+			const result = await execGit(args, options);
+			if (!moved && result.code === 0 && args[0] === "worktree" && args[1] === "remove") {
+				moved = true;
+				sh(main, ["git", "update-ref", "refs/heads/feature-racing", movedHead]);
+			}
+			return result;
+		};
+		await assert.rejects(
+			cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: racingExec }),
+			(error: Error) => error.message.includes("feature-racing") && error.message.includes("moved from expected HEAD") && error.message.includes("branch was preserved"),
+		);
+		assert.equal(fs.existsSync(feature), false);
+		assert.equal(sh(main, ["git", "rev-parse", "refs/heads/feature-racing"]), movedHead);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup propagates a linked-worktree status failure before mutating anything", async () => {
+	const calls: Array<{ args: string[]; cwd: string }> = [];
+	const executor: GitExecutor = async (args, options) => {
+		calls.push({ args, cwd: options.cwd });
+		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+			return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "worktree" && args[1] === "list") {
+			return {
+				stdout: "worktree /repo\nHEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nbranch refs/heads/main\n\nworktree /repo-feature\nHEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nbranch refs/heads/feature\n",
+				stderr: "",
+				code: 0,
+				killed: false,
+			};
+		}
+		if (args[0] === "status" && options.cwd === "/repo") {
+			return { stdout: "", stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "status" && options.cwd === "/repo-feature") {
+			return { stdout: "", stderr: "status unavailable", code: 128, killed: false };
+		}
+		throw new Error(`unexpected git call: ${args.join(" ")}`);
+	};
+
+	await assert.rejects(
+		cleanupGitWorktrees("/repo", { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: executor }),
+		(error: Error) => error.message.includes("git status --porcelain failed") && error.message.includes("status unavailable"),
+	);
+	assert.deepEqual(calls.filter((call) => call.args[0] === "status").map((call) => call.cwd), ["/repo", "/repo-feature"]);
+	assert.equal(calls.some((call) => ["fetch", "switch", "merge", "update-ref"].includes(call.args[0]!)), false);
+	assert.equal(calls.some((call) => call.args[0] === "worktree" && ["remove", "prune"].includes(call.args[1]!)), false);
+});
+
+await runTest("live cleanup uses its private fetched OID when origin/main moves before resolution", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-target-race-"));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "main");
+	const feature = path.join(root, "feature");
+	const integrator = path.join(root, "integrator");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		sh(main, ["git", "add", "README.md"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+		const staleTarget = sh(main, ["git", "rev-parse", "main"]);
+
+		sh(main, ["git", "worktree", "add", "-b", "feature", feature, "main"]);
+		fs.writeFileSync(path.join(feature, "feature.txt"), "feature\n", "utf8");
+		sh(feature, ["git", "add", "feature.txt"]);
+		sh(feature, ["git", "commit", "-m", "feature"]);
+
+		sh(root, ["git", "clone", remote, integrator]);
+		sh(integrator, ["git", "config", "user.email", "test@example.com"]);
+		sh(integrator, ["git", "config", "user.name", "Test User"]);
+		sh(integrator, ["git", "switch", "main"]);
+		fs.writeFileSync(path.join(integrator, "feature.txt"), "feature\n", "utf8");
+		sh(integrator, ["git", "add", "feature.txt"]);
+		sh(integrator, ["git", "commit", "-m", "rewritten feature"]);
+		sh(integrator, ["git", "push", "origin", "main"]);
+		const fetchedTarget = sh(integrator, ["git", "rev-parse", "HEAD"]);
+		sh(main, ["git", "fetch", "origin", "main"]);
+		assert.equal(sh(main, ["git", "rev-parse", "origin/main"]), fetchedTarget);
+
+		let movedTrackingRef = false;
+		let resolvedPrivateRef = false;
+		const racingExec: GitExecutor = async (args, options) => {
+			const result = await execGit(args, options);
+			if (!movedTrackingRef && result.code === 0 && args[0] === "fetch" && args.some((arg) => arg.startsWith("refs/heads/main:refs/pi-cleanup/targets/"))) {
+				movedTrackingRef = true;
+				sh(main, ["git", "update-ref", "refs/remotes/origin/main", staleTarget]);
+			} else if (result.code === 0 && args[0] === "rev-parse" && args[2]?.startsWith("refs/pi-cleanup/targets/") && args[2]?.endsWith("^{commit}")) {
+				resolvedPrivateRef = true;
+				assert.equal(result.stdout.trim(), fetchedTarget);
+			}
+			return result;
+		};
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: racingExec });
+
+		assert.equal(movedTrackingRef, true);
+		assert.equal(resolvedPrivateRef, true);
+		assert.equal(sh(main, ["git", "rev-parse", "HEAD"]), fetchedTarget);
+		assert.equal(sh(main, ["git", "rev-parse", "origin/main"]), staleTarget);
+		assert.equal(fs.existsSync(feature), false);
+		assert.deepEqual(result.removed.map((item) => item.branch), ["feature"]);
+		assert.equal(result.commands.some((command) => command.includes(`'merge' '--ff-only' '${fetchedTarget}'`)), true);
+		assert.equal(sh(main, ["git", "for-each-ref", "--format=%(refname)", "refs/pi-cleanup/targets"]), "");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup reports both an operation failure and a leaked private ref when CAS deletion also fails", async () => {
+	const calls: string[][] = [];
+	let privateRef: string | undefined;
+	let privateRefStillExists = false;
+	const localMain = "a".repeat(40);
+	const fetchedMain = "b".repeat(40);
+	const executor: GitExecutor = async (args) => {
+		calls.push(args);
+		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+			return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "worktree" && args[1] === "list") {
+			return { stdout: `worktree /repo\nHEAD ${localMain}\nbranch refs/heads/main\n`, stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
+		if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "refs/heads/main") {
+			return { stdout: `${localMain}\n`, stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "fetch") {
+			privateRef = args.find((arg) => arg.startsWith("refs/heads/main:refs/pi-cleanup/targets/"))?.split(":", 2)[1];
+			assert.ok(privateRef);
+			privateRefStillExists = true;
+			return { stdout: "", stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "rev-parse" && args[2] === `${privateRef}^{commit}`) {
+			return { stdout: `${fetchedMain}\n`, stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "merge-base") {
+			return { stdout: "", stderr: "injected non-fast-forward", code: 1, killed: false };
+		}
+		if (args[0] === "update-ref" && args[1] === "-d" && args[2] === privateRef) {
+			return { stdout: "", stderr: "injected private-ref CAS deletion failure", code: 1, killed: false };
+		}
+		throw new Error(`unexpected git call: ${args.join(" ")}`);
+	};
+
+	await assert.rejects(
+		cleanupGitWorktrees("/repo", { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: executor }),
+		(error: Error) => {
+			assert.ok(error instanceof AggregateError);
+			assert.equal(error.errors.length, 2);
+			assert.match(error.message, /cannot be fast-forwarded/);
+			assert.match(error.message, /injected private-ref CAS deletion failure/);
+			assert.match(error.message, /may still exist in the repository/);
+			assert.match(error.message, new RegExp(privateRef!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+			assert.match(error.message, /git show-ref --verify/);
+			assert.match(error.message, /git update-ref -d/);
+			return true;
+		},
+	);
+	assert.equal(privateRefStillExists, true, "the injected CAS failure leaves the private ref present");
+	assert.equal(calls.some((args) => args[0] === "update-ref" && args[2] === privateRef), true);
+});
+
+await runTest("private-ref inspection failures are aggregated instead of being treated as absence", async () => {
+	const calls: string[][] = [];
+	const localMain = "a".repeat(40);
+	const executor: GitExecutor = async (args) => {
+		calls.push(args);
+		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
+		if (args[0] === "worktree" && args[1] === "list") {
+			return { stdout: `worktree /repo\nHEAD ${localMain}\nbranch refs/heads/main\n`, stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
+		if (args[0] === "rev-parse" && args[2] === "refs/heads/main") return { stdout: `${localMain}\n`, stderr: "", code: 0, killed: false };
+		if (args[0] === "fetch") return { stdout: "", stderr: "injected fetch failure", code: 128, killed: false };
+		if (args[0] === "show-ref") return { stdout: "", stderr: "injected inspection failure", code: 128, killed: false };
+		throw new Error(`unexpected git call: ${args.join(" ")}`);
+	};
+
+	await assert.rejects(
+		cleanupGitWorktrees("/repo", { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: executor }),
+		(error: Error) => {
+			assert.ok(error instanceof AggregateError);
+			assert.equal(error.errors.length, 2);
+			assert.match(error.message, /injected fetch failure/);
+			assert.match(error.message, /injected inspection failure/);
+			assert.match(error.message, /may still exist/);
+			return true;
+		},
+	);
+	assert.equal(calls.some((args) => args[0] === "show-ref" && args.includes("--verify")), true);
+});
+
+await runTest("verified private-ref absence preserves the original operation failure", async () => {
+	const localMain = "a".repeat(40);
+	const executor: GitExecutor = async (args) => {
+		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "", code: 0, killed: false };
+		if (args[0] === "worktree" && args[1] === "list") {
+			return { stdout: `worktree /repo\nHEAD ${localMain}\nbranch refs/heads/main\n`, stderr: "", code: 0, killed: false };
+		}
+		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
+		if (args[0] === "rev-parse" && args[2] === "refs/heads/main") return { stdout: `${localMain}\n`, stderr: "", code: 0, killed: false };
+		if (args[0] === "fetch") return { stdout: "", stderr: "injected fetch failure", code: 128, killed: false };
+		if (args[0] === "show-ref") return { stdout: "", stderr: "", code: 1, killed: false };
+		throw new Error(`unexpected git call: ${args.join(" ")}`);
+	};
+
+	await assert.rejects(
+		cleanupGitWorktrees("/repo", { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: executor }),
+		(error: Error) => !(error instanceof AggregateError) && /injected fetch failure/.test(error.message),
+	);
+});
+
 await runTest("cleanup forwards cancellation, uses a network timeout, and reports fetch progress", async () => {
 	const controller = new AbortController();
 	const calls: Array<{ args: string[]; timeout: number; signal?: AbortSignal }> = [];
@@ -177,6 +954,7 @@ await runTest("cleanup forwards cancellation, uses a network timeout, and report
 		if (args[0] === "worktree") {
 			return { stdout: "worktree /repo\nHEAD abc\nbranch refs/heads/main\n", stderr: "", code: 0, killed: false };
 		}
+		if (args[0] === "status") return { stdout: "", stderr: "", code: 0, killed: false };
 		controller.abort();
 		return { stdout: "", stderr: "", code: 1, killed: true };
 	};

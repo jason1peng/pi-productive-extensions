@@ -8,7 +8,7 @@ Use the `delivery_*` tools as source of truth to determine the current phase and
 
 Start by calling `delivery_status`, then `delivery_next`.
 
-Before implementation, unless this is the same task or an amended requirement, ensure repo work happens in a dedicated git worktree created from latest `main`. If this is non-git/non-repo work, record why the policy is not applicable.
+A planning-only MR on a `plan/<slug>` branch may be created and submitted directly from the stable primary checkout without a dedicated planning worktree. After that plan is approved or merged, implementation and delivery must use a dedicated git worktree created from the latest fetched `main`, never from the planning branch. Otherwise, before implementation, unless this is the same task or an amended requirement, ensure repo work happens in a dedicated git worktree created from the latest fetched `main`. If this is non-git/non-repo work, record why the policy is not applicable.
 
 For each returned phase:
 - If `details.next.parallel` is present, launch all listed children in parallel using each entry's `agent/model/thinking/context`, `acceptance` when present, `output`/`outputMode` when present, and unique `childPrompt`; save each child artifact separately at `details.next.parallel[].artifact`, then aggregate all child outputs before calling `delivery_report` once for the phase.

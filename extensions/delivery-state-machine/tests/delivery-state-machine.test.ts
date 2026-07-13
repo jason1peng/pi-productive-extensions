@@ -11,6 +11,7 @@ const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-")
 process.env.PI_CODING_AGENT_DIR = testAgentDir;
 
 interface RegisteredTool {
+	promptGuidelines?: string[];
 	execute: (toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: FakeContext) => Promise<any>;
 }
 
@@ -177,6 +178,23 @@ await runTest("delivery child prompts include central RESULT artifact guidance",
 	assert.equal(result.details.next.acceptance, false);
 	assert.match(result.details.next.childPrompt, /Start the artifact with exactly one result line: RESULT:/);
 	assert.match(result.details.next.childPrompt, /Use the phase-specific headings/);
+});
+
+await runTest("planning may use the stable primary checkout but implementation requires a fresh main worktree", async () => {
+	const harness = createHarness();
+	const deliver = harness.commands.get("deliver");
+	assert.ok(deliver, "deliver command should be registered");
+	await deliver.handler("planning worktree policy smoke", harness.ctx);
+	const result = await harness.tool("delivery_next");
+	const bootstrapPrompt = harness.sentMessages.at(-1) ?? "";
+	const orchestratorInstruction = result.details.next.orchestratorInstruction;
+	const toolGuidelines = harness.tools.get("delivery_start")?.promptGuidelines?.join(" ") ?? "";
+
+	for (const policySurface of [bootstrapPrompt, orchestratorInstruction, toolGuidelines]) {
+		assert.match(policySurface, /planning-only MR on a (?:`plan\/<slug>`|plan\/<slug>) branch may be created and submitted directly from the stable primary checkout/i);
+		assert.match(policySurface, /latest fetched (?:`main`|main)/i);
+		assert.match(policySurface, /never from the planning branch/i);
+	}
 });
 
 await runTest("artifact-less successful non-parallel reports are rejected across phases", async () => {

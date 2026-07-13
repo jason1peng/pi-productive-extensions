@@ -607,18 +607,12 @@ function phasePromptContext(state: DeliveryState) {
 	};
 }
 
-function projectHarnessPrompt(state: DeliveryState): string {
-	const root = projectRootForState(state.cwd ?? process.cwd(), state.gitRoot);
-	return `
-
-Project harness discovery and compliance (required):
-- Start discovery from the resolved repository or worktree root: ${root}.
-- Check common instruction and contributor entrypoints that exist (for example AGENTS.md, CLAUDE.md, GEMINI.md, README.md, and CONTRIBUTING.md), plus directory-scoped instruction files applicable to files changed, verified, reviewed, or closed.
+const PROJECT_HARNESS_PROMPT = `Project harness discovery (bounded, best effort):
+- A project harness is optional. Check common instruction and contributor entrypoints that exist (for example AGENTS.md, CLAUDE.md, GEMINI.md, README.md, and CONTRIBUTING.md), plus directory-scoped instruction files applicable to files changed, verified, reviewed, or closed.
 - Follow explicit mandatory references and phase-relevant links. Inspect package scripts, build files, CI configuration, templates, or workflow files only as needed to determine applicable expectations.
 - Respect documented scope and precedence. Report conflicts when precedence cannot be resolved. Apply only rules relevant to this phase; do not recursively read unrelated documentation.
-- Missing common entrypoints are not errors. A missing explicitly referenced file is a gap. Unreadable, conflicting, skipped, or violated mandatory instructions are blocking when compliance cannot be established safely.
-- Record outcome as \`applied\`, \`none discovered\`, or \`blocked\`. A reasonable attempt finding no applicable harness uses \`none discovered\` and may succeed.
-- VERIFY must fail for demonstrably skipped or violated applicable instructions and be INCONCLUSIVE when mandatory instructions cannot be read or conflicts prevent evaluating compliance. REVIEW must treat either condition as a must-fix blocker. IMPLEMENT and CLOSE cannot succeed with \`blocked\`.
+- Missing common entrypoints are normal, not errors. A bounded reasonable attempt finding no applicable harness records \`none discovered\` and may succeed. A missing explicitly referenced file is a gap. Unreadable, conflicting, skipped, or violated mandatory instructions use \`blocked\` when compliance cannot be established safely.
+- Record authoritative Outcome as \`applied\`, \`none discovered\`, or \`blocked\`. \`applied\` and \`none discovered\` permit success; \`blocked\` rejects success.
 
 Every artifact must include:
 ## Project harness discovery and compliance
@@ -627,8 +621,11 @@ Every artifact must include:
 - Mandatory references followed:
 - Phase-relevant rules applied:
 - Conflicts, gaps, or unreadable instructions:
-- Compliance status: compliant | blocked
 - Outcome: applied | none discovered | blocked`;
+
+function projectHarnessRootContext(state: DeliveryState): string {
+	const root = projectRootForState(state.cwd ?? process.cwd(), state.gitRoot);
+	return `Project harness resolved root for this run: ${root}`;
 }
 
 const CHILD_PROMPT_FOOTER = `
@@ -719,7 +716,7 @@ function nextAction(state: DeliveryState): NextAction {
 
 	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
-	const childPrompt = `${config.childPrompt(context)}${projectHarnessPrompt(state)}${CHILD_PROMPT_FOOTER}`;
+	const childPrompt = `${PROJECT_HARNESS_PROMPT}\n\n${projectHarnessRootContext(state)}\n\n${config.childPrompt(context)}${CHILD_PROMPT_FOOTER}`;
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
@@ -1142,7 +1139,7 @@ const HARNESS_EVIDENCE_FIELDS = [
 	"Conflicts, gaps, or unreadable instructions",
 ] as const;
 
-function artifactHarnessEvidence(artifact: string): { outcome: HarnessOutcome; contradiction?: string } | undefined {
+function artifactHarnessEvidence(artifact: string): { outcome: HarnessOutcome } | undefined {
 	try {
 		const text = fs.readFileSync(artifact, "utf8");
 		const heading = /^## Project harness discovery and compliance[ \t]*\r?$/mi.exec(text);
@@ -1154,16 +1151,9 @@ function artifactHarnessEvidence(artifact: string): { outcome: HarnessOutcome; c
 			const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 			if (!new RegExp(`^- ${escaped}:[ \\t]*([^ \\t\\r\\n].*)$`, "mi").test(section)) return undefined;
 		}
-		const compliance = /^- Compliance status:[ \t]*(compliant|blocked)[ \t]*\r?$/mi.exec(section)?.[1]?.toLowerCase();
 		const outcome = /^- Outcome:[ \t]*(applied|none discovered|blocked)[ \t]*\r?$/mi.exec(section)?.[1]?.toLowerCase() as HarnessOutcome | undefined;
-		if (!compliance || !outcome) return undefined;
-		const contradictory = (compliance === "blocked") !== (outcome === "blocked");
-		return {
-			outcome,
-			contradiction: contradictory
-				? `project harness Compliance status ${compliance} contradicts Outcome ${outcome}`
-				: undefined,
-		};
+		if (!outcome) return undefined;
+		return { outcome };
 	} catch {
 		return undefined;
 	}
@@ -1181,7 +1171,6 @@ function artifactReadiness(artifact?: string, requireHarness = false): { ok: tru
 	if (!verdict) return { ok: false, reason: "artifact does not start with RESULT/VERDICT" };
 	const harnessEvidence = artifactHarnessEvidence(artifact);
 	if (requireHarness && !harnessEvidence) return { ok: false, reason: "artifact lacks a valid Project harness discovery and compliance section/outcome" };
-	if (requireHarness && harnessEvidence?.contradiction) return { ok: false, reason: harnessEvidence.contradiction };
 	return { ok: true, verdict, harnessOutcome: harnessEvidence?.outcome };
 }
 
@@ -1260,7 +1249,7 @@ function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: Runnab
 		: childOutcomes.length > 0 && childOutcomes.every((outcome) => outcome === "none discovered")
 			? "none discovered"
 			: "applied";
-	const harnessSection = `## Project harness discovery and compliance\n- Discovery scope checked: parallel child artifacts\n- Entry points discovered: see child artifacts\n- Mandatory references followed: see child artifacts\n- Phase-relevant rules applied: aggregate preserves each child's evidence\n- Conflicts, gaps, or unreadable instructions: see child artifacts\n- Compliance status: ${harnessOutcome === "blocked" ? "blocked" : "compliant"}\n- Outcome: ${harnessOutcome}`;
+	const harnessSection = `## Project harness discovery and compliance\n- Discovery scope checked: parallel child artifacts\n- Entry points discovered: see child artifacts\n- Mandatory references followed: see child artifacts\n- Phase-relevant rules applied: aggregate preserves each child's evidence\n- Conflicts, gaps, or unreadable instructions: see child artifacts\n- Outcome: ${harnessOutcome}`;
 	if (params.phase === "REVIEW") {
 		return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Must-fix findings\n${isFail(verdict) ? params.summary : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none"}\n\n## Evidence reviewed\n${childLines}\n\n## Risk checks\n- Aggregate review verdict derived from preserved parallel reviewer artifacts.\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n\n${harnessSection}\n`;
 	}

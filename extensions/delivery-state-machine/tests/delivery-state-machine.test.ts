@@ -153,8 +153,8 @@ await runTest("every runnable child prompt includes bounded project harness disc
 		for (const phase of ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"]) {
 			const prompts = result.details.next.parallel?.map((launch: any) => launch.childPrompt) ?? [result.details.next.childPrompt];
 			for (const prompt of prompts) {
-				assert.match(prompt, /Project harness discovery and compliance \(required\)/);
-				assert.match(prompt, new RegExp(`resolved repository or worktree root: ${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+				assert.match(prompt, /Project harness discovery \(bounded, best effort\)/);
+				assert.match(prompt, new RegExp(`Project harness resolved root for this run: ${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 				assert.match(prompt, /none discovered/);
 				assert.match(prompt, /do not recursively read unrelated documentation/);
 				assert.doesNotMatch(prompt, /docs\/index\.md/);
@@ -237,80 +237,6 @@ await runTest("successful IMPLEMENT and VERIFY reports reject blocked harness ou
 	);
 });
 
-await runTest("successful artifacts reject contradictory harness blocker evidence across phases", async () => {
-	const harness = createHarness();
-	let result = await harness.tool("delivery_start", { task: "contradictory harness evidence" });
-	const artifactDir = result.details.state.artifactDir as string;
-	const artifact = path.join(artifactDir, "candidate.md");
-	const writeArtifact = (verdict: string, outcome: "applied" | "none discovered", evidence: string) => {
-		fs.writeFileSync(artifact, `RESULT: ${verdict}\n\n${projectHarnessEvidence(outcome, evidence === "none" || evidence === "no conflicts or violations" ? "compliant" : "blocked").replace("- Conflicts, gaps, or unreadable instructions: none", `- Conflicts, gaps, or unreadable instructions: ${evidence}`)}`, "utf8");
-	};
-
-	writeArtifact("PASS", "applied", "mandatory instructions could not be read");
-	await assert.rejects(() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "contradictory", artifact }), /Compliance status blocked contradicts Outcome applied/);
-	writeArtifact("PASS", "applied", "none");
-	result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "valid", artifact });
-
-	writeArtifact("PASS", "none discovered", "unable to access the required validation instructions");
-	await assert.rejects(() => harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "contradictory", artifact }), /Compliance status blocked contradicts Outcome none discovered/);
-	writeArtifact("PASS", "applied", "none");
-	result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "valid", artifact });
-
-	for (const launch of result.details.next.parallel) {
-		writeReviewArtifact(launch.artifact, "PASS", "review passed");
-		const contents = fs.readFileSync(launch.artifact, "utf8").replace("- Conflicts, gaps, or unreadable instructions: none", "- Conflicts, gaps, or unreadable instructions: failed to load mandatory review rules")
-			.replace("- Compliance status: compliant", "- Compliance status: blocked");
-		fs.writeFileSync(launch.artifact, contents, "utf8");
-	}
-	await assert.rejects(() => harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "contradictory" }), /Compliance status blocked contradicts Outcome none discovered/);
-	for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
-	result = await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "valid" });
-
-	writeArtifact("DONE", "applied", "mandatory close instruction could not be evaluated");
-	await assert.rejects(() => harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "contradictory", artifact }), /Compliance status blocked contradicts Outcome applied/);
-	writeArtifact("DONE", "applied", "no conflicts or violations");
-	result = await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "valid", artifact });
-
-	writeArtifact("DONE", "none discovered", "required retrospective reference was not readable");
-	await assert.rejects(() => harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "contradictory", artifact }), /Compliance status blocked contradicts Outcome none discovered/);
-});
-
-await runTest("harness contradiction checks accept natural negation lists and reject explicit noncompliance", async () => {
-	for (const evidence of [
-		"no conflicts, gaps, or unreadable instructions",
-		"no unreadable, conflicting, skipped, or violated mandatory instructions",
-		"conflicts were not discovered",
-		"instructions weren't skipped and all findings were resolved",
-		"previously omitted guidance was remediated and is now applied",
-	]) {
-		const harness = createHarness();
-		const started = await harness.tool("delivery_start", { task: `benign harness evidence: ${evidence}` });
-		const artifact = path.join(started.details.state.artifactDir as string, "candidate.md");
-		fs.writeFileSync(artifact, `RESULT: PASS\n\n${projectHarnessEvidence("applied").replace("- Conflicts, gaps, or unreadable instructions: none", `- Conflicts, gaps, or unreadable instructions: ${evidence}`)}`, "utf8");
-		const result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "compliant", artifact });
-		assert.equal(result.details.state.phase, "VERIFY");
-	}
-
-	for (const evidence of [
-		"mandatory instructions were not followed",
-		"the applicable review rules were ignored",
-		"ignored mandatory instructions",
-		"failed to comply with the required rules",
-		"mandatory instructions weren't followed",
-		"required checks were omitted",
-		"the directory-scoped rules were not applied",
-	]) {
-		const harness = createHarness();
-		const started = await harness.tool("delivery_start", { task: `noncompliant harness evidence: ${evidence}` });
-		const artifact = path.join(started.details.state.artifactDir as string, "candidate.md");
-		fs.writeFileSync(artifact, `RESULT: PASS\n\n${projectHarnessEvidence("applied", "blocked").replace("- Phase-relevant rules applied: none", `- Phase-relevant rules applied: ${evidence}`)}`, "utf8");
-		await assert.rejects(
-			() => harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "contradictory", artifact }),
-			/Compliance status blocked contradicts Outcome applied/,
-		);
-	}
-});
-
 await runTest("pre-existing parallel aggregate harness status is regenerated from child evidence", async () => {
 	const harness = createHarness();
 	let result = await harness.tool("delivery_start", { task: "regenerate caller-controlled aggregate" });
@@ -319,12 +245,12 @@ await runTest("pre-existing parallel aggregate harness status is regenerated fro
 	for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
 
 	const aggregate = path.join(result.details.state.artifactDir as string, "03-review.md");
-	fs.writeFileSync(aggregate, `RESULT: PASS\n\n## Summary\ncaller-controlled contradiction\n\n${projectHarnessEvidence("blocked", "compliant")}`, "utf8");
+	fs.writeFileSync(aggregate, `RESULT: PASS\n\n## Summary\ncaller-controlled contradiction\n\n${projectHarnessEvidence("blocked")}`, "utf8");
 	result = await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "validated children", artifact: aggregate });
 
 	const regenerated = fs.readFileSync(aggregate, "utf8");
 	assert.match(regenerated, /## Summary\nvalidated children/);
-	assert.match(regenerated, /- Compliance status: compliant/);
+	assert.doesNotMatch(regenerated, /- Compliance status:/);
 	assert.match(regenerated, /- Outcome: none discovered/);
 	assert.doesNotMatch(regenerated, /caller-controlled contradiction/);
 	assert.equal(result.details.state.phase, "CLOSE");
@@ -598,7 +524,7 @@ await runTest("user phase prompt override wins and project prompt override is ig
 			const next = await harness.tool("delivery_next");
 
 			assert.match(next.details.next.childPrompt, /USER VERIFY PROMPT prompt override smoke/);
-			assert.match(next.details.next.childPrompt, /Project harness discovery and compliance \(required\)/);
+			assert.match(next.details.next.childPrompt, /Project harness discovery \(bounded, best effort\)/);
 			assert.doesNotMatch(next.details.next.childPrompt, /PROJECT VERIFY PROMPT/);
 			assert.match(next.details.next.orchestratorInstruction, /Launch the configured verifier/);
 		} finally {
@@ -850,8 +776,8 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	assert.equal(fs.existsSync(`${jsonPath}.tmp-${process.pid}`), false);
 });
 
-function projectHarnessEvidence(outcome: "applied" | "none discovered" | "blocked", compliance: "compliant" | "blocked" = outcome === "blocked" ? "blocked" : "compliant") {
-	return `## Project harness discovery and compliance\n- Discovery scope checked: repository root\n- Entry points discovered: none\n- Mandatory references followed: none\n- Phase-relevant rules applied: none\n- Conflicts, gaps, or unreadable instructions: none\n- Compliance status: ${compliance}\n- Outcome: ${outcome}\n`;
+function projectHarnessEvidence(outcome: "applied" | "none discovered" | "blocked") {
+	return `## Project harness discovery and compliance\n- Discovery scope checked: repository root\n- Entry points discovered: none\n- Mandatory references followed: none\n- Phase-relevant rules applied: none\n- Conflicts, gaps, or unreadable instructions: none\n- Outcome: ${outcome}\n`;
 }
 
 function writeReviewArtifact(filePath: string, verdict: "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL", summary: string) {

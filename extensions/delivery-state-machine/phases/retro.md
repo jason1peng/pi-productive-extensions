@@ -19,17 +19,6 @@ Instructions:
 - For plan-quality recommendations, use `PLAN_QUALITY_CHECKLIST.md` as the baseline when available. Include only checklist additions or plan notes that would have helped this delivery: prerequisites, scope boundaries, acceptance/verification path, test data or state isolation, validation/error expectations, candidate completeness, and follow-up boundaries.
 - Do not edit source files.
 
-Artifact contract for RETRO (use these headings in this order):
-
-    RESULT: DONE
-
-    ## Outcome
-    ## Improvement candidates
-    ## Plan-quality lessons
-    ## Critical fixes
-    ## Residual risks
-    ## Recommendations
-
 The Outcome section is one concise paragraph.
 The Improvement candidates section must use this exact table when there are candidates:
 

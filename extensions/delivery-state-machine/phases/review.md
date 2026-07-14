@@ -36,17 +36,6 @@ Finding classification rules:
 - Non-blocking note: an unsupported/adversarial scenario, optional hardening, or other improvement that can safely be deferred without reducing confidence in the accepted delivery contract.
 - Do not label something as a suggestion if you believe it should be fixed in this delivery.
 
-Artifact contract for REVIEW (use these headings in this order):
-
-    RESULT: PASS|PASS_WITH_NON_BLOCKING_NOTES|FAIL
-
-    ## Summary
-    ## Must-fix findings
-    ## Non-blocking notes
-    ## Evidence reviewed
-    ## Risk checks
-    ## Recommendation
-
 The Must-fix findings section must include the failure reason and suggested repair when failing; write `none` when not failing.
 The Evidence reviewed and Risk checks sections must include:
 - Requirements matched by code/tests: yes/no

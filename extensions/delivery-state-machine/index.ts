@@ -9,7 +9,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { addUsageTotals, collectSessionUsage as collectSharedSessionUsage, collectUsageFromSessionFile, emptyUsageTotals, subtractUsageTotals, type UsageTotals } from "../../shared/session-usage.ts";
 import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportStep } from "../../shared/delivery-report.ts";
-import { loadPhaseConfigBundle, loadPhaseConfigs, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
+import { PHASE_CONTRACTS, phaseArtifactFilename, renderPhaseArtifactMarkdown, type Verdict } from "./phase-contract.ts";
+import { loadPhaseConfigBundle, loadPhaseConfigs, validatePhaseLaunches, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
 type Phase =
 	| "IDLE"
@@ -22,16 +23,8 @@ type Phase =
 	| "STOPPED"
 	| "WAITING_DECISION";
 
-type Verdict =
-	| "PASS"
-	| "PASS_WITH_NON_BLOCKING_NOTES"
-	| "FAIL"
-	| "INCONCLUSIVE"
-	| "DONE"
-	| "MR_CREATED";
-
 type Decision = "repair" | "stop" | "accept_risk" | "continue" | "defer";
-type IssueSource = "verify" | "review" | "close";
+type IssueSource = "implement" | "verify" | "review" | "close";
 
 interface HistoryEntry {
 	timestamp: number;
@@ -113,6 +106,9 @@ interface ChildLaunch extends LaunchConfig {
 interface NextAction {
 	phase: Phase;
 	agent?: string;
+	artifact?: string;
+	output?: string;
+	outputMode?: "file-only";
 	model?: string;
 	thinking?: string;
 	context?: string;
@@ -190,7 +186,7 @@ const DECIDE_PARAMS = Type.Object({
 
 const EMPTY_PARAMS = Type.Object({});
 
-const RUNNABLE_PHASES: RunnablePhase[] = ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"];
+const RUNNABLE_PHASES = Object.keys(PHASE_CONTRACTS) as RunnablePhase[];
 const DEFAULT_MAX_ROUNDS = 3;
 const DEFAULT_PHASE_ROUNDS: PhaseRounds = {
 	IMPLEMENT: DEFAULT_MAX_ROUNDS,
@@ -249,6 +245,7 @@ function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 		...raw,
 		maxRepairRounds: maxPhaseRounds.VERIFY,
 		maxPhaseRounds,
+		...(raw.phaseLaunches !== undefined ? { phaseLaunches: validatePhaseLaunches(raw.phaseLaunches, "restored pinned phase launch bundle") } : {}),
 		acceptedRisks: Array.isArray(raw.acceptedRisks) ? raw.acceptedRisks : [],
 		history: Array.isArray(raw.history) ? raw.history : [],
 		steps: Array.isArray((raw as { steps?: unknown }).steps) ? (raw as { steps: DeliveryStep[] }).steps : [],
@@ -504,7 +501,8 @@ function renderDeliverPrompt(state: DeliveryState): string {
 
 function artifactGuidance(state: DeliveryState): string {
 	if (!state.artifactDir) return "";
-	return `\n\nArtifact guidance:\n- User-scope artifact directory for this delivery run: ${state.artifactDir}.\n- Save or report the artifact path under this directory, e.g. 01-implementation.md, 02-verification.md, 03-review.md, 04-close.md, 05-retro.md.\n- Start the artifact with exactly one result line: RESULT: PASS, RESULT: PASS_WITH_NON_BLOCKING_NOTES, RESULT: FAIL, RESULT: INCONCLUSIVE, RESULT: DONE, or RESULT: MR_CREATED.\n- Use the phase-specific headings from the child prompt, in that order, and write \`none\` for empty Findings, Residual risks, or Recommendation sections.\n- Use Markdown bullet lists for checklist/evidence items and fenced code blocks only for short command output snippets. Do not wrap the whole artifact in a code block.\n- Keep the first paragraph of the summary/outcome concise enough for a report card, and put long logs behind artifact links or short fenced snippets.`;
+	const artifactExamples = RUNNABLE_PHASES.map((phase) => `${PHASE_CONTRACTS[phase].artifactStem}.md`).join(", ");
+	return `\n\nArtifact guidance:\n- User-scope artifact directory for this delivery run: ${state.artifactDir}.\n- Save or report the artifact path under this directory, e.g. ${artifactExamples}.\n- Start the artifact with exactly one result line: RESULT: <a verdict allowed by the phase contract>.\n- Use the phase-specific headings from the child prompt, in that order, and write \`none\` for empty Findings, Residual risks, or Recommendation sections.\n- Use Markdown bullet lists for checklist/evidence items and fenced code blocks only for short command output snippets. Do not wrap the whole artifact in a code block.\n- Keep the first paragraph of the summary/outcome concise enough for a report card, and put long logs behind artifact links or short fenced snippets.`;
 }
 
 function isPass(verdict?: Verdict): boolean {
@@ -634,13 +632,9 @@ Common workflow instruction:
 - Return your result and evidence to the parent/orchestrator.
 - Do not call delivery_report; the parent/orchestrator will call delivery_report to advance the workflow after you finish.`;
 
-const PHASE_ARTIFACT_STEMS: Record<RunnablePhase, string> = {
-	IMPLEMENT: "01-implementation",
-	VERIFY: "02-verification",
-	REVIEW: "03-review",
-	CLOSE: "04-close",
-	RETRO: "05-retro",
-};
+const PHASE_ARTIFACT_STEMS: Record<RunnablePhase, string> = Object.fromEntries(
+	Object.entries(PHASE_CONTRACTS).map(([phase, contract]) => [phase, contract.artifactStem]),
+) as Record<RunnablePhase, string>;
 
 function slugifyLaunch(launch: LaunchConfig): string {
 	return [launch.agent, launch.model, launch.thinking, launch.context]
@@ -667,20 +661,24 @@ function parallelChildPrompt(basePrompt: string, state: DeliveryState, launch: L
 	if (!isRunnablePhase(state.phase)) return basePrompt;
 	const attempt = phaseAttemptForStep(state, state.phase);
 	const artifactPath = parallelArtifactPathForLaunch(state, launch, index) ?? parallelArtifactName(state.phase, attempt, launch, index);
+	const aggregatePath = state.artifactDir
+		? path.join(state.artifactDir, phaseArtifactFilename(state.phase, attempt))
+		: phaseArtifactFilename(state.phase, attempt);
 	return `${basePrompt}
 
 Parallel phase instruction:
 - You are child ${index + 1}/${total} for phase ${state.phase} attempt ${attempt}; work independently from the other parallel child outputs.
 - Use or return this unique attempt-specific artifact path for your result: ${artifactPath}.
-- Do not write to the generic phase artifact path such as ${PHASE_ARTIFACT_STEMS[state.phase]}.md; the parent/orchestrator may use that for the aggregate phase report.`;
+- Do not write to the planned aggregate phase artifact path ${aggregatePath}; the parent/orchestrator owns it.`;
 }
 
-function reportInstructionForPhase(phase: RunnablePhase, parallelCount = 1): string {
+function reportInstructionForPhase(state: DeliveryState, phase: RunnablePhase, parallelCount = 1): string {
 	const verdictGuidance = phase === "VERIFY" ? " and verdict PASS/FAIL/INCONCLUSIVE" : "";
 	const usageGuidance = "When the subagent result exposes usage, a run id, or a session JSONL path, pass it to delivery_report as usageDelta/subagentRunId/subagentSessionFile; for parallel phases, pass one stepUsage entry per child so child-native usage is attributed to child rows and parent overhead stays separate.";
 	if (parallelCount > 1) {
-		const aggregateName = PHASE_ARTIFACT_STEMS[phase];
-		return `After all ${parallelCount} children complete, parent/orchestrator confirms every details.next.parallel[].artifact file exists, is non-empty, and starts with RESULT/VERDICT. If a child returned inline output but did not write the expected artifact, save that output to the artifact path yourself; if a child artifact was intentionally saved elsewhere, pass the actual existing child artifact paths in delivery_report.artifact so the state can record actual paths. Then write a clean aggregate phase artifact such as ${aggregateName}.md that links/summarizes each child artifact, and call delivery_report once with phase ${phase}${verdictGuidance}. When child artifacts are at the planned paths, set artifact to only the aggregate artifact path. ${usageGuidance} For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding. delivery_report will reject parallel phase reports when child artifacts are missing or invalid to avoid stale delivery-report.json links.`;
+		const aggregateName = phaseArtifactFilename(phase, phaseAttemptForStep(state, phase));
+		const aggregatePath = state.artifactDir ? path.join(state.artifactDir, aggregateName) : aggregateName;
+		return `After all ${parallelCount} children complete, parent/orchestrator confirms every details.next.parallel[].artifact file exists, is non-empty, and starts with RESULT. If a child returned inline output, save it to that child's exact planned artifact path. Then call delivery_report once with phase ${phase}${verdictGuidance}; omit artifact or provide only the exact planned aggregate path ${aggregatePath}. ${usageGuidance} For REVIEW, report FAIL with recommendedDecision=repair if any reviewer identifies a must-fix finding. delivery_report will reject parallel phase reports with alternate, missing, or invalid child paths and atomically regenerates the aggregate artifact.`;
 	}
 	return `After the child completes, parent/orchestrator calls delivery_report with phase ${phase}${verdictGuidance}. ${usageGuidance}`;
 }
@@ -693,7 +691,7 @@ function worktreePolicyInstruction(state: DeliveryState): string | undefined {
 function fallbackNextPrompt(state: DeliveryState): string {
 	switch (state.phase) {
 		case "WAITING_DECISION":
-			return `Ask the user/parent for a decision on pending ${state.pendingIssue?.source} issue: repair / stop / accept_risk / defer / continue. Then call delivery_decide.`;
+			return `Ask the user/parent for a decision on pending ${state.pendingIssue?.source} issue: repair / accept_risk / stop. Then call delivery_decide.`;
 		case "DONE":
 			return "Delivery state machine is complete.";
 		case "STOPPED":
@@ -731,17 +729,24 @@ function nextAction(state: DeliveryState): NextAction {
 		})
 		: undefined;
 	const orchestratorInstruction = [worktreePolicyInstruction(state), config.orchestratorInstruction(context)].filter(Boolean).join(" ");
-	const reportInstruction = reportInstructionForPhase(state.phase, launches.length);
+	const reportInstruction = reportInstructionForPhase(state, state.phase, launches.length);
+	const singleArtifact = launches.length === 1
+		? plannedArtifactPath(state, state.phase, phaseAttemptForStep(state, state.phase), primaryLaunch, undefined, 1)
+		: undefined;
+	const singlePrompt = singleArtifact
+		? `${childPrompt}\n\nArtifact contract:\n- Write your result to exactly this path: ${singleArtifact}\n- This exact planned path is required when reporting this phase.`
+		: childPrompt;
 	return {
 		phase: state.phase,
 		agent: primaryLaunch.agent,
+		...(singleArtifact ? { artifact: singleArtifact, output: singleArtifact, outputMode: "file-only" as const } : {}),
 		model: primaryLaunch.model,
 		thinking: primaryLaunch.thinking,
 		context: primaryLaunch.context,
 		acceptance: false,
 		parallel,
-		prompt: childPrompt,
-		childPrompt,
+		prompt: singlePrompt,
+		childPrompt: singlePrompt,
 		orchestratorInstruction,
 		reportInstruction,
 	};
@@ -760,12 +765,11 @@ function plannedStepId(phase: RunnablePhase, attempt: number, childIndex?: numbe
 
 function plannedArtifactPath(state: DeliveryState, phase: RunnablePhase, attempt: number, launch?: LaunchConfig, childIndex?: number, childCount?: number): string | undefined {
 	if (!state.artifactDir) return undefined;
-	const stem = PHASE_ARTIFACT_STEMS[phase];
 	let fileName: string;
 	if (childCount && childCount > 1 && launch && childIndex !== undefined) {
 		fileName = parallelArtifactName(phase, attempt, launch, childIndex);
 	} else {
-		fileName = attempt > 1 ? `${stem}-${attempt}.md` : `${stem}.md`;
+		fileName = phaseArtifactFilename(phase, attempt);
 	}
 	return path.join(state.artifactDir, fileName);
 }
@@ -1110,15 +1114,7 @@ function blockAmbiguousPriorBackfill(state: DeliveryState, ambiguousBoundaryIds:
 
 function aggregateArtifactPath(state: DeliveryState, phase: RunnablePhase, attempt: number): string | undefined {
 	if (!state.artifactDir) return undefined;
-	const stem = PHASE_ARTIFACT_STEMS[phase];
-	return path.join(state.artifactDir, attempt > 1 ? `${stem}-${attempt}.md` : `${stem}.md`);
-}
-
-function splitArtifactRefs(artifact?: string): string[] {
-	return (artifact ?? "")
-		.split(/[;\n]+/)
-		.map((item) => item.trim())
-		.filter(Boolean);
+	return path.join(state.artifactDir, phaseArtifactFilename(phase, attempt));
 }
 
 function artifactAbsolutePath(state: DeliveryState, artifact: string): string {
@@ -1166,44 +1162,65 @@ function artifactHarnessOutcome(artifact: string): HarnessOutcome | undefined {
 function artifactReadiness(artifact?: string, requireHarness = false): { ok: true; verdict?: Verdict; harnessOutcome?: HarnessOutcome } | { ok: false; reason: string } {
 	if (!artifact) return { ok: false, reason: "missing artifact path" };
 	if (!fs.existsSync(artifact)) return { ok: false, reason: "artifact file does not exist" };
-	if (!fs.statSync(artifact).isFile()) return { ok: false, reason: "artifact path is not a file" };
-	const verdict = artifactVerdict(artifact);
-	if (!verdict) return { ok: false, reason: "artifact does not start with RESULT/VERDICT" };
+	let stat: fs.Stats;
+	try {
+		if (fs.lstatSync(artifact).isSymbolicLink()) return { ok: false, reason: "artifact path is a symlink" };
+		stat = fs.statSync(artifact);
+	} catch {
+		return { ok: false, reason: "artifact file cannot be inspected" };
+	}
+	if (!stat.isFile()) return { ok: false, reason: "artifact path is not a regular file" };
+	if (stat.size === 0) return { ok: false, reason: "artifact file is empty" };
+	let firstLine: string;
+	try { firstLine = fs.readFileSync(artifact, "utf8").split(/\r?\n/, 1)[0] ?? ""; } catch { return { ok: false, reason: "artifact file cannot be read" }; }
+	const verdict = normalizeVerdict(/^RESULT:\s*([A-Z_]+)\s*$/i.exec(firstLine)?.[1]);
+	if (!verdict) return { ok: false, reason: "artifact does not start with a valid RESULT line" };
 	const harnessEvidence = artifactHarnessEvidence(artifact);
 	if (requireHarness && !harnessEvidence) return { ok: false, reason: "artifact lacks a valid Project harness discovery and compliance section/outcome" };
 	return { ok: true, verdict, harnessOutcome: harnessEvidence?.outcome };
 }
 
-function existingChildArtifactRefs(state: DeliveryState, artifact: string | undefined, aggregatePath: string | undefined): string[] {
-	return splitArtifactRefs(artifact)
-		.map((ref) => artifactAbsolutePath(state, ref))
-		.filter((candidate) => !aggregatePath || !isSameArtifactPath(candidate, aggregatePath))
-		.filter((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+function artifactContractIssue(state: DeliveryState, phase: RunnablePhase, artifact: string | undefined, planned: string | undefined, requireHarness: boolean): string | undefined {
+	if (!artifact || !planned) return "missing planned artifact path";
+	const absolute = artifactAbsolutePath(state, artifact);
+	const expected = artifactAbsolutePath(state, planned);
+	if (!isSameArtifactPath(absolute, expected) || /[;\r\n]/.test(artifact)) return `artifact must match the exact planned artifact path ${expected}`;
+	if (!state.artifactDir) return "missing run artifact directory";
+	const artifactDir = path.resolve(state.artifactDir);
+	const relative = path.relative(artifactDir, absolute);
+	if (relative === "" || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return "artifact path is not contained in the run artifact directory";
+	const readiness = artifactReadiness(absolute, requireHarness);
+	if (!readiness.ok) return readiness.reason;
+	let text: string;
+	try { text = fs.readFileSync(absolute, "utf8"); } catch { return "artifact file cannot be read"; }
+	return artifactContentsContractIssue(phase, text, absolute);
 }
 
-function reconcileParallelChildArtifacts(state: DeliveryState, steps: DeliveryStep[], artifact: string | undefined, aggregatePath: string | undefined) {
-	const childSteps = steps
-		.filter((step) => step.childIndex !== undefined)
-		.sort((a, b) => (a.childIndex ?? 0) - (b.childIndex ?? 0));
-	if (!childSteps.length) return;
-	const missingSteps = childSteps.filter((step) => !artifactReadiness(step.artifact).ok);
-	if (!missingSteps.length) return;
-	const actualRefs = existingChildArtifactRefs(state, artifact, aggregatePath);
-	if (actualRefs.length !== childSteps.length) return;
-	childSteps.forEach((step, index) => {
-		step.artifact = actualRefs[index];
-	});
+function artifactContentsContractIssue(phase: RunnablePhase, text: string, artifactPath: string): string | undefined {
+	let headingOffset = 0;
+	for (const heading of PHASE_CONTRACTS[phase].requiredHeadings) {
+		const match = new RegExp(`^## ${heading.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}[ \\t]*\\r?$`, "m").exec(text.slice(headingOffset));
+		if (!match) return `artifact is missing required heading ## ${heading}`;
+		headingOffset += match.index + match[0].length;
+	}
+	for (const match of text.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+		const target = decodeURIComponent(match[1]!.trim().replace(/^<|>$/g, "")).split("#", 1)[0]!;
+		if (!target || /^(?:[a-z]+:|#)/i.test(target)) continue;
+		const linked = path.resolve(path.dirname(artifactPath), target);
+		if (!fs.existsSync(linked) || !fs.statSync(linked).isFile()) return `linked local artifact does not exist: ${target}`;
+	}
+	return undefined;
 }
 
-function parallelChildArtifactIssues(steps: DeliveryStep[], requireHarness = false): string[] {
+function parallelChildArtifactIssues(state: DeliveryState, phase: RunnablePhase, steps: DeliveryStep[], requireHarness = false): string[] {
 	return steps
 		.filter((step) => step.childIndex !== undefined)
 		.map((step) => {
-			const readiness = artifactReadiness(step.artifact, requireHarness);
-			if (readiness.ok) return undefined;
+			const issue = artifactContractIssue(state, phase, step.artifact, step.artifact, requireHarness);
+			if (!issue) return undefined;
 			const childNumber = (step.childIndex ?? 0) + 1;
 			const total = step.childCount ?? steps.length;
-			return `${step.phase} #${step.attempt} child ${childNumber}/${total}: ${readiness.reason}${step.artifact ? ` (${step.artifact})` : ""}`;
+			return `${step.phase} #${step.attempt} child ${childNumber}/${total}: ${issue}${step.artifact ? ` (${step.artifact})` : ""}`;
 		})
 		.filter((issue): issue is string => Boolean(issue));
 }
@@ -1213,20 +1230,27 @@ function markdownLinkForArtifact(state: DeliveryState, artifact: string): string
 	return `[${mdEscape(path.basename(relative) || relative)}](${relative.replace(/ /g, "%20")})`;
 }
 
-function derivedParallelReviewVerdict(steps: DeliveryStep[]): "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL" {
+function aggregateVerdictPrecedence(phase: RunnablePhase): Readonly<Partial<Record<Verdict, number>>> {
+	const precedence = PHASE_CONTRACTS[phase].aggregateVerdictPrecedence;
+	if (!precedence) throw new Error(`Phase ${phase} does not support parallel aggregate verdicts`);
+	return precedence;
+}
+
+function derivedParallelVerdict(phase: RunnablePhase, steps: DeliveryStep[]): Verdict {
+	const precedence = aggregateVerdictPrecedence(phase);
 	const verdicts = steps.map((step) => artifactVerdict(step.artifact));
-	const unsupported = verdicts.find((verdict) => verdict !== "PASS" && verdict !== "PASS_WITH_NON_BLOCKING_NOTES" && verdict !== "FAIL");
+	const unsupported = verdicts.find((verdict) => verdict !== undefined && precedence[verdict] === undefined);
 	if (unsupported) {
-		throw new Error(`Cannot report REVIEW: child RESULT verdict ${unsupported} is not valid for REVIEW; expected PASS, PASS_WITH_NON_BLOCKING_NOTES, or FAIL`);
+		throw new Error(`Cannot report ${phase}: child RESULT verdict ${unsupported} is not valid for ${phase}; expected ${Object.keys(precedence).join(", ")}`);
 	}
 	// Child readiness is checked before derivation, so an absent verdict is an invariant
 	// violation rather than a verdict that can silently weaken the aggregate.
 	if (verdicts.some((verdict) => verdict === undefined)) {
-		throw new Error("Cannot report REVIEW: every child artifact must have a supported RESULT verdict");
+		throw new Error(`Cannot report ${phase}: every child artifact must have a supported RESULT verdict`);
 	}
-	if (verdicts.some((verdict) => verdict === "FAIL")) return "FAIL";
-	if (verdicts.some((verdict) => verdict === "PASS_WITH_NON_BLOCKING_NOTES")) return "PASS_WITH_NON_BLOCKING_NOTES";
-	return "PASS";
+	return verdicts.reduce((minimum, verdict) =>
+		(precedence[verdict!] ?? -1) > (precedence[minimum] ?? -1) ? verdict! : minimum,
+		"PASS" as Verdict);
 }
 
 function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string }, steps: DeliveryStep[]): string {
@@ -1244,16 +1268,34 @@ function aggregateArtifactMarkdown(state: DeliveryState, params: { phase: Runnab
 		})
 		.join("\n") || "none";
 	const childOutcomes = steps.map((step) => step.artifact ? artifactHarnessOutcome(step.artifact) : undefined);
+	if (childOutcomes.some((outcome) => outcome === undefined)) {
+		throw new Error(`Cannot generate ${params.phase} aggregate: every child artifact must include valid project harness evidence`);
+	}
 	const harnessOutcome: HarnessOutcome = childOutcomes.includes("blocked")
 		? "blocked"
 		: childOutcomes.length > 0 && childOutcomes.every((outcome) => outcome === "none discovered")
 			? "none discovered"
 			: "applied";
 	const harnessSection = `## Project harness discovery and compliance\n- Discovery scope checked: parallel child artifacts\n- Entry points discovered: see child artifacts\n- Mandatory references followed: see child artifacts\n- Phase-relevant rules applied: aggregate preserves each child's evidence\n- Conflicts, gaps, or unreadable instructions: see child artifacts\n- Outcome: ${harnessOutcome}`;
-	if (params.phase === "REVIEW") {
-		return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Must-fix findings\n${isFail(verdict) ? params.summary : "none"}\n\n## Non-blocking notes\n${verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none"}\n\n## Evidence reviewed\n${childLines}\n\n## Risk checks\n- Aggregate review verdict derived from preserved parallel reviewer artifacts.\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n\n${harnessSection}\n`;
-	}
-	return `RESULT: ${verdict}\n\n## Summary\n${params.summary}\n\n## Evidence\n${childLines}\n\n## Recommendation\n${isFail(verdict) ? "repair" : "none"}\n\n${harnessSection}\n`;
+	const sectionContents = params.phase === "REVIEW"
+		? {
+			Summary: params.summary,
+			"Must-fix findings": isFail(verdict) ? params.summary : "none",
+			"Non-blocking notes": verdict === "PASS_WITH_NON_BLOCKING_NOTES" ? params.summary : "none",
+			"Evidence reviewed": childLines,
+			"Risk checks": "- Aggregate review verdict derived from preserved parallel reviewer artifacts.",
+			Recommendation: isFail(verdict) ? "repair" : "none",
+		}
+		: {
+			Summary: params.summary,
+			Findings: isFail(verdict) ? params.summary : "none",
+			"Commands run": "none (aggregate)",
+			"Behavioral evidence": childLines,
+			"Candidate completeness": "- Parallel child artifacts validated.",
+			"Residual risks": "none",
+			Recommendation: isFail(verdict) ? "repair" : "none",
+		};
+	return `${renderPhaseArtifactMarkdown(params.phase, verdict, sectionContents)}\n${harnessSection}\n`;
 }
 
 interface ReportStepUsageInput {
@@ -1281,13 +1323,26 @@ interface DeliveryReportInput {
 	stepUsage?: ReportStepUsageInput[];
 }
 
+function writeFileAtomically(filePath: string, contents: string): void {
+	const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	try {
+		fs.writeFileSync(temporary, contents, { encoding: "utf8", flag: "wx" });
+		fs.renameSync(temporary, filePath);
+	} finally {
+		fs.rmSync(temporary, { force: true });
+	}
+}
+
 function ensureAggregateArtifactForParallelReport(state: DeliveryState, params: { phase: RunnablePhase; verdict?: Verdict; summary: string; artifact?: string }, steps: DeliveryStep[]): string | undefined {
 	const aggregatePath = aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase));
 	if (!aggregatePath) return params.artifact;
-	// The aggregate is derived evidence, not caller-owned evidence. Regenerate it even
-	// when the caller has already created the planned path so its structured harness
-	// status cannot contradict the validated child artifacts.
-	fs.writeFileSync(aggregatePath, aggregateArtifactMarkdown(state, params, steps), "utf8");
+	if (params.artifact && !isSameArtifactPath(artifactAbsolutePath(state, params.artifact), aggregatePath)) {
+		throw new Error(`Cannot report ${params.phase}: aggregate artifact must match the exact planned artifact path ${aggregatePath}`);
+	}
+	const markdown = aggregateArtifactMarkdown(state, params, steps);
+	const issue = artifactContentsContractIssue(params.phase, markdown, aggregatePath);
+	if (issue) throw new Error(`Cannot report ${params.phase}: generated aggregate ${issue}`);
+	writeFileAtomically(aggregatePath, markdown);
 	return aggregatePath;
 }
 
@@ -1346,6 +1401,20 @@ function applyExplicitReportUsage(ctx: ExtensionContext, state: DeliveryState, s
 	return changed;
 }
 
+function validateReportInput(state: DeliveryState, params: DeliveryReportInput): asserts params is DeliveryReportInput & { phase: RunnablePhase; verdict: Verdict } {
+	if (!state.active || !isRunnablePhase(state.phase)) {
+		throw new Error(`Cannot report ${params.phase}: delivery is not in an active runnable phase (current phase is ${state.phase})`);
+	}
+	if (params.phase !== state.phase) {
+		throw new Error(`Cannot report ${params.phase}: current phase is ${state.phase}; expected ${state.phase}`);
+	}
+	if (!params.verdict) throw new Error(`Cannot report ${params.phase}: verdict is required`);
+	const allowedVerdicts = PHASE_CONTRACTS[params.phase].allowedVerdicts;
+	if (!allowedVerdicts.includes(params.verdict)) {
+		throw new Error(`Cannot report ${params.phase}: verdict ${params.verdict} is not valid; allowed verdicts: ${allowedVerdicts.join(", ")}`);
+	}
+}
+
 function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params: DeliveryReportInput): string | undefined {
 	if (!isRunnablePhase(params.phase)) return params.artifact;
 	const steps = ensurePlannedStepsForReport(state, ctx, params.phase);
@@ -1355,39 +1424,53 @@ function recordReportedSteps(state: DeliveryState, ctx: ExtensionContext, params
 	blockAmbiguousPriorBackfill(state, ambiguousBoundaryIds, usageAfter);
 	refreshAmbiguousReportingBaselines(steps, ambiguousBoundaryIds, usageAfter);
 	const parallel = steps.length > 1;
-	const aggregatePath = parallel ? aggregateArtifactPath(state, params.phase, steps[0]?.attempt ?? phaseAttemptForStep(state, params.phase)) : undefined;
 	if (parallel) {
-		reconcileParallelChildArtifacts(state, steps, params.artifact, aggregatePath);
-		const childArtifactIssues = parallelChildArtifactIssues(steps, isPass(params.verdict));
-		if (childArtifactIssues.length) {
-			throw new Error(`Cannot report ${params.phase}: parallel child artifacts are missing or invalid. Save each child output to details.next.parallel[].artifact or pass actual existing child artifact paths in artifact before reporting. Issues: ${childArtifactIssues.join("; ")}`);
+		const readinessIssues = steps
+			.filter((step) => step.childIndex !== undefined)
+			.map((step) => ({ step, readiness: artifactReadiness(step.artifact, true) }))
+			.filter((item) => !item.readiness.ok);
+		if (readinessIssues.length) throw new Error(`Cannot report ${params.phase}: parallel child artifacts are missing or invalid: ${readinessIssues.map(({ step, readiness }) => `${readiness.reason} (${step.artifact ?? "missing path"})`).join("; ")}`);
+		if (PHASE_CONTRACTS[params.phase].parallelEligible) {
+			const precedence = aggregateVerdictPrecedence(params.phase);
+			const derivedVerdict = derivedParallelVerdict(params.phase, steps);
+			if ((precedence[params.verdict!] ?? -1) < (precedence[derivedVerdict] ?? -1)) {
+				throw new Error(`Cannot report ${params.phase} with verdict ${params.verdict ?? "missing"}: child RESULT verdicts require aggregate verdict ${derivedVerdict} or a more conservative verdict`);
+			}
 		}
-		if (params.phase === "REVIEW") {
-			const derivedVerdict = derivedParallelReviewVerdict(steps);
-			if (params.verdict !== derivedVerdict) {
-				throw new Error(`Cannot report REVIEW with verdict ${params.verdict ?? "missing"}: child RESULT verdicts require aggregate verdict ${derivedVerdict}`);
+		const childArtifactIssues = parallelChildArtifactIssues(state, params.phase, steps, true);
+		if (childArtifactIssues.length) {
+			throw new Error(`Cannot report ${params.phase}: parallel child artifacts are missing or invalid. Issues: ${childArtifactIssues.join("; ")}`);
+		}
+		if (isPass(params.verdict)) {
+			for (const step of steps.filter((item) => item.childIndex !== undefined)) {
+				const readiness = artifactReadiness(step.artifact, true);
+				if (!readiness.ok) throw new Error(`Cannot report successful ${params.phase}: ${readiness.reason} (${step.artifact})`);
+				if (readiness.harnessOutcome === "blocked") throw new Error(`Cannot report successful ${params.phase}: project harness outcome is blocked (${step.artifact})`);
 			}
 		}
 	}
 	const reportArtifact = parallel ? ensureAggregateArtifactForParallelReport(state, { ...params, phase: params.phase }, steps) : params.artifact;
-	if (!parallel && reportArtifact && params.verdict) {
-		const readiness = artifactReadiness(artifactAbsolutePath(state, reportArtifact));
+	if (!parallel) {
+		const plannedArtifact = steps[0]?.artifact;
+		if (!reportArtifact) throw new Error(`Cannot report ${params.phase}: missing planned artifact path`);
+		const absoluteArtifact = artifactAbsolutePath(state, reportArtifact);
+		if (!plannedArtifact || !isSameArtifactPath(absoluteArtifact, artifactAbsolutePath(state, plannedArtifact)) || /[;\r\n]/.test(reportArtifact)) {
+			throw new Error(`Cannot report ${params.phase}: artifact must match the exact planned artifact path ${plannedArtifact ?? "<missing>"}`);
+		}
+		const readiness = artifactReadiness(absoluteArtifact);
 		if (!readiness.ok) throw new Error(`Cannot report ${params.phase}: ${readiness.reason} (${reportArtifact})`);
 		if (readiness.verdict !== params.verdict) {
 			throw new Error(`Cannot report ${params.phase} with verdict ${params.verdict}: artifact RESULT is ${readiness.verdict}`);
 		}
+		const issue = artifactContractIssue(state, params.phase, reportArtifact, plannedArtifact, true);
+		if (issue) throw new Error(`Cannot report ${params.phase}: ${issue} (${reportArtifact})`);
 	}
 	if (isPass(params.verdict)) {
 		if (!reportArtifact) throw new Error(`Cannot report successful ${params.phase}: missing artifact path`);
-		const artifacts = (parallel ? [...steps.map((step) => step.artifact), reportArtifact] : [reportArtifact])
-			.filter((item): item is string => Boolean(item));
-		for (const artifact of new Set(artifacts)) {
-			const readiness = artifactReadiness(artifactAbsolutePath(state, artifact), true);
-			if (!readiness.ok) throw new Error(`Cannot report successful ${params.phase}: ${readiness.reason} (${artifact})`);
-			if (readiness.harnessOutcome === "blocked") throw new Error(`Cannot report successful ${params.phase}: project harness outcome is blocked (${artifact})`);
-			if (!parallel && readiness.verdict !== params.verdict) {
-				throw new Error(`Cannot report successful ${params.phase} with verdict ${params.verdict}: artifact RESULT is ${readiness.verdict}`);
-			}
+		if (!parallel) {
+			const readiness = artifactReadiness(artifactAbsolutePath(state, reportArtifact), true);
+			if (!readiness.ok) throw new Error(`Cannot report successful ${params.phase}: ${readiness.reason} (${reportArtifact})`);
+			if (readiness.harnessOutcome === "blocked") throw new Error(`Cannot report successful ${params.phase}: project harness outcome is blocked (${reportArtifact})`);
 		}
 	}
 	const endedAt = Date.now();
@@ -1457,11 +1540,14 @@ function formatNextAction(state: DeliveryState): string {
 	].join("\n");
 }
 
+function hasCompleteAutomaticRepairBudget(state: DeliveryState): boolean {
+	return hasImplementRepairBudget(state)
+		&& state.verifyRound < maxRoundsForPhase(state, "VERIFY")
+		&& state.reviewRound < maxRoundsForPhase(state, "REVIEW");
+}
+
 function applyAutoRepairDecision(state: DeliveryState, pending: PendingIssue): boolean {
-	if (pending.recommendedDecision !== "repair") return false;
-	if (!hasImplementRepairBudget(state)) return false;
-	if (pending.source === "verify" && state.verifyRound >= maxRoundsForPhase(state, "VERIFY")) return false;
-	if (pending.source === "review" && state.reviewRound >= maxRoundsForPhase(state, "REVIEW")) return false;
+	if (pending.recommendedDecision !== "repair" || !hasCompleteAutomaticRepairBudget(state)) return false;
 	state.pendingIssue = pending;
 	state.phase = "IMPLEMENT";
 	addHistory(state, {
@@ -1484,10 +1570,24 @@ function transitionAfterReport(state: DeliveryState, params: { phase: Phase; ver
 	});
 
 	if (params.phase === "IMPLEMENT") {
+		if (params.verdict === "FAIL") {
+			state.pendingIssue = {
+				// Preserve the issue that initiated a repair so a nested implementation
+				// failure cannot lose the downstream VERIFY/REVIEW obligations.
+				source: state.pendingIssue?.source ?? "implement",
+				phase: "IMPLEMENT",
+				verdict: "FAIL",
+				summary: params.summary,
+				artifact: params.artifact,
+				recommendedDecision: params.recommendedDecision ?? "repair",
+			};
+			state.phase = "WAITING_DECISION";
+			return;
+		}
 		const repairedIssue = state.pendingIssue;
 		state.pendingIssue = undefined;
 		if (repairedIssue?.source === "verify") state.verifyRound += 1;
-		else if (repairedIssue?.source === "review") {
+		else if (repairedIssue?.source === "review" || repairedIssue?.source === "close") {
 			state.reviewRound += 1;
 			state.verifyRound += 1;
 		} else {
@@ -1511,7 +1611,7 @@ function transitionAfterReport(state: DeliveryState, params: { phase: Phase; ver
 			verdict: params.verdict ?? "INCONCLUSIVE",
 			summary: params.summary,
 			artifact: params.artifact,
-			recommendedDecision: params.recommendedDecision ?? (hasImplementRepairBudget(state) && state.verifyRound < maxRoundsForPhase(state, "VERIFY") ? "repair" : "stop"),
+			recommendedDecision: params.recommendedDecision ?? (hasCompleteAutomaticRepairBudget(state) ? "repair" : "stop"),
 		};
 		if (params.recommendedDecision === "repair" && applyAutoRepairDecision(state, pending)) return;
 		state.pendingIssue = pending;
@@ -1533,7 +1633,7 @@ function transitionAfterReport(state: DeliveryState, params: { phase: Phase; ver
 			verdict: params.verdict ?? "FAIL",
 			summary: params.summary,
 			artifact: params.artifact,
-			recommendedDecision: params.recommendedDecision ?? (hasImplementRepairBudget(state) && state.reviewRound < maxRoundsForPhase(state, "REVIEW") ? "repair" : "stop"),
+			recommendedDecision: params.recommendedDecision ?? (hasCompleteAutomaticRepairBudget(state) ? "repair" : "stop"),
 		};
 		if (params.recommendedDecision === "repair" && applyAutoRepairDecision(state, pending)) return;
 		state.pendingIssue = pending;
@@ -1565,6 +1665,32 @@ function transitionAfterReport(state: DeliveryState, params: { phase: Phase; ver
 	}
 }
 
+function authorizeRepairCapacity(state: DeliveryState, pending: PendingIssue): void {
+	const targets = {
+		IMPLEMENT: completedImplementationReports(state) + 1,
+		VERIFY: state.verifyRound + (pending.source === "verify" || pending.source === "review" || pending.source === "close" ? 1 : 0),
+		REVIEW: state.reviewRound + (pending.source === "verify" || pending.source === "review" || pending.source === "close" ? 1 : 0),
+	};
+	const changes: string[] = [];
+	for (const phase of ["IMPLEMENT", "VERIFY", "REVIEW"] as const) {
+		const oldLimit = maxRoundsForPhase(state, phase);
+		const newLimit = Math.max(oldLimit, targets[phase]);
+		if (newLimit === oldLimit) continue;
+		state.maxPhaseRounds[phase] = newLimit;
+		changes.push(`${phase} ${oldLimit}→${newLimit}`);
+	}
+	state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
+	if (changes.length) {
+		addHistory(state, {
+			phase: "IMPLEMENT",
+			event: "repair_budget_extension",
+			decision: "repair",
+			summary: `User-authorized complete repair cycle: ${changes.join(", ")}`,
+			artifact: pending.artifact,
+		});
+	}
+}
+
 function applyDecision(state: DeliveryState, decision: Decision, rationale?: string) {
 	const pending = state.pendingIssue;
 	addHistory(state, {
@@ -1576,7 +1702,7 @@ function applyDecision(state: DeliveryState, decision: Decision, rationale?: str
 	});
 
 	if (!pending) {
-		if (decision === "stop") {
+		if (decision === "stop" || decision === "defer") {
 			state.phase = "STOPPED";
 			state.active = false;
 		}
@@ -1589,10 +1715,15 @@ function applyDecision(state: DeliveryState, decision: Decision, rationale?: str
 		return;
 	}
 
-	if (decision === "accept_risk") {
+	// Legacy continue maps to accept_risk; legacy defer maps to stop above.
+	if (decision === "accept_risk" || decision === "continue") {
 		state.acceptedRisks.push(`${pending.source}: ${truncate(pending.summary, 240)}`);
 		state.pendingIssue = undefined;
-		if (pending.source === "verify") state.phase = "REVIEW";
+		if (pending.phase === "IMPLEMENT") {
+			// A failed implementation cannot become a verified candidate by accepting risk.
+			state.phase = "STOPPED";
+			state.active = false;
+		} else if (pending.source === "verify") state.phase = "REVIEW";
 		else if (pending.source === "review") {
 			state.readyToClose = true;
 			state.phase = "CLOSE";
@@ -1600,52 +1731,11 @@ function applyDecision(state: DeliveryState, decision: Decision, rationale?: str
 		return;
 	}
 
-	if (decision === "continue") {
-		state.pendingIssue = undefined;
-		if (pending.source === "verify") state.phase = "REVIEW";
-		else if (pending.source === "review") {
-			state.readyToClose = true;
-			state.phase = "CLOSE";
-		} else state.phase = "RETRO";
-		return;
-	}
-
-	// repair: route back to IMPLEMENT with the pending issue attached. IMPLEMENT is the only writer phase.
+	// Explicit repair authorizes enough capacity for one complete writer/verify/review cycle.
+	authorizeRepairCapacity(state, pending);
 	state.pendingIssue = pending;
-	if (pending.source === "verify") {
-		if (!hasImplementRepairBudget(state)) {
-			state.phase = "STOPPED";
-			state.active = false;
-			addHistory(state, { phase: "STOPPED", event: "max_implement_rounds", summary: `Reached ${maxRoundsForPhase(state, "IMPLEMENT")} implement repair attempts` });
-			return;
-		}
-		if (state.verifyRound >= maxRoundsForPhase(state, "VERIFY")) {
-			state.phase = "STOPPED";
-			state.active = false;
-			addHistory(state, { phase: "STOPPED", event: "max_verify_rounds", summary: `Reached ${maxRoundsForPhase(state, "VERIFY")} verify repair rounds` });
-			return;
-		}
-		state.phase = "IMPLEMENT";
-		return;
-	}
-	if (pending.source === "review") {
-		if (!hasImplementRepairBudget(state)) {
-			state.phase = "STOPPED";
-			state.active = false;
-			addHistory(state, { phase: "STOPPED", event: "max_implement_rounds", summary: `Reached ${maxRoundsForPhase(state, "IMPLEMENT")} implement repair attempts` });
-			return;
-		}
-		if (state.reviewRound >= maxRoundsForPhase(state, "REVIEW")) {
-			state.phase = "STOPPED";
-			state.active = false;
-			addHistory(state, { phase: "STOPPED", event: "max_review_rounds", summary: `Reached ${maxRoundsForPhase(state, "REVIEW")} review repair rounds` });
-			return;
-		}
-		state.phase = "IMPLEMENT";
-		return;
-	}
-	state.phase = "STOPPED";
-	state.active = false;
+	state.readyToClose = false;
+	state.phase = "IMPLEMENT";
 }
 
 function formatPhaseCounts(state: DeliveryState): string[] {
@@ -2230,16 +2320,17 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		],
 		parameters: REPORT_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!state.active && state.phase !== "RETRO") {
-				return { content: [{ type: "text", text: "No active delivery. Use delivery_start or /deliver first." }], details: { state: cloneState(state) } };
-			}
 			const reportParams = { ...(params as DeliveryReportInput) };
-			reportParams.artifact = recordReportedSteps(state, ctx, reportParams) ?? reportParams.artifact;
-			transitionAfterReport(state, reportParams);
+			validateReportInput(state, reportParams);
+			const candidate = cloneState(state);
+			reportParams.artifact = recordReportedSteps(candidate, ctx, reportParams) ?? reportParams.artifact;
+			transitionAfterReport(candidate, reportParams);
+			state = candidate;
 			persist();
 			updateUi(ctx, state);
-			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
-			return { content: [{ type: "text", text }], details: { state: cloneState(state), next: nextAction(state) } };
+			const snapshot = cloneState(state);
+			const text = shouldShowSummary(snapshot) ? formatDeliverySummary(snapshot, ctx) : formatState(snapshot);
+			return { content: [{ type: "text", text }], details: { state: snapshot, next: nextAction(snapshot) } };
 		},
 	});
 

@@ -24,17 +24,6 @@ Instructions:
 - Report MR/PR link, branch, commit, and checks; or explain why no MR/PR was needed.
 - If no MR/PR is needed for a non-repo or no-diff task, treat close as PASS and explain why in the summary.
 
-Artifact contract for CLOSE (use these headings in this order):
-
-    RESULT: MR_CREATED|DONE|FAIL
-
-    ## Summary
-    ## Close-readiness checklist
-    ## Branch / commit / PR
-    ## Commands run
-    ## Remote CI
-    ## Residual risks
-
 The Close-readiness checklist section must include:
 - Local fast verification passed after the final code change: yes/no, command + result
 - Code changed after that verification: yes/no

@@ -503,7 +503,7 @@ Any correctness, persistence, security, artifact-integrity, package-discovery, o
 ## Execution checklist
 
 - [x] **Stage 0:** create the dedicated worktree from fetched `origin/main`, run `npm run verify`, confirm the pre-change tracked baseline is clean, and record `COMPATIBILITY_BASELINE.md`.
-- [ ] **Stage 1:** add transition, decision-menu, user-authorized round-extension, artifact-integrity, and persistence regressions; capture the expected failures; confirm production files remain zero-diff.
+- [x] **Stage 1:** add transition, decision-menu, user-authorized round-extension, artifact-integrity, and persistence regressions; capture the expected failures; confirm production files remain zero-diff.
 - [ ] **Stage 2:** implement the workflow-atomic report pipeline, three-choice user-facing decision contract, and explicit one-cycle repair authorization using existing-compatible artifact inspection and write mechanics; pass the Stage 2-owned regressions while retaining the documented Stage 3 expected failures; complete the transition atomicity, dominance, budget, persistence, and write-order review.
 - [ ] **Stage 3:** enforce exact artifact contracts and filesystem-atomic aggregate replacement; pass all remaining Stage 3-owned regressions; prove path containment and local-link completeness; pass the mandatory post-Stage-3 review gate.
 - [ ] **Stage 4:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summaries, and standard truncation; pass focused runtime tests.

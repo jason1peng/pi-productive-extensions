@@ -3,8 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DELIVERY_PHASES, profileConfigFromRaw, readActiveProfilePayload, selectDeliveryProfile, type DeliveryProfileDefinitionSource, type DeliveryProfileSelectionSource } from "../../shared/delivery-profile-config.ts";
+import { PHASE_CONTRACTS, phaseArtifactContractMarkdown, type RunnablePhase } from "./phase-contract.ts";
 
-export type RunnablePhase = (typeof DELIVERY_PHASES)[number];
+export type { RunnablePhase } from "./phase-contract.ts";
 
 export interface PhasePromptContext {
 	task: string;
@@ -180,6 +181,10 @@ function validateLaunchConfig(config: unknown, filename: string, label: string):
 function validateLaunches(value: unknown, filename: string, phase: RunnablePhase, profileName: string): LaunchConfig[] {
 	const values = Array.isArray(value) ? value : [value];
 	if (!values.length) throw new Error(`Launch config ${filename} profile ${profileName} phase ${phase} must include at least one launch.`);
+	if (values.length > 1 && !PHASE_CONTRACTS[phase].parallelEligible) {
+		const eligible = DELIVERY_PHASES.filter((candidate) => PHASE_CONTRACTS[candidate].parallelEligible).join(" and ");
+		throw new Error(`Launch config ${filename} profile ${profileName} phase ${phase} cannot use parallel launches; only ${eligible} support parallel execution.`);
+	}
 	return values.map((launch, index) => validateLaunchConfig(launch, filename, `profiles.${profileName}.${phase}[${index}]`));
 }
 
@@ -246,17 +251,28 @@ function loadLaunchConfigBundle(): { launches: Record<RunnablePhase, LaunchConfi
 	return { launches: config.profiles[profileResolution.selectedProfile], profileResolution };
 }
 
-function materializeConfig(prompt: Required<PromptConfig>, launches: LaunchConfig[]): PhaseConfig {
+function materializeConfig(phase: RunnablePhase, prompt: Required<PromptConfig>, launches: LaunchConfig[]): PhaseConfig {
 	return {
 		launches,
 		orchestratorInstruction: (context) => render(prompt.orchestratorInstruction, context),
-		childPrompt: (context) => render(prompt.childPrompt, context),
+		childPrompt: (context) => `${render(prompt.childPrompt, context)}\n\n${phaseArtifactContractMarkdown(phase)}`,
 	};
 }
 
-export function materializePhaseConfigs(launchConfig: Record<RunnablePhase, LaunchConfig[]>): Record<RunnablePhase, PhaseConfig> {
+export function validatePhaseLaunches(launchConfig: unknown, source = "pinned phase launch bundle"): Record<RunnablePhase, LaunchConfig[]> {
+	if (!launchConfig || typeof launchConfig !== "object" || Array.isArray(launchConfig)) {
+		throw new Error(`Launch config ${source} must define every runnable phase.`);
+	}
+	const raw = launchConfig as Record<string, unknown>;
 	return Object.fromEntries(
-		(Object.keys(PHASE_FILES) as RunnablePhase[]).map((phase) => [phase, materializeConfig(promptConfigForPhase(phase), launchConfig[phase])]),
+		DELIVERY_PHASES.map((phase) => [phase, validateLaunches(raw[phase], source, phase, "pinned")]),
+	) as Record<RunnablePhase, LaunchConfig[]>;
+}
+
+export function materializePhaseConfigs(launchConfig: Record<RunnablePhase, LaunchConfig[]>): Record<RunnablePhase, PhaseConfig> {
+	const validatedLaunches = validatePhaseLaunches(launchConfig);
+	return Object.fromEntries(
+		(Object.keys(PHASE_FILES) as RunnablePhase[]).map((phase) => [phase, materializeConfig(phase, promptConfigForPhase(phase), validatedLaunches[phase])]),
 	) as Record<RunnablePhase, PhaseConfig>;
 }
 

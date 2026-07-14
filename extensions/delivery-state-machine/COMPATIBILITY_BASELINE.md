@@ -1,17 +1,39 @@
 # Delivery State Machine Compatibility Baseline
 
-This inventory records the public and persisted behavior that the improvement plan must preserve during its initial correctness work. It describes the implementation at commit `f77f52d` on `main`.
+This inventory records the public and persisted behavior that the improvement plan must preserve during its initial correctness work. It describes the implementation at commit `66534a8` on `main`, after the bounded-review prerequisite merged.
 
 ## Baseline validation
 
-- Dedicated worktree: `/Users/jason/ai/pi-productive-extensions-stage-0`
-- Branch: `delivery/stage-0`, created from `origin/main` after `git fetch origin main`
-- Baseline commit: `f77f52d` (`Allow cleanup of untracked-only worktrees (#26)`)
+- Dedicated worktree: `/Users/jpeng/ai/worktrees/pi-productive-extensions-dsm-improvement`
+- Branch: `delivery/dsm-improvement-continued`, created from `origin/main`
+- Baseline commit: `66534a8` (`Bound delivery review scope (#36)`)
 - Command: `npm run verify`
-- Result: PASS. The delivery-state-machine, session-usage, git-cleanup, and report-viewer suites all passed.
-- Tracked baseline: clean before Stage 0 documentation was added. The worktree now contains this inventory and `IMPROVEMENT_PLAN.md` as the Stage 0 candidate; `.pi-subagents/` is delivery-run metadata and is not a project deliverable.
+- Result: PASS on 2026-07-13. The delivery-state-machine, session-usage, git-cleanup, and report-viewer suites all passed.
+- Baseline cleanliness: `git status --short` was empty after removing local `.pi-subagents/` run metadata; no tracked or untracked project change preceded this rebaseline update.
 
 Stage 1 must not begin from a worktree with unrelated tracked or untracked changes.
+
+## Stage 1 regression baseline
+
+The regression harness now continues after individual failures so the complete intentional-failure inventory is visible in one focused run. On 2026-07-13, the focused delivery-state-machine command ran 62 tests: 54 existing or newly clarified expectations passed and these eight production gaps failed as intended:
+
+1. single-child actions omit the exact `outputMode: "file-only"` contract;
+2. report validation inspects artifacts before rejecting a wrong phase;
+3. `IMPLEMENT: FAIL` advances instead of waiting for a decision;
+4. the decision prompt still offers legacy `continue` and `defer` choices;
+5. newly submitted artifacts are not yet restricted to the exact planned regular contained path and complete phase headings;
+6. a conservative parent REVIEW verdict is rejected when children pass;
+7. parallel IMPLEMENT and CLOSE launch profiles are accepted;
+8. explicit `repair` cannot authorize a complete cycle after round exhaustion.
+
+Command:
+
+```bash
+NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} \
+  bun extensions/delivery-state-machine/tests/delivery-state-machine.test.ts
+```
+
+Result: expected non-zero exit with `8 delivery-state-machine test(s) failed`. No production file differs from baseline commit `66534a8`; Stage 2 owns items 2–4, 6, and 8, while Stage 3 owns items 1 and 5. The launch-profile constraint in item 7 is enforced when the relevant phase configuration is implemented.
 
 ## Registered names
 
@@ -168,6 +190,16 @@ Readers must prefer JSON when present, fall back to the Markdown report for lega
 7. `## Phase counts`
 
 The journey table columns remain `#`, `Phase`, `Agent`, `Model`, `Verdict`, `Token usage`, and `Detail`. The failure table columns remain `Failed step`, `Why it failed`, `Repair action`, and `Detail`. Legacy history-only runs must continue to render in this structure.
+
+## Bounded verification and review behavior
+
+The merged prerequisite adds a prompt-level workflow contract without changing tool names, schemas, persisted state, phase order, verdicts, or report schema v2:
+
+- Verification and review investigate broadly but adjudicate against the accepted task and decisions, documented invariants, accepted plan, supported operating/threat model, and explicit exclusions, in that order.
+- Requirement/invariant violations and realistic supported-workflow regressions are blocking; unsupported/adversarial scenarios and optional hardening are non-blocking by default; contract expansion requests parent/user judgment.
+- Every must-fix finding cites the accepted requirement or invariant, a realistic supported-model reproducer, and the safeguard/test gap.
+- Required independent-gate spawn exhaustion cannot become synthetic PASS or parent self-verification; a new Pi session is required.
+- Genuine in-scope VERIFY/REVIEW failures retain automatic repair routing through `recommendedDecision=repair`.
 
 ## Pinned launch-profile behavior
 

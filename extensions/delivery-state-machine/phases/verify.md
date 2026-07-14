@@ -31,18 +31,6 @@ Instructions:
 - For bug fixes, compare before/after behavior when feasible.
 - If end-to-end execution is blocked, report the exact blocker, gather the closest equivalent evidence, and clearly mark the residual risk.
 
-Artifact contract for VERIFY (use these headings in this order):
-
-    RESULT: PASS|FAIL|INCONCLUSIVE
-
-    ## Summary
-    ## Findings
-    ## Commands run
-    ## Behavioral evidence
-    ## Candidate completeness
-    ## Residual risks
-    ## Recommendation
-
 The Findings section must preserve all concern classes with nested labels for `Must-fix findings`, `Non-blocking concerns / hardening`, and `Decisions needed`. Include the failure reason and suggested repair when failing; write `none` for each empty class.
 The Candidate completeness and Behavioral evidence sections must include:
 - Diff inspected: yes/no

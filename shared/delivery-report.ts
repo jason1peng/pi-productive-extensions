@@ -5,7 +5,7 @@ export type DeliveryReportPhase = "IDLE" | "IMPLEMENT" | "VERIFY" | "REVIEW" | "
 export type DeliveryReportRunnablePhase = "IMPLEMENT" | "VERIFY" | "REVIEW" | "CLOSE" | "RETRO";
 export type DeliveryReportVerdict = "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL" | "INCONCLUSIVE" | "DONE" | "MR_CREATED";
 export type DeliveryReportDecision = "repair" | "stop" | "accept_risk" | "continue" | "defer";
-export type DeliveryReportIssueSource = "verify" | "review" | "close";
+export type DeliveryReportIssueSource = "implement" | "verify" | "review" | "close";
 export type DeliveryReportUsageAttribution = "exact" | "subagent-reported" | "best-effort" | "phase-aggregate" | "parent-overhead" | "unavailable";
 
 export interface DeliveryProjectMetadataV1 {

@@ -10,12 +10,6 @@ Launch the configured implementation subagent as sole writer for implementation.
 
 Implement this delivery phase as the sole writer.
 
-Task:
-{{task}}
-
-Current implementation focus:
-{{pendingIssueInstruction}}
-
 Instructions:
 - Inspect repository instructions before editing.
 - Make minimal code/test changes for the task or pending verify/review issue.
@@ -23,19 +17,6 @@ Instructions:
 - Do not push, create a branch for review, or create an MR/PR.
 - Report changed files plus concise evidence.
 - Before finishing, check candidate completeness with git status/diff when working in a git repository. Do not leave required source, test, config, script, or doc files untracked.
-
-Artifact contract for IMPLEMENT (use these headings in this order):
-
-    RESULT: PASS|FAIL
-
-    ## Summary
-    ## Required checklist
-    ## Changed files
-    ## Tests added or updated
-    ## Commands run
-    ## Evidence
-    ## Residual risks
-    ## Recommendation
 
 The Required checklist section must include:
 - Expected behavior clarified before changing production code: yes/no
@@ -46,5 +27,11 @@ The Required checklist section must include:
 - Candidate completeness checked: yes/no/not a git repo; required new files tracked and untracked files explained
 
 Use `none` for empty Residual risks or Recommendation. Separate missing evidence from blockers.
+
+Task:
+{{task}}
+
+Current implementation focus:
+{{pendingIssueInstruction}}
 
 {{artifactGuidance}}

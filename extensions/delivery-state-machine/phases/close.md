@@ -10,9 +10,6 @@ Launch the configured close subagent only if verification passed and review has 
 
 Close this delivery.
 
-Task:
-{{task}}
-
 Instructions:
 - Proceed only if final verification passed and final review has no blockers.
 - Inspect repository instructions.
@@ -23,17 +20,6 @@ Instructions:
 - Remote CI does not need to finish before close unless the user explicitly asks.
 - Report MR/PR link, branch, commit, and checks; or explain why no MR/PR was needed.
 - If no MR/PR is needed for a non-repo or no-diff task, treat close as PASS and explain why in the summary.
-
-Artifact contract for CLOSE (use these headings in this order):
-
-    RESULT: MR_CREATED|DONE|FAIL
-
-    ## Summary
-    ## Close-readiness checklist
-    ## Branch / commit / PR
-    ## Commands run
-    ## Remote CI
-    ## Residual risks
 
 The Close-readiness checklist section must include:
 - Local fast verification passed after the final code change: yes/no, command + result
@@ -46,5 +32,8 @@ The Close-readiness checklist section must include:
 - Remote CI status: informational only; do not wait for CI unless the user explicitly asks. If running, write "running, not waited for by design because local verification passed".
 
 The Branch / commit / PR section must include parseable branch, commit, and PR/MR URL lines when applicable. Use `none` for empty Residual risks.
+
+Task:
+{{task}}
 
 {{artifactGuidance}}

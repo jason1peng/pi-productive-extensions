@@ -42,7 +42,7 @@ The bundled verifier is instructed to be read-only for project/source files. It 
 Delivery run artifacts are stored under `~/.pi/delivery-run/projects/<project-id>/runs/<run-id>` by default, and runnable phases default to 3 max rounds. Override the artifact root and round defaults with either config file:
 
 - Global: `~/.pi/agent/extensions/delivery-state-machine.json`
-- Project-local: `<repo>/.pi/delivery-state-machine.json` (overrides global)
+- Project-local: `<repo>/.pi/delivery-state-machine.json` (overrides global only when Pi trusts the project)
 
 ```json
 {
@@ -57,7 +57,7 @@ Delivery run artifacts are stored under `~/.pi/delivery-run/projects/<project-id
 }
 ```
 
-`artifactRoot` supports `~`, `${home}`, and `${cwd}`. Relative paths in project config resolve against the project cwd; relative paths in global config resolve against `~/.pi/agent`. For one-off runs, `PI_DELIVERY_ARTIFACT_ROOT` overrides both config files and resolves relative paths against the current cwd. Every artifact root uses the same project layout: `<artifactRoot>/projects/<project-id>/runs/<run-id>`. The extension writes `<artifactRoot>/projects/<project-id>/project.json` with local project metadata for the report viewer.
+`artifactRoot` supports `~`, `${home}`, and `${cwd}`. The project root is the Git root when available, otherwise Pi's current cwd. Relative paths in trusted project config and `PI_DELIVERY_ARTIFACT_ROOT` resolve against that project root; relative paths in global config resolve against `~/.pi/agent`. Untrusted project configuration is ignored, while global configuration and the environment override remain available. Configuration is resolved once when a delivery starts. Every artifact root uses the same project layout: `<artifactRoot>/projects/<project-id>/runs/<run-id>`. The extension writes `<artifactRoot>/projects/<project-id>/project.json` with local project metadata for the report viewer.
 
 `maxRounds` supports `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`. `IMPLEMENT`, `VERIFY`, and `REVIEW` currently bound repair loops; `CLOSE` and `RETRO` are recorded for phase-specific defaults and future loop support. The legacy `maxRepairRounds` key is still accepted as a config or `delivery_start` parameter and applies the same value to every phase.
 
@@ -89,11 +89,13 @@ Repair loops are bounded by per-phase `maxRounds` (`maxRepairRounds` remains as 
 
 ## Guards
 
-While an active delivery is not in `CLOSE`/`RETRO`/`DONE`, the extension blocks bash commands that create/push PR/MR branches:
+While an active delivery is not in `CLOSE`/`RETRO`/`DONE`, the extension blocks agent `bash` commands that create/push PR/MR branches:
 
-- `git push`
+- `git push` (including `git -C`, `env`, `command`, executable-path, separator/newline, and nested `sh -c`/`bash -c` forms)
 - `glab mr create`
 - `gh pr create`
+
+Authorization comes from canonical workflow phase state; the legacy `readyToClose` field is normalized for compatibility and is not an independent bypass. Malformed active restored state fails closed. This guard is defense in depth, not a shell security boundary, and it does not intercept deliberate human `user_bash` (`!`/`!!`) commands.
 
 ## Artifact checklists
 
@@ -140,7 +142,7 @@ Phase files do not configure subagent launch settings or tools. Frontmatter may 
 
 Child usage is resolved at the pi-subagents persistence boundary. The adapter sums every `modelAttempts[].usage` entry (including failed fallback attempts), reads historical top-level `usage`, and validates totals against async transcript `message_end` records. When metadata has no usage, transcript totals are a fallback only if the transcript ends with a terminal assistant `message_end` rather than an in-progress tool call. It matches the exact planned artifact plus child-specific agent, timing, metadata file, and transcript identity. A shared parallel run ID is not a unique identity. Missing, incomplete, corrupt, ambiguous, or contradictory evidence is recorded as unavailable rather than guessed. The legacy `usageDelta`, `stepUsage`, session-file, and run-ID report fields remain parseable for schema compatibility, but exact adapter evidence wins.
 
-`delivery_summary` renders and writes the journey report to `<artifactDir>/00-delivery-summary.md`. Delivery total is current session usage minus the `delivery_start` baseline. Parent/orchestrator overhead is reported only when every delivery child has exact unique usage; otherwise child/overhead completeness is unavailable. Aggregate VERIFY/REVIEW rows never contribute usage. Status and summary rendering use immutable snapshots and never backfill or mutate live workflow state. Structured reports remain `schemaVersion: 2`.
+`delivery_summary` renders and atomically replaces the journey report at `<artifactDir>/00-delivery-summary.md` and its schema-v2 JSON companion. Derived write failures are returned as warnings and never reverse a completed workflow transition; unique temporary files are cleaned up and prior valid destinations are preserved. Retro summaries prefer canonical `## Critical fixes` and retain the old longer heading as a read fallback. Delivery total is current session usage minus the `delivery_start` baseline. Parent/orchestrator overhead is reported only when every delivery child has exact unique usage; otherwise child/overhead completeness is unavailable. Aggregate VERIFY/REVIEW rows never contribute usage. Status and summary rendering use immutable snapshots and never backfill or mutate live workflow state. Tool text is bounded with Pi's standard 50KB/2,000-line limits while complete structured `details` and full saved reports remain available.
 
 Phase markdown format:
 

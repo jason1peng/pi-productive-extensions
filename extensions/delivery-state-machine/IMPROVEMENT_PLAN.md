@@ -394,7 +394,7 @@ Require an independent bounded review of metadata-version handling, per-child id
 
 ### Review handoff
 
-Stage 5 focused/full validation must pass before Stage 6 starts. Its independent review is deliberately combined with the Stage 6 package/setup gate so the frozen runtime and installation behavior are adjudicated together after both are present.
+Stage 5 focused/full validation and an independent bounded runtime review must pass before Stage 6 starts. Stage 6 retains a combined integration review of the frozen runtime and installation behavior after both are present.
 
 ### Expected files
 
@@ -610,6 +610,6 @@ Any correctness, persistence, security, artifact-integrity, package-discovery, o
 - [x] **Stage 2:** ship and independently review the workflow-atomic report pipeline, decision contract, and explicit repair authorization in PR #37, with the general usage-rendering immutability follow-up assigned to Stage 4.
 - [x] **Stage 3:** ship exact artifact contracts and filesystem-atomic aggregate replacement in PR #37; pass containment, completeness, compatibility, and mandatory review gates.
 - [x] **Stage 4:** replace best-effort usage backfill with the version-tolerant pi-subagents adapter, exact per-child attribution, derived parent overhead, immutable reporting, focused/full validation, and the Stage 4 review gate.
-- [ ] **Stage 5:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summary policy, and standard truncation; pass focused/full runtime validation.
+- [x] **Stage 5:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summary policy, and standard truncation; pass focused/full runtime validation and the independent Stage 5 review gate.
 - [ ] **Stage 6:** confirm the `fresh-verifier` installation decision, implement the approved setup/discovery path, pass isolated package smoke, and complete the combined runtime/setup review gate.
 - [ ] **Stage 7:** extract modules one concern per commit, preserve dependency direction and compatibility, run the complete live smoke and final verification commands, and pass the final modularization review gate; stop release on any unresolved blocker.

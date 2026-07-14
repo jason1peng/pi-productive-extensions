@@ -21,6 +21,7 @@ interface RegisteredTool {
 interface FakeContext {
 	cwd: string;
 	hasUI: boolean;
+	isProjectTrusted: () => boolean;
 	ui: {
 		notify: () => void;
 		theme: { fg: (_kind: string, text: string) => string };
@@ -48,10 +49,10 @@ async function withTemporaryUserExtensionFile<T>(relativePath: string, content: 
 	}
 }
 
-function createHarness(options: { cwd?: string; sessionFile?: string; branchEntries?: any[] } = {}) {
+function createHarness(options: { cwd?: string; sessionFile?: string; branchEntries?: any[]; projectTrusted?: boolean } = {}) {
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, { handler: (args: string, ctx: FakeContext) => Promise<void> }>();
-	const eventHandlers = new Map<string, (event: unknown, ctx: FakeContext) => Promise<void>>();
+	const eventHandlers = new Map<string, (event: unknown, ctx: FakeContext) => Promise<any>>();
 	const sentMessages: string[] = [];
 	const appendedEntries: Array<{ type: "custom"; customType: string; data: unknown }> = [];
 
@@ -59,7 +60,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		appendEntry(customType: string, data: unknown) {
 			appendedEntries.push({ type: "custom", customType, data: structuredClone(data) });
 		},
-		on(eventName: string, handler: (event: unknown, ctx: FakeContext) => Promise<void>) {
+		on(eventName: string, handler: (event: unknown, ctx: FakeContext) => Promise<any>) {
 			eventHandlers.set(eventName, handler);
 		},
 		registerTool(tool: RegisteredTool & { name: string }) {
@@ -77,6 +78,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 	const ctx: FakeContext = {
 		cwd: options.cwd ?? process.cwd(),
 		hasUI: false,
+		isProjectTrusted: () => options.projectTrusted ?? true,
 		ui: {
 			notify() {},
 			theme: { fg: (_kind, text) => text },
@@ -94,7 +96,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 	async function emit(eventName: string, event: unknown = {}) {
 		const handler = eventHandlers.get(eventName);
 		if (!handler) throw new Error(`Event handler not registered: ${eventName}`);
-		await handler(event, ctx);
+		return handler(event, ctx);
 	}
 
 	let currentArtifactDir: string | undefined;
@@ -125,7 +127,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		return result;
 	}
 
-	return { tools, commands, sentMessages, appendedEntries, ctx, tool, emit };
+	return { tools, commands, eventHandlers, sentMessages, appendedEntries, ctx, tool, emit };
 }
 
 const testFailures: Array<{ name: string; error: unknown }> = [];
@@ -1040,6 +1042,55 @@ await runTest("artifact root can be configured from project .pi config", async (
 		assert.equal(path.relative(configuredRoot, artifactDir).startsWith(path.join("projects", project.projectId, "runs")), true);
 		assert.equal(fs.existsSync(artifactDir), true);
 		assert.equal(fs.existsSync(path.join(configuredRoot, "projects", project.projectId, "project.json")), true);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("trusted project config resolves from git root when cwd is a subdirectory", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-trusted-root-"));
+	const cwd = path.join(root, "packages", "app");
+	const configuredRoot = path.join(root, "trusted-artifacts");
+	fs.mkdirSync(path.join(root, ".pi"), { recursive: true });
+	fs.mkdirSync(cwd, { recursive: true });
+	fs.writeFileSync(path.join(root, ".pi", "delivery-state-machine.json"), JSON.stringify({ artifactRoot: "trusted-artifacts", maxRounds: { IMPLEMENT: 4 } }), "utf8");
+	try {
+		execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
+		const harness = createHarness({ cwd, projectTrusted: true });
+		const result = await harness.tool("delivery_start", { task: "trusted root config" });
+		const realRoot = fs.realpathSync(root);
+		assert.equal(result.details.state.gitRoot, realRoot);
+		assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 4);
+		assert.equal(path.relative(path.join(realRoot, "trusted-artifacts"), result.details.state.artifactDir).startsWith("projects"), true);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("untrusted project config is ignored while global and env configuration remain available", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-untrusted-"));
+	const projectRoot = path.join(cwd, "project-artifacts");
+	const globalRoot = path.join(cwd, "global-artifacts");
+	const envRoot = path.join(cwd, "env-artifacts");
+	fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(cwd, ".pi", "delivery-state-machine.json"), JSON.stringify({ artifactRoot: projectRoot, maxRounds: { IMPLEMENT: 9 } }), "utf8");
+	try {
+		await withTemporaryUserExtensionFile("../delivery-state-machine.json", JSON.stringify({ artifactRoot: globalRoot, maxRounds: { IMPLEMENT: 4 } }), async () => {
+			let harness = createHarness({ cwd, projectTrusted: false });
+			let result = await harness.tool("delivery_start", { task: "untrusted project config" });
+			assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 4);
+			assert.equal(path.relative(globalRoot, result.details.state.artifactDir).startsWith("projects"), true);
+			assert.equal(fs.existsSync(projectRoot), false);
+
+			process.env.PI_DELIVERY_ARTIFACT_ROOT = envRoot;
+			try {
+				harness = createHarness({ cwd, projectTrusted: false });
+				result = await harness.tool("delivery_start", { task: "untrusted env override" });
+				assert.equal(path.relative(envRoot, result.details.state.artifactDir).startsWith("projects"), true);
+			} finally {
+				delete process.env.PI_DELIVERY_ARTIFACT_ROOT;
+			}
+		});
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
@@ -2154,6 +2205,140 @@ await runTest("usage summary reports total cost and phase token usage since deli
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
+});
+
+await runTest("CLOSE guard uses canonical phase state and detects wrapped close commands", async () => {
+	const harness = createHarness();
+	const started = await harness.tool("delivery_start", { task: "close guard wrappers" });
+	const dangerous = [
+		"git push",
+		"git -C /tmp/repo push origin main",
+		"env FOO=bar git push",
+		"env -u GIT_DIR git push",
+		"env -u GIT_DIR /usr/bin/git push",
+		"env --unset GIT_DIR /usr/bin/git push",
+		"env -S 'git push'",
+		"env --split-string='git push'",
+		"command git push",
+		"/usr/bin/git push",
+		"echo ok; git push",
+		"echo ok\ngh pr create --fill",
+		"glab mr create --fill",
+		"bash -c 'git push'",
+		"bash -c -- 'git push'",
+		"bash --norc -c 'git push'",
+		"bash --rcfile /dev/null -lc 'git push'",
+		"sh -c \"env git push\"",
+		"sh -c -- '/usr/bin/git push'",
+	];
+	for (const command of dangerous) {
+		const blocked = await harness.emit("tool_call", { toolName: "bash", input: { command } });
+		assert.equal(blocked?.block, true, `expected close command to be blocked: ${command}`);
+	}
+	for (const command of ["echo 'git push'", "printf '%s' 'gh pr create'", "git status", "git push-not-a-command", "command -v git push", "command -V git push"]) {
+		assert.equal(await harness.emit("tool_call", { toolName: "bash", input: { command } }), undefined, `expected harmless command to pass: ${command}`);
+	}
+	assert.equal(harness.eventHandlers.has("user_bash"), false, "human user_bash must not be intercepted");
+
+	const stale = structuredClone(started.details.state);
+	stale.readyToClose = true;
+	stale.phase = "IMPLEMENT";
+	const restored = createHarness({ branchEntries: [{ type: "custom", customType: "delivery-state-machine", data: stale }] });
+	await restored.emit("session_start", {});
+	const restoredStatus = await restored.tool("delivery_status");
+	assert.equal(restoredStatus.details.state.readyToClose, false);
+	assert.equal((await restored.emit("tool_call", { toolName: "bash", input: { command: "git push" } }))?.block, true);
+
+	const malformed = createHarness({ branchEntries: [{ type: "custom", customType: "delivery-state-machine", data: { ...stale, phase: "BROKEN", readyToClose: true } }] });
+	await malformed.emit("session_start", {});
+	const malformedStatus = await malformed.tool("delivery_status");
+	assert.equal(malformedStatus.details.state.phase, "WAITING_DECISION");
+	assert.equal(malformedStatus.details.state.readyToClose, false);
+	assert.equal((await malformed.emit("tool_call", { toolName: "bash", input: { command: "git push" } }))?.block, true);
+
+	const closeHarness = createHarness();
+	await advanceHarnessToPhase(closeHarness, "CLOSE");
+	assert.equal(await closeHarness.emit("tool_call", { toolName: "bash", input: { command: "git push" } }), undefined);
+	const retroState = await closeHarness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed" });
+	assert.equal(retroState.details.state.phase, "RETRO");
+	assert.equal(retroState.details.state.readyToClose, false);
+	assert.equal(await closeHarness.emit("tool_call", { toolName: "bash", input: { command: "git push" } }), undefined);
+});
+
+await runTest("summary extraction prefers canonical Critical fixes and retains legacy fallback", async () => {
+	const harness = createHarness();
+	let result = await advanceHarnessToPhase(harness, "DONE");
+	const retro = result.details.state.steps.find((step: any) => step.phase === "RETRO");
+	const canonicalRetro = phaseArtifactContents("RETRO", "DONE", "retro").replace(/## Critical fixes\n+none/, "## Critical fixes\n\ncanonical-marker");
+	fs.writeFileSync(retro.artifact, canonicalRetro, "utf8");
+	let summary = await harness.tool("delivery_summary");
+	assert.match(summary.content[0].text, /canonical-marker/);
+
+	const legacyRetro = phaseArtifactContents("RETRO", "DONE", "retro").replace(/## Critical fixes\n+none/, "## Critical fixes for future plans / delivery\n\nlegacy-marker");
+	fs.writeFileSync(retro.artifact, legacyRetro, "utf8");
+	summary = await harness.tool("delivery_summary");
+	assert.match(summary.content[0].text, /legacy-marker/);
+});
+
+await runTest("derived summary write failures warn without changing completed workflow state", async () => {
+	const harness = createHarness();
+	const result = await advanceHarnessToPhase(harness, "DONE");
+	const stateBefore = JSON.stringify(result.details.state);
+	const artifactDir = result.details.state.artifactDir as string;
+	const markdownPath = path.join(artifactDir, "00-delivery-summary.md");
+	const jsonPath = path.join(artifactDir, "delivery-report.json");
+	const markdownBefore = fs.readFileSync(markdownPath, "utf8");
+	const jsonBefore = fs.readFileSync(jsonPath, "utf8");
+	fs.chmodSync(artifactDir, 0o500);
+	try {
+		const summary = await harness.tool("delivery_summary");
+		assert.match(summary.content[0].text, /Report write warning:/);
+		assert.match(summary.content[0].text, /Structured JSON write warning:/);
+		assert.equal(JSON.stringify(summary.details.state), stateBefore);
+		assert.equal(fs.readFileSync(markdownPath, "utf8"), markdownBefore);
+		assert.equal(fs.readFileSync(jsonPath, "utf8"), jsonBefore);
+	} finally {
+		fs.chmodSync(artifactDir, 0o700);
+	}
+	assert.equal(fs.readdirSync(artifactDir).some((name) => name.includes(".tmp-")), false);
+
+	fs.rmSync(artifactDir, { recursive: true, force: true });
+	fs.writeFileSync(artifactDir, "artifact-root-blocker", "utf8");
+	const preparationFailure = await harness.tool("delivery_summary");
+	assert.match(preparationFailure.content[0].text, /Report write warning:/);
+	assert.match(preparationFailure.content[0].text, /Structured JSON write warning:/);
+	assert.equal(JSON.stringify(preparationFailure.details.state), stateBefore);
+	assert.equal(fs.readFileSync(artifactDir, "utf8"), "artifact-root-blocker");
+	assert.equal(fs.readdirSync(path.dirname(artifactDir)).some((name) => name.includes(`${path.basename(artifactDir)}.tmp-`)), false);
+
+	fs.rmSync(artifactDir, { force: true });
+	fs.mkdirSync(artifactDir, { recursive: true });
+	fs.writeFileSync(markdownPath, markdownBefore, "utf8");
+	fs.writeFileSync(jsonPath, jsonBefore, "utf8");
+	fs.rmSync(jsonPath);
+	fs.mkdirSync(jsonPath);
+	const jsonFailure = await harness.tool("delivery_summary");
+	assert.doesNotMatch(jsonFailure.content[0].text, /Report write warning:/);
+	assert.match(jsonFailure.content[0].text, /Structured JSON write warning:/);
+	assert.equal(JSON.stringify(jsonFailure.details.state), stateBefore);
+	assert.equal(fs.readdirSync(artifactDir).some((name) => name.includes(".tmp-")), false);
+});
+
+await runTest("delivery tool content is bounded while full reports and structured details remain complete", async () => {
+	const harness = createHarness();
+	const result = await advanceHarnessToPhase(harness, "DONE");
+	const retro = result.details.state.steps.find((step: any) => step.phase === "RETRO");
+	const largeSection = Array.from({ length: 2600 }, (_, index) => `row-${index}-${"x".repeat(40)}`).join("\n");
+	const largeRetro = phaseArtifactContents("RETRO", "DONE", "retro").replace(/## Critical fixes\n+none/, `## Critical fixes\n\n${largeSection}`);
+	fs.writeFileSync(retro.artifact, largeRetro, "utf8");
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	assert.ok(Buffer.byteLength(text, "utf8") <= 50 * 1024, "tool content must stay within 50KB");
+	assert.ok(text.split("\n").length <= 2000, "tool content must stay within 2,000 lines");
+	assert.match(text, /Output truncated to 2000 lines or 50(?:\.0)?KB/);
+	assert.equal(summary.details.state.steps.length, result.details.state.steps.length, "structured state must remain complete");
+	const fullReport = fs.readFileSync(path.join(result.details.state.artifactDir, "00-delivery-summary.md"), "utf8");
+	assert.match(fullReport, /row-2599-/);
 });
 
 if (testFailures.length > 0) {

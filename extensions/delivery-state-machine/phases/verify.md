@@ -10,9 +10,6 @@ Launch the configured verifier for verification round {{verifyRound}}/{{maxRepai
 
 Independently verify this task. Be read-only: do not edit source files.
 
-Task:
-{{task}}
-
 Instructions:
 - Verify behavior independently against the requirements and candidate diff. Investigate broadly, but adjudicate findings against this boundary, in precedence order: the accepted user task and explicit decisions; documented product or repository invariants; the accepted implementation plan; the documented supported operating and threat model; and explicit exclusions. A lower-level plan or exclusion cannot excuse violating a higher-level accepted requirement or invariant.
 - Preserve every meaningful concern in the report using these destinations: a requirement or invariant violation is blocking; a realistic regression in the supported workflow is blocking; an unsupported/adversarial scenario or optional hardening is a non-blocking note by default; and a potential product, safety, concurrency, or threat-model contract change requires parent/user judgment. A contract question pauses delivery only when its decision is necessary to judge or continue the task; otherwise keep the suggestion visible and non-gating.
@@ -45,5 +42,8 @@ The Candidate completeness and Behavioral evidence sections must include:
 - Source-only or internal-state-only verification used: yes/no; if yes, explain why sufficient or list residual risk
 
 Use `none` for empty Findings, Residual risks, or Recommendation.
+
+Task:
+{{task}}
 
 {{artifactGuidance}}

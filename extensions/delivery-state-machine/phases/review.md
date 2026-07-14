@@ -10,9 +10,6 @@ Launch the configured reviewer agent(s) for independent read-only current-diff r
 
 Review the current diff for this task independently. Be read-only: do not edit source files.
 
-Task:
-{{task}}
-
 Instructions:
 - Inspect verification evidence and code. Investigate broadly, but adjudicate findings against this boundary, in precedence order: the accepted user task and explicit decisions; documented product or repository invariants; the accepted implementation plan; the documented supported operating and threat model; and explicit exclusions. A lower-level plan or exclusion cannot excuse violating a higher-level accepted requirement or invariant.
 - Preserve every meaningful concern in the report using these destinations: a requirement or invariant violation is blocking; a realistic regression in the supported workflow is blocking; an unsupported/adversarial scenario or optional hardening is a non-blocking note by default; and a potential product, safety, concurrency, or threat-model contract change requires parent/user judgment. Put a `Decisions needed` label in the Summary; a contract question pauses delivery only when its decision is necessary to judge or continue the task, while other contract suggestions remain visible and non-gating.
@@ -51,5 +48,8 @@ The Evidence reviewed and Risk checks sections must include:
 - Verdict follows classification rules: yes/no
 
 Use `none` for empty Must-fix findings, Non-blocking notes, or Recommendation. Parallel child artifacts and aggregate review artifacts must use the same headings.
+
+Task:
+{{task}}
 
 {{artifactGuidance}}

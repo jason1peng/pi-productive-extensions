@@ -10,12 +10,6 @@ Launch the configured implementation subagent as sole writer for implementation.
 
 Implement this delivery phase as the sole writer.
 
-Task:
-{{task}}
-
-Current implementation focus:
-{{pendingIssueInstruction}}
-
 Instructions:
 - Inspect repository instructions before editing.
 - Make minimal code/test changes for the task or pending verify/review issue.
@@ -33,5 +27,11 @@ The Required checklist section must include:
 - Candidate completeness checked: yes/no/not a git repo; required new files tracked and untracked files explained
 
 Use `none` for empty Residual risks or Recommendation. Separate missing evidence from blockers.
+
+Task:
+{{task}}
+
+Current implementation focus:
+{{pendingIssueInstruction}}
 
 {{artifactGuidance}}

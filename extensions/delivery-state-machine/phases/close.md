@@ -10,9 +10,6 @@ Launch the configured close subagent only if verification passed and review has 
 
 Close this delivery.
 
-Task:
-{{task}}
-
 Instructions:
 - Proceed only if final verification passed and final review has no blockers.
 - Inspect repository instructions.
@@ -35,5 +32,8 @@ The Close-readiness checklist section must include:
 - Remote CI status: informational only; do not wait for CI unless the user explicitly asks. If running, write "running, not waited for by design because local verification passed".
 
 The Branch / commit / PR section must include parseable branch, commit, and PR/MR URL lines when applicable. Use `none` for empty Residual risks.
+
+Task:
+{{task}}
 
 {{artifactGuidance}}

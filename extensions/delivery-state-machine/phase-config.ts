@@ -255,7 +255,7 @@ function materializeConfig(phase: RunnablePhase, prompt: Required<PromptConfig>,
 	return {
 		launches,
 		orchestratorInstruction: (context) => render(prompt.orchestratorInstruction, context),
-		childPrompt: (context) => `${render(prompt.childPrompt, context)}\n\n${phaseArtifactContractMarkdown(phase)}`,
+		childPrompt: (context) => `${phaseArtifactContractMarkdown(phase)}\n\n${render(prompt.childPrompt, context)}`,
 	};
 }
 

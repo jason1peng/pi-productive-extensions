@@ -16,44 +16,52 @@ The `/deliver` bootstrap prompt is separate. It comes from `prompts/deliver.md` 
 
 ## Child prompt assembly order
 
+The default construction puts stable instructions before run-specific values so provider prefix caching can reuse the largest practical prefix.
+
 For a single-child phase, the final prompt is assembled in this order:
 
 ```text
 1. Static project-harness discovery instructions
-2. Resolved project/worktree root
+2. Static common child workflow instructions
 3. Resolved phase child prompt
-   a. Built-in phase `## Child prompt`
-   b. User/global `## Child prompt` override, when present
-   c. Placeholder rendering
-   d. Centrally generated phase artifact contract
-4. Static common child workflow footer
-```
-
-For each child in a parallel phase, one more block is appended:
-
-```text
-5. Parallel-child identity and exact attempt-specific artifact path
+   a. Centrally generated phase artifact contract
+   b. Resolved `## Child prompt`: user/global section when present,
+      otherwise the built-in section
+   c. Placeholder rendering; built-in templates place dynamic values last
+4. Dynamic resolved project/worktree root
+5. Dynamic output instruction
+   a. Single child: exact planned artifact path
+   b. Parallel child: child identity and exact attempt-specific artifact path
+6. Final static instruction-authority safeguard
 ```
 
 Conceptually, the implementation is:
 
 ```ts
 const resolvedPhasePrompt =
-  render(resolvedChildPromptTemplate, context)
-  + phaseArtifactContractMarkdown(phase);
+  phaseArtifactContractMarkdown(phase)
+  + render(resolvedChildPromptTemplate, context);
 
 const baseChildPrompt =
   PROJECT_HARNESS_PROMPT
-  + projectHarnessRootContext(state)
+  + COMMON_CHILD_WORKFLOW_PROMPT
   + resolvedPhasePrompt
-  + CHILD_PROMPT_FOOTER;
+  + projectHarnessRootContext(state);
 
 const childPrompt = parallel
-  ? baseChildPrompt + parallelChildInstruction
-  : baseChildPrompt;
+  ? baseChildPrompt + parallelChildInstruction + CHILD_PROMPT_AUTHORITY_SUFFIX
+  : baseChildPrompt + singleChildArtifactInstruction + CHILD_PROMPT_AUTHORITY_SUFFIX;
 ```
 
 The real implementation is split between `phase-config.ts` and `index.ts`.
+
+## Prefix caching
+
+The extension does not implement a cache itself. It arranges the prompt to benefit from model-provider prefix caching when the selected provider/model supports it.
+
+The shared harness/workflow text, phase contract, and built-in phase instructions form the stable prefix. The built-in phase templates keep `{{task}}`, pending-issue context, artifact directory guidance, resolved project root, and output identity after that prefix. A short authority safeguard intentionally follows untrusted dynamic context; this suffix is not prefix-cacheable, but prevents task or repository text from overriding phase and workflow constraints.
+
+A user override controls its own template ordering. If it places `{{task}}` or another changing placeholder near the beginning, provider caching can only reuse the prefix before that value; the state machine does not reorder arbitrary user-authored text. For best cache reuse, overrides should put static instructions first and dynamic placeholders near the end.
 
 ## Phase prompt resolution
 
@@ -97,7 +105,7 @@ An override controls where these values appear. For example, omitting `{{artifac
 - parallel eligibility;
 - parallel aggregate verdict precedence.
 
-`phaseArtifactContractMarkdown(phase)` converts that contract into instructions and appends them after the resolved phase prompt. For example:
+`phaseArtifactContractMarkdown(phase)` converts that contract into instructions and prepends them to the resolved phase prompt. For example:
 
 ```md
 Artifact contract for REVIEW (use these headings in this order):
@@ -112,7 +120,7 @@ Artifact contract for REVIEW (use these headings in this order):
     ## Recommendation
 ```
 
-A user/global phase prompt override cannot remove or replace this appended contract. It may add more instructions or headings, but the required headings and verdicts remain authoritative.
+A user/global phase prompt override cannot remove or replace this prepended contract. It may add more instructions or headings, but the required headings and verdicts remain authoritative.
 
 ## What is configurable
 
@@ -126,8 +134,9 @@ A user/global phase prompt override cannot remove or replace this appended contr
 | Allowed phase verdicts | No | `PHASE_CONTRACTS` + `delivery_report` validation |
 | Artifact filename/path | No | Planned by the state machine and validated exactly |
 | Project-harness discovery prefix | No | Added centrally |
-| Common child workflow footer | No | Added centrally |
-| Parallel child identity/output path | No | Added centrally per child |
+| Common child workflow prefix | No | Added centrally |
+| Post-context instruction-authority safeguard | No | Added centrally |
+| Single-child output path / parallel-child identity and output path | No | Added centrally per child |
 | Parent report instruction | No | Generated centrally from state/phase |
 | Agent/model/thinking/context | Not in phase Markdown | Configured through `phase-launches.json` profiles |
 

@@ -10,9 +10,6 @@ Launch the configured retrospective subagent for a read-only delivery retrospect
 
 Write a read-only retrospective for this delivery.
 
-Task:
-{{task}}
-
 Instructions:
 - Analyze implementation, verification, review, and close evidence.
 - Focus improvements on what the delivery system and future plans can control. Keep recommendations actionable and avoid overfitting to one repo unless clearly labeled.
@@ -34,5 +31,8 @@ The Critical fixes section should include this markdown table exactly so the fin
 | plan/delivery/repo/task | ... | ... | shared-skill/repo/task/extension |
 
 The Recommendations section should cover blockers missed, non-blocking repo/product improvements, delivery process improvements, plan quality improvements, doubts/open questions, and recommended next changes. Use `none` for empty Residual risks or Recommendations.
+
+Task:
+{{task}}
 
 {{artifactGuidance}}

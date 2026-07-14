@@ -177,10 +177,61 @@ await runTest("phase launch prompts derive artifact contracts from the central s
 	const launches = Object.fromEntries(Object.keys(PHASE_CONTRACTS).map((phase) => [phase, [{ agent: "test" }]])) as Record<RunnablePhase, [{ agent: string }]>;
 	const configs = materializePhaseConfigs(launches);
 	for (const phase of Object.keys(PHASE_CONTRACTS) as RunnablePhase[]) {
-		const prompt = configs[phase].childPrompt({ task: "test", artifactGuidance: "", verifyRound: 1, maxRepairRounds: 3, pendingIssueInstruction: "none" });
-		assert.ok(prompt.includes(phaseArtifactContractMarkdown(phase)));
+		const task = `dynamic-${phase}-task`;
+		const contract = phaseArtifactContractMarkdown(phase);
+		const prompt = configs[phase].childPrompt({ task, artifactGuidance: "", verifyRound: 1, maxRepairRounds: 3, pendingIssueInstruction: "dynamic pending issue" });
+		assert.ok(prompt.includes(contract));
+		assert.ok(prompt.indexOf(contract) < prompt.indexOf(task), `${phase} contract must precede dynamic task context`);
 		const builtIn = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "phases", `${phase.toLowerCase()}.md`), "utf8");
 		assert.doesNotMatch(builtIn, /^Artifact contract for /m, `${phase} built-in prompt must not duplicate the generated contract`);
+		const childTemplate = builtIn.split("## Child prompt", 2)[1] ?? "";
+		assert.ok(childTemplate.indexOf("Instructions:") < childTemplate.indexOf("{{task}}"), `${phase} built-in static instructions must precede dynamic task context`);
+	}
+});
+
+await runTest("default child prompts keep stable instructions ahead of run-specific context for prefix caching", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-prompt-prefix-"));
+	try {
+		const harness = createHarness({ cwd });
+		const task = "unique dynamic cache boundary";
+		let result = await harness.tool("delivery_start", { task });
+		const phaseIntroductions: Record<RunnablePhase, string> = {
+			IMPLEMENT: "Implement this delivery phase as the sole writer.",
+			VERIFY: "Independently verify this task.",
+			REVIEW: "Review the current diff for this task independently.",
+			CLOSE: "Close this delivery.",
+			RETRO: "Write a read-only retrospective for this delivery.",
+		};
+		for (const phase of Object.keys(PHASE_CONTRACTS) as RunnablePhase[]) {
+			const prompts = result.details.next.parallel?.map((launch: any) => launch.childPrompt) ?? [result.details.next.childPrompt];
+			for (const prompt of prompts) {
+				const orderedMarkers = [
+					"Project harness discovery (bounded, best effort)",
+					"Common workflow instruction:",
+					`Artifact contract for ${phase}`,
+					phaseIntroductions[phase],
+					task,
+					"Artifact guidance:",
+					`Project harness resolved root for this run: ${cwd}`,
+					result.details.next.parallel ? "Parallel phase instruction:" : "Artifact contract:\n- Write your result to exactly this path:",
+					"Instruction authority:",
+				];
+				let previous = -1;
+				for (const marker of orderedMarkers) {
+					const current = prompt.indexOf(marker);
+					assert.ok(current > previous, `${phase}: expected prompt marker after previous content: ${marker}`);
+					previous = current;
+				}
+			}
+			if (phase === "RETRO") break;
+			if (phase === "REVIEW") {
+				for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
+			}
+			const verdict = phase === "CLOSE" ? "DONE" : "PASS";
+			result = await harness.tool("delivery_report", { phase, verdict, summary: `${phase} passed` });
+		}
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
 	}
 });
 

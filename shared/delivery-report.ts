@@ -68,6 +68,9 @@ export interface DeliveryReportStep {
 	usageSource?: "subagent" | "parent-session-delta" | "backfill" | "manual";
 	subagentRunId?: string;
 	subagentSessionFile?: string;
+	usageResolutionStatus?: "resolved" | "unavailable" | "mismatch";
+	usageResolutionReason?: string;
+	usageIdentity?: string;
 	usageBackfillBlockedAfter?: UsageTotals;
 }
 

@@ -1,0 +1,2 @@
+{"recordType":"message","sourceEventType":"message_end","role":"assistant","usage":{"input":10,"output":2,"cost":0.01}}
+{"recordType":"message","sourceEventType":"message_end","role":"assistant","usage":{"input":20,"output":4,"cacheRead":5,"cost":0.02}}

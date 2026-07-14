@@ -1,0 +1,6 @@
+{
+  "runId": "legacy-child",
+  "agent": "worker",
+  "task": "write /tmp/legacy-child.md",
+  "usage": { "input": 7, "output": 3, "totalTokens": 10, "cost": 0.1, "turns": 2 }
+}

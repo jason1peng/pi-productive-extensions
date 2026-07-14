@@ -48,6 +48,17 @@ await runTest("explicit token fallback policy prefers totalTokens, then total, t
 	assert.equal(usageTotalsFromRawUsage({ input: 10, output: 1, total: 20, totalTokens: 30 }).totalTokens, 30);
 	assert.equal(usageTotalsFromRawUsage({ input: 10, output: 1, total: 20 }).totalTokens, 20);
 	assert.equal(usageTotalsFromRawUsage({ input: 10, output: 1, cacheRead: 2, cacheWrite: 3 }).totalTokens, 16);
+	assert.equal(usageTotalsFromRawUsage({ input: 1, cost: 0.25, turns: 3 }).cost, 0.25);
+	assert.equal(usageTotalsFromRawUsage({ input: 1, cost: 0.25, turns: 3 }).assistantMessages, 3);
+});
+
+await runTest("async pi-subagents transcript usage is opt-in and normalized", () => {
+	const line = JSON.stringify({ recordType: "message", sourceEventType: "message_end", role: "assistant", usage: { input: 4, output: 2, cost: 0.03 } });
+	assert.equal(collectUsageFromJsonlContent(line).totalTokens, 0);
+	const totals = collectUsageFromJsonlContent(line, { asyncMessages: true, countSessionFile: true });
+	assert.equal(totals.totalTokens, 6);
+	assert.equal(totals.cost, 0.03);
+	assert.equal(totals.sessionFiles, 1);
 });
 
 await runTest("collects parent and child subagent session totals", () => {

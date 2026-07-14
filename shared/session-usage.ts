@@ -66,18 +66,21 @@ export function usageTotalsFromRawUsage(raw: any): UsageTotals {
 	const cacheRead = numeric(raw?.cacheRead) ?? 0;
 	const cacheWrite = numeric(raw?.cacheWrite) ?? 0;
 	const totalTokens = numeric(raw?.totalTokens) ?? numeric(raw?.total) ?? input + output + cacheRead + cacheWrite;
-	const cost = numeric(raw?.cost?.total) ?? 0;
-	return { input, output, cacheRead, cacheWrite, totalTokens, cost, assistantMessages: 1, sessionFiles: 0 };
+	const cost = numeric(raw?.cost) ?? numeric(raw?.cost?.total) ?? 0;
+	const assistantMessages = numeric(raw?.assistantMessages) ?? numeric(raw?.turns) ?? 1;
+	return { input, output, cacheRead, cacheWrite, totalTokens, cost, assistantMessages, sessionFiles: 0 };
 }
 
-export function collectUsageFromJsonlContent(content: string, options: { countSessionFile?: boolean } = {}): UsageTotals {
+export function collectUsageFromJsonlContent(content: string, options: { countSessionFile?: boolean; asyncMessages?: boolean } = {}): UsageTotals {
 	const totals = emptyUsageTotals();
 	if (options.countSessionFile) totals.sessionFiles = 1;
 	for (const line of content.split(/\r?\n/)) {
 		if (!line.trim()) continue;
 		try {
-			const entry = JSON.parse(line) as { type?: string; message?: { role?: string; usage?: any } };
-			const usage = entry.type === "message" && entry.message?.role === "assistant" ? entry.message.usage : undefined;
+			const entry = JSON.parse(line) as { type?: string; recordType?: string; sourceEventType?: string; role?: string; usage?: any; message?: { role?: string; usage?: any } };
+			const legacyUsage = entry.type === "message" && entry.message?.role === "assistant" ? entry.message.usage : undefined;
+			const asyncUsage = options.asyncMessages && entry.recordType === "message" && entry.sourceEventType === "message_end" && entry.role === "assistant" ? entry.usage : undefined;
+			const usage = legacyUsage ?? asyncUsage;
 			if (usage) addUsageTotals(totals, usageTotalsFromRawUsage(usage));
 		} catch {
 			// Ignore malformed/non-JSON lines so one bad record does not break usage reporting.

@@ -6,6 +6,14 @@ Make the delivery state machine enforce its workflow contract reliably, produce 
 
 Correctness comes before broad refactoring. The persisted state shape, legacy restoration behavior, tool names, and delivery report schema v2 remain compatible during the initial work.
 
+## Current status
+
+- The bounded-review prerequisite merged in PR #36.
+- Stages 0–1 established the post-prerequisite baseline and regression inventory.
+- Stages 2–3 shipped together in PR #37. The atomic report pipeline and strict artifact contracts pass the focused and full verification suites; the PR records an independent reviewer PASS after two repair rounds.
+- The remaining reporting-immutability gap is reassigned to Stage 4 because it belongs to usage collection and summary rendering rather than report-transition atomicity: summary/status paths still backfill usage by mutating live workflow state.
+- Stages 4–7 remain. Stage 4 replaces best-effort usage backfill with an exact pi-subagents usage adapter before the remaining runtime, setup, and modularization work.
+
 ## Recommended contract decisions
 
 This plan assumes the following behavior:
@@ -21,10 +29,15 @@ This plan assumes the following behavior:
 9. A parent aggregate verdict may be more conservative than child verdicts, but never more optimistic.
 10. Phase artifact or aggregate write failures block the report. Derived summary-report write failures produce a warning but do not reverse an otherwise completed transition.
 11. Persisted state compatibility and `delivery-report.json` schema version 2 are preserved during this work.
+12. New child usage comes from a version-tolerant pi-subagents adapter, not caller-supplied usage deltas or parent-session boundary estimates.
+13. The adapter sums every incurred model attempt for one uniquely identified child. Parallel children are identified by child-specific metadata, transcript path/index, and exact planned artifact evidence; a shared run ID alone is insufficient.
+14. Delivery total is the current session total minus the delivery-start baseline. Parent/orchestrator overhead is delivery total minus uniquely resolved delivery-child usage, without double-counting aggregate rows.
+15. Missing, ambiguous, corrupt, or contradictory child metadata produces explicit unavailable/mismatch evidence; it is never replaced with guessed phase usage and does not change workflow verdicts.
+16. Existing usage fields and legacy reports remain readable. `usageDelta` stays parseable for tool-schema compatibility but is deprecated, is not requested by prompts, and never overrides exact adapter data.
 
-The `fresh-verifier` installation approach requires an explicit decision in Stage 5.
+The `fresh-verifier` installation approach requires an explicit decision in Stage 6.
 
-The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` must merge before this plan resumes. Its prompt-scope regressions join Stage 1, but this plan retains ownership of atomic report processing and transition/verdict/repair behavior in Stage 2, structured artifact validation in Stage 3, runtime reliability in Stages 4–5, and modularization in Stage 6. Resume from a new latest-`main` worktree and rerun Stage 0, updating `COMPATIBILITY_BASELINE.md` only where the prerequisite changes recorded expectations.
+The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` and Stages 0–3 are complete. Continue from a dedicated latest-`main` worktree. Stage 4 owns exact child usage and immutable reporting, Stage 5 owns remaining Pi runtime reliability, Stage 6 owns verifier setup, and Stage 7 owns modularization.
 
 ## Scope boundaries
 
@@ -42,12 +55,18 @@ The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` must merge before this
 - `fresh-verifier` setup experience
 - Behavior-preserving modularization of `index.ts`
 - Focused, integration, persistence, and report-viewer tests
+- Exact pi-subagents child-usage resolution behind a version-tolerant adapter
+- Parent/orchestrator overhead derived without phase-boundary estimation
+- Immutable usage-summary rendering
+- Shared `session-usage` normalization needed by the adapter, with existing `/session-usage-all` behavior preserved
 
 ### Out of scope
 
 - Removing `history` or other legacy persisted fields
 - Delivery report schema v3
-- Redesigning usage attribution
+- Repricing provider usage or inventing missing token/cost data
+- Making usage availability a workflow correctness gate
+- General pi-subagents metadata redesign outside the delivery adapter
 - Treating shell-command detection as a security sandbox
 - Project-local phase prompt or launch-profile overrides
 - Broad report-viewer UI changes
@@ -145,7 +164,7 @@ Improve the fake harness so `appendEntry()` records entries and restoration can 
 - legacy state without `steps`;
 - legacy state without `maxPhaseRounds`;
 - state without profile or usage fields;
-- usage backfill surviving reconstruction.
+- legacy backfilled usage surviving reconstruction.
 
 ### Implementation ownership
 
@@ -206,7 +225,7 @@ validate input
 - Prohibit `accept_risk` from treating a failed implementation as a verified candidate.
 - Require remaining IMPLEMENT, VERIFY, and REVIEW capacity for automatic repair; at exhaustion, enter `WAITING_DECISION` and make explicit `repair` capable of extending the complete required cycle.
 - Route a code-changing CLOSE repair through IMPLEMENT → VERIFY → REVIEW.
-- Make report generation consume immutable state and remove post-persist state mutation.
+- Make report generation consume an immutable post-transition snapshot. General summary/status usage backfill and rendering immutability are completed in Stage 4.
 
 ### Expected files
 
@@ -231,6 +250,10 @@ A rejected report must not:
 ### Review gate
 
 Require independent review of workflow transition atomicity, verdict dominance, budget boundaries, persistence compatibility, and the ordering of existing-compatible aggregate writes before live-state replacement. Apply the bounded-review rule under Mandatory review gates. Filesystem-atomic aggregate replacement is reviewed with Stage 3. Do not begin general modularization until this gate passes.
+
+### Completion record
+
+Completed in PR #37. The focused/full suites pass, rejected reports remain inert, report transitions render from cloned post-transition snapshots, and the PR records an independent reviewer PASS after two repair rounds. Stage 3 shipped in the same frozen candidate rather than remaining as expected failures after a separate Stage 2 merge; the combined review covered both stage contracts. Live-state mutation performed by summary/status usage backfill is explicitly carried into Stage 4.
 
 ## Stage 3 — Enforce exact artifact contracts
 
@@ -271,11 +294,70 @@ A single source of truth should define, per phase:
 
 Existing completed and legacy artifacts remain readable. Strict enforcement applies when submitting new phase reports.
 
-## Stage 4 — Pi runtime reliability
+### Completion record
 
-- **Depends on:** Stage 3 and the mandatory post-Stage-3 review gate.
+Completed in PR #37. Exact-path, file-type, containment, symlink, content, heading, verdict, local-link, stale-aggregate, and atomic replacement regressions pass. The PR records the required independent review result; no Stage 3 blocker remains.
+
+## Stage 4 — Exact subagent usage and immutable reporting
+
+- **Depends on:** completed Stage 3 and the merged PR #37 candidate.
+- **Produces:** a version-tolerant pi-subagents usage adapter, exact child-step usage where metadata is available, derived parent/orchestrator overhead, and summary rendering that never mutates workflow state.
+- **Done when:** current and legacy metadata fixtures resolve deterministically, metadata totals match transcript evidence in validation fixtures, parallel children cannot be conflated or double-counted, unavailable data is explicit rather than estimated, and repeated status/summary rendering leaves persisted and in-memory workflow state unchanged.
+
+### Adapter contract
+
+Create one boundary that owns every pi-subagents-specific detail:
+
+```text
+pi-subagents metadata/transcript
+  → child identity + normalized UsageTotals + validation status
+  → delivery step usage
+```
+
+- Read current `modelAttempts[].usage` and sum every incurred model attempt for the child, including attempts before a successful fallback.
+- Retain read compatibility for historical top-level `usage` metadata.
+- Normalize provider fields through the shared token-total and cost policy instead of duplicating arithmetic.
+- Use current async transcript `message_end` assistant usage as independent validation evidence in tests and as a fallback only when the complete child transcript is available.
+- Match one delivery step to one child using exact planned artifact evidence plus child-specific metadata such as transcript path/index, agent, and timing. Never treat a shared parallel `runId` as a unique child identity.
+- Reject ambiguous matches from attribution. Record `unavailable` or `mismatch` with a diagnostic reason instead of choosing the first candidate.
+- Deduplicate by stable child identity before summing usage. Aggregate VERIFY/REVIEW rows never contribute child usage.
+
+### Reporting policy
+
+- Stop asking orchestrators to send `usageDelta`; retain the field only for tool-schema and persisted-data compatibility.
+- Exact adapter data wins over legacy/manual values. Legacy values remain visible with their historical attribution label but do not override newly resolved exact usage.
+- Remove phase-boundary estimation, ambiguous-boundary refresh, delayed CLOSE/RETRO backfill, and report-time live-state mutation for new reports.
+- Calculate `deliveryTotal = currentSessionTotal - usageAtStart`.
+- Calculate `parentOrchestratorOverhead = deliveryTotal - sum(uniqueResolvedDeliveryChildren)` with non-negative arithmetic and an explicit completeness status.
+- If any planned child is unresolved, show child and overhead completeness as unavailable/partial rather than claiming an exact parent number.
+- Render Markdown and JSON from cloned immutable snapshots. Calling `delivery_status`, `delivery_summary`, or final report rendering repeatedly must not alter state, timestamps, steps, or persisted entries.
+
+### Compatibility and failure policy
+
+- Preserve existing tool parameter schemas, state restoration, report schema v2, and historical usage rows.
+- Usage resolution failure does not alter a phase verdict or block workflow progression.
+- Do not make the delivery extension import pi-subagents runtime code. The adapter consumes documented/persisted artifacts so absence of the extension degrades to explicit unavailable usage.
+- Document the supported metadata versions and the adapter's unavailable/mismatch behavior.
+
+### Expected files
+
+- `extensions/delivery-state-machine/index.ts`
+- `extensions/delivery-state-machine/pi-subagents-usage.ts`
+- `extensions/delivery-state-machine/tests/delivery-state-machine.test.ts`
+- `extensions/delivery-state-machine/tests/fixtures/usage/`
+- `extensions/delivery-state-machine/README.md`
+- `shared/session-usage.ts`
+- `extensions/session-usage/tests/session-usage.test.ts`
+
+### Review gate
+
+Require an independent bounded review of metadata-version handling, per-child identity, fallback-attempt summation, parallel deduplication, parent-overhead arithmetic, unresolved/mismatch semantics, legacy compatibility, and proof that report rendering is immutable. Do not begin Stage 5 until this gate has no blocker.
+
+## Stage 5 — Pi runtime reliability
+
+- **Depends on:** Stage 4 and its exact-usage/immutability review gate.
 - **Produces:** trusted configuration resolution, canonical CLOSE authorization, atomic summaries, canonical retro extraction, and bounded tool output.
-- **Done when:** trust, guard-bypass, summary immutability/write-policy, retro, and truncation tests pass without intercepting unapproved human `user_bash` behavior.
+- **Done when:** trust, guard-bypass, summary write-policy, retro, and truncation tests pass without intercepting unapproved human `user_bash` behavior.
 
 ### Trusted configuration
 
@@ -306,9 +388,13 @@ Existing completed and legacy artifacts remain readable. Strict enforcement appl
 - Extract canonical `## Critical fixes` from retro artifacts.
 - Retain the old longer heading as a read-compatibility fallback.
 - Make Markdown and JSON summary writes atomic.
+- Treat derived summary-write failures as warnings without reversing completed workflow transitions.
 - Use Pi's truncation utilities and standard 50KB/2,000-line limits for tool content.
 - Preserve complete structured `details` for compatibility.
-- Ensure summary rendering never mutates workflow state.
+
+### Review handoff
+
+Stage 5 focused/full validation must pass before Stage 6 starts. Its independent review is deliberately combined with the Stage 6 package/setup gate so the frozen runtime and installation behavior are adjudicated together after both are present.
 
 ### Expected files
 
@@ -317,9 +403,9 @@ Existing completed and legacy artifacts remain readable. Strict enforcement appl
 - `extensions/delivery-state-machine/phases/retro.md`
 - `extensions/delivery-state-machine/tests/delivery-state-machine.test.ts`
 
-## Stage 5 — Resolve `fresh-verifier` installation
+## Stage 6 — Resolve `fresh-verifier` installation
 
-- **Depends on:** Stage 4 runtime/configuration behavior and an explicit choice of installation approach; this plan defaults to the recommended setup command unless the alternative is approved.
+- **Depends on:** Stage 5 runtime/configuration behavior and an explicit choice of installation approach; this plan defaults to the recommended setup command unless the alternative is approved.
 - **Produces:** a supported verifier setup/discovery path, clear `/deliver` failure guidance, and isolated package-smoke evidence.
 - **Done when:** the selected approach is documented and an isolated Pi/package smoke test discovers and launches the configured verifier without developer-local agent files.
 
@@ -334,7 +420,7 @@ Keep the stricter bundled `fresh-verifier` and add an explicit `/delivery-setup`
 - respects `PI_CODING_AGENT_DIR`;
 - refuses to overwrite a customized verifier without explicit confirmation;
 - installs the bundled agent in the user agent directory;
-- reports whether the installed copy matches the bundled version.
+- uses a byte-for-byte content comparison to report whether the installed copy matches the bundled version.
 
 Make `/deliver` fail early with a clear setup command when the configured `fresh-verifier` cannot be found. Retain manual-copy instructions for non-interactive environments. Precise session-spawn reservation or approximate capacity accounting remains deferred until pi-subagents exposes a reliable capacity interface; exhaustion must block the independent gate and require a new Pi session rather than produce synthetic PASS or parent fallback.
 
@@ -346,9 +432,9 @@ Use builtin `reviewer` with fresh context as the default verifier. This removes 
 
 Run an isolated Pi/package smoke test proving the configured verifier is discoverable and launchable without relying on the developer's existing user agent files.
 
-## Stage 6 — Modularize `index.ts`
+## Stage 7 — Modularize `index.ts`
 
-- **Depends on:** Stage 5 and the mandatory post-Stage-5 review gate, with all corrected behavior independently reviewed.
+- **Depends on:** Stage 6 and the mandatory post-Stage-6 review gate, with all corrected behavior independently reviewed.
 - **Produces:** behavior-preserving modules with the documented dependency direction and a thin Pi registration/orchestration façade.
 - **Done when:** full validation passes with no import cycles, registration/API/schema-v2/report-viewer differences, or legacy reconstruction regressions.
 
@@ -358,16 +444,17 @@ Extract one concern per commit:
 
 ```text
 extensions/delivery-state-machine/
-├── index.ts                 # Pi registration and orchestration façade
-├── types.ts                 # leaf types only
-├── state.ts                 # defaults, normalization, legacy restoration
-├── workflow.ts              # transitions, verdicts, decisions, budgets
-├── artifact-contract.ts     # paths, validation, aggregation
-├── delivery-config.ts       # trusted config and artifact-root resolution
-├── usage.ts                 # attribution and backfill
-├── journey-report.ts        # immutable Markdown/JSON generation
-├── close-guard.ts           # authorization and command detection
-├── phase-config.ts          # prompt/profile materialization
+├── index.ts                    # Pi registration and orchestration façade
+├── types.ts                    # leaf types only
+├── state.ts                    # defaults, normalization, legacy restoration
+├── workflow.ts                 # transitions, verdicts, decisions, budgets
+├── artifact-contract.ts        # paths, validation, aggregation
+├── delivery-config.ts          # trusted config and artifact-root resolution
+├── pi-subagents-usage.ts       # external metadata adapter and exact child identity
+├── usage.ts                    # delivery totals and parent-overhead derivation
+├── journey-report.ts           # immutable Markdown/JSON generation
+├── close-guard.ts              # authorization and command detection
+├── phase-config.ts             # prompt/profile materialization
 └── tests/
     ├── harness.ts
     ├── workflow.test.ts
@@ -385,16 +472,19 @@ Keep the existing test entry file as an aggregator so current package commands r
 ```text
 types
   ↓
-state / workflow / delivery-config
+state / workflow / delivery-config / pi-subagents-usage
   ↓
-artifact-contract / usage / close-guard
+artifact-contract / close-guard
+pi-subagents-usage
+  ↓
+usage
   ↓
 journey-report
   ↓
 index
 ```
 
-Reporting consumes immutable snapshots. Workflow policy must not depend on Pi UI or extension registration. Artifact validation may read files but must not mutate workflow state.
+Reporting consumes immutable snapshots. Workflow policy must not depend on Pi UI or extension registration. Artifact validation and external usage adapters may read files but must not mutate workflow state.
 
 ### Additional safe cleanup
 
@@ -422,7 +512,7 @@ Stop on any:
 
 ## Parallelization
 
-Top-level stages are sequential: each stage consumes the previous stage's evidence, and Stages 2–6 overlap compatibility-sensitive files such as `index.ts`, shared contracts, and the main integration test. Keep one active writer and do not begin a later stage until the prior stage's stop rule and review gate pass.
+Top-level stages are sequential: each stage consumes the previous stage's evidence, and Stages 2–7 overlap compatibility-sensitive files such as `index.ts`, shared contracts, and the main integration test. Keep one active writer and do not begin a later stage until the prior stage's stop rule and review gate pass.
 
 Safe parallel work is limited to:
 
@@ -430,7 +520,7 @@ Safe parallel work is limited to:
 - independent verifier/reviewer passes against a frozen candidate diff;
 - isolated smoke-test preparation that does not edit the active worktree.
 
-Do not parallelize production edits, aggregate/report writes, persistence-shape changes, or Stage 6 extraction commits. Parallel reviewers must join into one finding set before the sole writer applies repairs, and the relevant mandatory gate must pass before work resumes.
+Do not parallelize production edits, usage-attribution changes, aggregate/report writes, persistence-shape changes, or Stage 7 extraction commits. Parallel reviewers must join into one finding set before the sole writer applies repairs, and the relevant mandatory gate must pass before work resumes.
 
 ## Validation checklist
 
@@ -460,9 +550,11 @@ Perform a live Pi smoke test covering:
 3. complete IMPLEMENT with an exact artifact;
 4. fail VERIFY at exhausted budgets, choose `repair`, confirm one additional cycle is authorized and succeeds without resetting history;
 5. confirm the decision prompt exposes only `repair`, `accept_risk`, and `stop`, then reject a contradictory parallel REVIEW;
-6. reach CLOSE only after valid verification and review;
-7. reconstruct state from the session;
-8. open the generated structured report in report-viewer.
+6. confirm `delivery-report.json` gives each single and parallel child exactly one usage-bearing step equal to the sum of its pi-subagents model attempts, with no aggregate-step double count;
+7. confirm delivery total and parent/orchestrator overhead satisfy the documented subtraction formula, then render status/summary twice and prove workflow state is unchanged;
+8. reach CLOSE only after valid verification and review;
+9. reconstruct state from the session;
+10. open the generated structured report in report-viewer.
 
 ## Mandatory review gates
 
@@ -478,7 +570,18 @@ Apply the bounded-review rule above. Review:
 - artifact path containment and completeness;
 - legacy state and report compatibility.
 
-### After Stage 5
+### After Stage 4
+
+Apply the bounded-review rule above. Review:
+
+- current and legacy pi-subagents metadata handling;
+- exact per-child identity and fallback-attempt summation;
+- parallel deduplication and ambiguity handling;
+- delivery-total and parent-overhead arithmetic;
+- immutable status and summary rendering;
+- schema-v2 and legacy usage compatibility.
+
+### After Stage 6
 
 Apply the bounded-review rule above. Review:
 
@@ -488,7 +591,7 @@ Apply the bounded-review rule above. Review:
 - report-write failure policy;
 - tool truncation behavior.
 
-### After Stage 6
+### After Stage 7
 
 Apply the bounded-review rule above. Review:
 
@@ -504,12 +607,9 @@ Any correctness, persistence, security, artifact-integrity, package-discovery, o
 
 - [x] **Stage 0:** create the dedicated worktree from fetched `origin/main`, run `npm run verify`, confirm the pre-change tracked baseline is clean, and record `COMPATIBILITY_BASELINE.md`.
 - [x] **Stage 1:** add transition, decision-menu, user-authorized round-extension, artifact-integrity, and persistence regressions; capture the expected failures; confirm production files remain zero-diff.
-- [ ] **Stage 2:** implement the workflow-atomic report pipeline, three-choice user-facing decision contract, and explicit one-cycle repair authorization using existing-compatible artifact inspection and write mechanics; pass the Stage 2-owned regressions while retaining the documented Stage 3 expected failures; complete the transition atomicity, dominance, budget, persistence, and write-order review.
-- [ ] **Stage 3:** enforce exact artifact contracts and filesystem-atomic aggregate replacement; pass all remaining Stage 3-owned regressions; prove path containment and local-link completeness; pass the mandatory post-Stage-3 review gate.
-- [ ] **Stage 4:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summaries, and standard truncation; pass focused runtime tests.
-- [ ] **Stage 5:** confirm the `fresh-verifier` installation decision; implement the approved setup/discovery path; pass the isolated Pi/package smoke test and mandatory post-Stage-5 review gate.
-- [ ] **Stage 6:** extract modules one concern per commit; preserve dependency direction and compatibility; pass the mandatory post-Stage-6 review gate.
-- [ ] Run the per-stage Bun test and `git diff --check` after every stage.
-- [ ] Run `npm run test`, `npm run report-viewer:verify`, `npm run verify`, `git diff --check`, and `git status --short` before final review.
-- [ ] Complete the live Pi smoke path from delivery start through reconstruction and report-viewer rendering.
-- [ ] Stop release on any unresolved correctness, persistence, security, artifact-integrity, package-discovery, or schema blocker.
+- [x] **Stage 2:** ship and independently review the workflow-atomic report pipeline, decision contract, and explicit repair authorization in PR #37, with the general usage-rendering immutability follow-up assigned to Stage 4.
+- [x] **Stage 3:** ship exact artifact contracts and filesystem-atomic aggregate replacement in PR #37; pass containment, completeness, compatibility, and mandatory review gates.
+- [ ] **Stage 4:** replace best-effort usage backfill with the version-tolerant pi-subagents adapter, exact per-child attribution, derived parent overhead, immutable reporting, focused/full validation, and the Stage 4 review gate.
+- [ ] **Stage 5:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summary policy, and standard truncation; pass focused/full runtime validation.
+- [ ] **Stage 6:** confirm the `fresh-verifier` installation decision, implement the approved setup/discovery path, pass isolated package smoke, and complete the combined runtime/setup review gate.
+- [ ] **Stage 7:** extract modules one concern per commit, preserve dependency direction and compatibility, run the complete live smoke and final verification commands, and pass the final modularization review gate; stop release on any unresolved blocker.

@@ -13,6 +13,49 @@ import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportSte
 import { PHASE_CONTRACTS, phaseArtifactFilename, renderPhaseArtifactMarkdown, type Verdict } from "./phase-contract.ts";
 import { loadPhaseConfigBundle, loadPhaseConfigs, validatePhaseLaunches, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
+type Truncation = { content: string; truncated: boolean };
+type PiRuntimeUtilities = {
+	CONFIG_DIR_NAME: string;
+	DEFAULT_MAX_BYTES: number;
+	DEFAULT_MAX_LINES: number;
+	formatSize: (bytes: number) => string;
+	truncateHead: (text: string, options: { maxLines?: number; maxBytes?: number }) => Truncation;
+};
+
+function fallbackTruncateHead(text: string, options: { maxLines?: number; maxBytes?: number }): Truncation {
+	const maxLines = options.maxLines ?? 2_000;
+	const maxBytes = options.maxBytes ?? 50 * 1024;
+	const lines = text.split("\n");
+	let content = lines.slice(0, maxLines).join("\n");
+	while (Buffer.byteLength(content, "utf8") > maxBytes) content = content.slice(0, -1);
+	return { content, truncated: content !== text };
+}
+
+const standaloneRuntime: PiRuntimeUtilities = {
+	CONFIG_DIR_NAME: ".pi",
+	DEFAULT_MAX_BYTES: 50 * 1024,
+	DEFAULT_MAX_LINES: 2_000,
+	formatSize: (bytes) => `${(bytes / 1024).toFixed(bytes % 1024 ? 1 : 0)}KB`,
+	truncateHead: fallbackTruncateHead,
+};
+
+async function loadPiRuntimeUtilities(): Promise<PiRuntimeUtilities> {
+	// npm's standalone test process does not install the peer host package locally.
+	if (process.env.npm_lifecycle_event) return standaloneRuntime;
+	try {
+		const entryUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
+		const config = await import(new URL("./config.js", entryUrl).href) as { CONFIG_DIR_NAME: string };
+		const truncation = await import(new URL("./core/tools/truncate.js", entryUrl).href) as Omit<PiRuntimeUtilities, "CONFIG_DIR_NAME">;
+		return { CONFIG_DIR_NAME: config.CONFIG_DIR_NAME, ...truncation };
+	} catch {
+		return standaloneRuntime;
+	}
+}
+
+// Pi provides these runtime values. The fallback only supports the repository's standalone harness.
+const piRuntime = await loadPiRuntimeUtilities();
+const { CONFIG_DIR_NAME, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } = piRuntime;
+
 type Phase =
 	| "IDLE"
 	| "IMPLEMENT"
@@ -67,6 +110,7 @@ interface ReportArtifacts {
 	markdownPath?: string;
 	jsonPath?: string;
 	markdown: string;
+	markdownWriteError?: string;
 	jsonWriteError?: string;
 }
 
@@ -234,6 +278,12 @@ function normalizePhaseRounds(raw: unknown): Partial<PhaseRounds> {
 	return out;
 }
 
+const VALID_PHASES = new Set<Phase>(["IDLE", "IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO", "DONE", "STOPPED", "WAITING_DECISION"]);
+
+function synchronizeCloseReadiness(state: DeliveryState): void {
+	state.readyToClose = state.active && state.phase === "CLOSE";
+}
+
 function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 	const base = initialState();
 	if (!raw) return base;
@@ -241,16 +291,24 @@ function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 	const maxPhaseRounds = legacyAllRounds !== undefined
 		? allPhaseRounds(legacyAllRounds)
 		: { ...DEFAULT_PHASE_ROUNDS, ...normalizePhaseRounds(raw.maxPhaseRounds) };
-	return {
+	const restoredPhase = typeof raw.phase === "string" && VALID_PHASES.has(raw.phase as Phase)
+		? raw.phase as Phase
+		: raw.active
+			? "WAITING_DECISION"
+			: "IDLE";
+	const restored = {
 		...base,
 		...raw,
+		phase: restoredPhase,
 		maxRepairRounds: maxPhaseRounds.VERIFY,
 		maxPhaseRounds,
 		...(raw.phaseLaunches !== undefined ? { phaseLaunches: validatePhaseLaunches(raw.phaseLaunches, "restored pinned phase launch bundle") } : {}),
 		acceptedRisks: Array.isArray(raw.acceptedRisks) ? raw.acceptedRisks : [],
 		history: Array.isArray(raw.history) ? raw.history : [],
 		steps: Array.isArray((raw as { steps?: unknown }).steps) ? (raw as { steps: DeliveryStep[] }).steps : [],
-	};
+	} as DeliveryState;
+	synchronizeCloseReadiness(restored);
+	return restored;
 }
 
 function maxRoundsForPhase(state: DeliveryState, phase: RunnablePhase): number {
@@ -343,10 +401,10 @@ interface DeliveryConfig {
 	maxRounds?: Partial<PhaseRounds>;
 }
 
-const DEFAULT_ARTIFACT_ROOT = path.join(os.homedir(), ".pi", "delivery-run");
+const DEFAULT_ARTIFACT_ROOT = path.join(os.homedir(), CONFIG_DIR_NAME, "delivery-run");
 
 function getAgentDir(): string {
-	return process.env.PI_CODING_AGENT_DIR?.replace(/^~(?=$|\/)/, os.homedir()) ?? path.join(os.homedir(), ".pi", "agent");
+	return process.env.PI_CODING_AGENT_DIR?.replace(/^~(?=$|\/)/, os.homedir()) ?? path.join(os.homedir(), CONFIG_DIR_NAME, "agent");
 }
 
 function readDeliveryConfigFile(filePath: string, artifactRootBaseDir: string): Partial<DeliveryConfig> {
@@ -388,16 +446,18 @@ function mergeDeliveryConfig(base: DeliveryConfig, override: Partial<DeliveryCon
 	};
 }
 
-function loadDeliveryConfig(cwd: string): DeliveryConfig {
+function loadDeliveryConfig(ctx: ExtensionContext, projectRoot: string): DeliveryConfig {
 	const agentDir = getAgentDir();
 	const globalConfigPath = path.join(agentDir, "extensions", "delivery-state-machine.json");
-	const projectConfigPath = path.join(cwd, ".pi", "delivery-state-machine.json");
+	const projectConfigPath = path.join(projectRoot, CONFIG_DIR_NAME, "delivery-state-machine.json");
 	let config: DeliveryConfig = {};
 	config = mergeDeliveryConfig(config, readDeliveryConfigFile(globalConfigPath, agentDir));
-	config = mergeDeliveryConfig(config, readDeliveryConfigFile(projectConfigPath, cwd));
+	if (ctx.isProjectTrusted()) {
+		config = mergeDeliveryConfig(config, readDeliveryConfigFile(projectConfigPath, projectRoot));
+	}
 	if (process.env.PI_DELIVERY_ARTIFACT_ROOT) {
 		config.artifactRoot = process.env.PI_DELIVERY_ARTIFACT_ROOT;
-		config.artifactRootBaseDir = cwd;
+		config.artifactRootBaseDir = projectRoot;
 	}
 	return config;
 }
@@ -466,8 +526,7 @@ function writeProjectMetadata(projectDir: string, metadata: ProjectMetadata) {
 	writeJsonAtomic(projectJsonPath, written);
 }
 
-function createArtifactDir(cwd: string, task: string, project: ProjectMetadata): string {
-	const root = resolveArtifactRoot(cwd, loadDeliveryConfig(cwd));
+function createArtifactDir(root: string, task: string, project: ProjectMetadata): string {
 	const projectDir = path.join(root, "projects", project.projectId);
 	writeProjectMetadata(projectDir, project);
 	const runsDir = path.join(projectDir, "runs");
@@ -1780,7 +1839,8 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 
 	const retro = [...steps].reverse().find((step) => step.phase === "RETRO");
 	const retroText = readArtifactText(retro?.artifact);
-	const criticalFixes = extractMarkdownSection(retroText, "Critical fixes for future plans / delivery");
+	const criticalFixes = extractMarkdownSection(retroText, "Critical fixes")
+		?? extractMarkdownSection(retroText, "Critical fixes for future plans / delivery");
 	lines.push("", "## Critical fixes for future plans / delivery", "");
 	if (criticalFixes) lines.push(criticalFixes);
 	else if (retro?.artifact) lines.push(`See retro artifact for critical fixes and lessons: ${artifactLink(state, retro.artifact)}`);
@@ -1853,30 +1913,37 @@ function buildStructuredReport(
 }
 
 function writeJsonAtomic(filePath: string, data: unknown) {
-	const tmpPath = `${filePath}.tmp-${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-	fs.renameSync(tmpPath, filePath);
+	writeFileAtomically(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function writeReportArtifacts(state: DeliveryState, ctx: ExtensionContext): ReportArtifacts {
 	const usageSnapshot = reportUsageSnapshot(state, ctx);
 	const markdown = formatJourneyReport(state, ctx, usageSnapshot);
 	if (!state.artifactDir) return { markdown };
-	fs.mkdirSync(state.artifactDir, { recursive: true });
 	const markdownPath = path.join(state.artifactDir, "00-delivery-summary.md");
 	const jsonPath = path.join(state.artifactDir, "delivery-report.json");
-	fs.writeFileSync(markdownPath, markdown, "utf8");
 	try {
-		const generatedAt = Date.now();
-		writeJsonAtomic(jsonPath, buildStructuredReport(state, ctx, markdownPath, generatedAt, usageSnapshot));
-		return { markdownPath, jsonPath, markdown };
+		fs.mkdirSync(state.artifactDir, { recursive: true });
+		writeFileAtomically(markdownPath, markdown);
 	} catch (error) {
 		return {
 			markdownPath,
 			jsonPath,
 			markdown,
-			jsonWriteError: error instanceof Error ? error.message : String(error),
+			markdownWriteError: errorMessage(error),
+			jsonWriteError: "skipped because Markdown summary replacement failed",
 		};
+	}
+	try {
+		const generatedAt = Date.now();
+		writeJsonAtomic(jsonPath, buildStructuredReport(state, ctx, markdownPath, generatedAt, usageSnapshot));
+		return { markdownPath, jsonPath, markdown };
+	} catch (error) {
+		return { markdownPath, jsonPath, markdown, jsonWriteError: errorMessage(error) };
 	}
 }
 
@@ -1887,12 +1954,29 @@ function writeJourneyReport(state: DeliveryState, ctx: ExtensionContext): string
 function formatDeliverySummary(state: DeliveryState, ctx: ExtensionContext): string {
 	const artifacts = writeReportArtifacts(state, ctx);
 	if (!artifacts.markdownPath) return artifacts.markdown;
+	const markdownLine = artifacts.markdownWriteError
+		? `Report write warning: ${artifacts.markdownWriteError}`
+		: `Report written: ${artifacts.markdownPath}`;
 	const jsonLine = artifacts.jsonPath
 		? artifacts.jsonWriteError
 			? `\nStructured JSON write warning: ${artifacts.jsonWriteError}`
 			: `\nStructured JSON written: ${artifacts.jsonPath}`
 		: "";
-	return `${artifacts.markdown}\n\nReport written: ${artifacts.markdownPath}${jsonLine}`;
+	return `${artifacts.markdown}\n\n${markdownLine}${jsonLine}`;
+}
+
+function boundedToolContent(text: string, fullOutputPath?: string): string {
+	const initial = truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+	if (!initial.truncated) return text;
+	const location = fullOutputPath
+		? ` Full output saved to: ${fullOutputPath}.`
+		: " Complete structured output is preserved in tool details.";
+	const notice = `\n\n[Output truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.${location}]`;
+	const bounded = truncateHead(text, {
+		maxLines: Math.max(1, DEFAULT_MAX_LINES - 2),
+		maxBytes: Math.max(1, DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8")),
+	});
+	return `${bounded.content}${notice}`;
 }
 
 function formatState(state: DeliveryState): string {
@@ -1916,13 +2000,157 @@ function formatState(state: DeliveryState): string {
 	return lines.join("\n");
 }
 
+function shellTokens(command: string): string[] {
+	const tokens: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | undefined;
+	let escaped = false;
+	const flush = () => {
+		if (current) tokens.push(current);
+		current = "";
+	};
+	for (const char of command.replace(/\\\r?\n/g, " ")) {
+		if (escaped) {
+			current += char;
+			escaped = false;
+			continue;
+		}
+		if (char === "\\" && quote !== "'") {
+			escaped = true;
+			continue;
+		}
+		if (quote) {
+			if (char === quote) quote = undefined;
+			else current += char;
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			continue;
+		}
+		if (/\s/.test(char)) {
+			flush();
+			if (char === "\n") tokens.push(";");
+			continue;
+		}
+		if (";&|".includes(char)) {
+			flush();
+			tokens.push(";");
+			continue;
+		}
+		current += char;
+	}
+	flush();
+	return tokens;
+}
+
+function envCommandTokens(tokens: string[], start: number): string[] {
+	let index = start;
+	while (index < tokens.length) {
+		const option = tokens[index];
+		if (option === "--") return tokens.slice(index + 1);
+		if (!option.startsWith("-") || option === "-") break;
+		if (option === "-S" || option === "--split-string") {
+			const payload = tokens[index + 1];
+			return payload === undefined ? [] : [...shellTokens(payload), ...tokens.slice(index + 2)];
+		}
+		if (option.startsWith("--split-string=")) {
+			return [...shellTokens(option.slice("--split-string=".length)), ...tokens.slice(index + 1)];
+		}
+		if (option.startsWith("-S") && option.length > 2) {
+			return [...shellTokens(option.slice(2)), ...tokens.slice(index + 1)];
+		}
+		index += 1;
+		if (["-u", "-C", "--unset", "--chdir"].includes(option) && index < tokens.length) index += 1;
+	}
+	return tokens.slice(index);
+}
+
+function commandExecutable(tokens: string[]): { executable?: string; args: string[] } {
+	let index = 0;
+	while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index += 1;
+	while (["env", "command"].includes(path.basename(tokens[index] ?? ""))) {
+		const wrapper = path.basename(tokens[index++] ?? "");
+		if (wrapper === "env") {
+			return commandExecutable(envCommandTokens(tokens, index));
+		} else {
+			while (index < tokens.length && tokens[index].startsWith("-") && tokens[index] !== "--") {
+				const option = tokens[index++];
+				if (/^-[^-]*[vV]/.test(option)) return { args: [] };
+			}
+			if (tokens[index] === "--") index += 1;
+		}
+	}
+	const executable = tokens[index++];
+	return { executable: executable ? path.basename(executable) : undefined, args: tokens.slice(index) };
+}
+
+function shellCommandString(args: string[]): string | undefined {
+	let index = 0;
+	while (index < args.length) {
+		const option = args[index];
+		if (option === "--") return undefined;
+		if (option === "-c" || /^-[^-]+$/.test(option) && option.slice(1).includes("c")) {
+			const commandIndex = args[index + 1] === "--" ? index + 2 : index + 1;
+			return args[commandIndex];
+		}
+		if (["--rcfile", "--init-file"].includes(option)) {
+			index += 2;
+			continue;
+		}
+		if (option.startsWith("--")) {
+			index += 1;
+			continue;
+		}
+		if (["-O", "+O", "-o", "+o"].includes(option)) {
+			index += 2;
+			continue;
+		}
+		if (option.startsWith("-") || option.startsWith("+")) {
+			index += 1;
+			continue;
+		}
+		return undefined;
+	}
+	return undefined;
+}
+
+function commandSegmentIsDangerous(tokens: string[]): boolean {
+	const { executable, args } = commandExecutable(tokens);
+	if (!executable) return false;
+	if (["sh", "bash", "zsh"].includes(executable)) {
+		const nestedCommand = shellCommandString(args);
+		return typeof nestedCommand === "string" && isDangerousCloseCommand(nestedCommand);
+	}
+	if (executable === "git") {
+		let index = 0;
+		while (index < args.length && args[index].startsWith("-")) {
+			const option = args[index++];
+			if (["-C", "-c", "--git-dir", "--work-tree", "--namespace"].includes(option) && index < args.length) index += 1;
+		}
+		return args[index] === "push";
+	}
+	return (executable === "gh" && args[0] === "pr" && args[1] === "create")
+		|| (executable === "glab" && args[0] === "mr" && args[1] === "create");
+}
+
 function isDangerousCloseCommand(command: string): boolean {
-	const normalized = command.replace(/\\\s+/g, " ").trim();
-	return (
-		/(^|[;&|]\s*)git\s+push(\s|$)/.test(normalized) ||
-		/(^|[;&|]\s*)glab\s+mr\s+create(\s|$)/.test(normalized) ||
-		/(^|[;&|]\s*)gh\s+pr\s+create(\s|$)/.test(normalized)
-	);
+	const tokens = shellTokens(command);
+	let segment: string[] = [];
+	for (const token of [...tokens, ";"]) {
+		if (token !== ";") {
+			segment.push(token);
+			continue;
+		}
+		if (commandSegmentIsDangerous(segment)) return true;
+		segment = [];
+	}
+	return false;
+}
+
+function closeCommandAuthorized(state: DeliveryState): boolean {
+	if (!state.active) return true;
+	return state.phase === "CLOSE" || state.phase === "RETRO" || state.phase === "DONE";
 }
 
 export default function deliveryStateMachine(pi: ExtensionAPI) {
@@ -1956,8 +2184,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		if (event.toolName !== "bash") return;
 		const input = event.input as { command?: string } | undefined;
 		const command = input?.command ?? "";
-		if (!state.active || state.readyToClose || state.phase === "CLOSE" || state.phase === "RETRO" || state.phase === "DONE") return;
-		if (!isDangerousCloseCommand(command)) return;
+		if (closeCommandAuthorized(state) || !isDangerousCloseCommand(command)) return;
 		return {
 			block: true,
 			reason: `delivery-state-machine blocked push/MR command while phase=${state.phase}. Run delivery_next and reach CLOSE with readyToClose=true first.`,
@@ -1975,14 +2202,16 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state = initialState();
 			state.active = true;
 			state.task = task;
-			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd));
+			refreshGitInfo(ctx, state);
+			const projectRoot = state.gitRoot ?? ctx.cwd;
+			const deliveryConfig = loadDeliveryConfig(ctx, projectRoot);
+			state.maxPhaseRounds = resolveMaxPhaseRounds(deliveryConfig);
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			const phaseConfigBundle = loadPhaseConfigBundle();
 			state.phaseLaunches = phaseConfigBundle.launches;
 			state.launchProfile = phaseConfigBundle.profileResolution;
-			refreshGitInfo(ctx, state);
 			state.project = createProjectMetadata(ctx.cwd, state.gitRoot);
-			state.artifactDir = createArtifactDir(ctx.cwd, task, state.project);
+			state.artifactDir = createArtifactDir(resolveArtifactRoot(projectRoot, deliveryConfig), task, state.project);
 			state.usageAtStart = collectSessionUsage(ctx);
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
@@ -2039,14 +2268,16 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state = initialState();
 			state.active = true;
 			state.task = params.task;
-			state.maxPhaseRounds = resolveMaxPhaseRounds(loadDeliveryConfig(ctx.cwd), params.maxRepairRounds, params.maxRounds);
+			refreshGitInfo(ctx, state);
+			const projectRoot = state.gitRoot ?? ctx.cwd;
+			const deliveryConfig = loadDeliveryConfig(ctx, projectRoot);
+			state.maxPhaseRounds = resolveMaxPhaseRounds(deliveryConfig, params.maxRepairRounds, params.maxRounds);
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			const phaseConfigBundle = loadPhaseConfigBundle();
 			state.phaseLaunches = phaseConfigBundle.launches;
 			state.launchProfile = phaseConfigBundle.profileResolution;
-			refreshGitInfo(ctx, state);
 			state.project = createProjectMetadata(ctx.cwd, state.gitRoot);
-			state.artifactDir = createArtifactDir(ctx.cwd, params.task, state.project);
+			state.artifactDir = createArtifactDir(resolveArtifactRoot(projectRoot, deliveryConfig), params.task, state.project);
 			state.usageAtStart = collectSessionUsage(ctx);
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
@@ -2056,7 +2287,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			recordPlannedSteps(state, ctx, action);
 			persist();
 			updateUi(ctx, state);
-			return { content: [{ type: "text", text: formatState(state) }], details: { state: cloneState(state), next: action } };
+			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: action } };
 		},
 	});
 
@@ -2080,7 +2311,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			recordPlannedSteps(state, ctx, action);
 			persist();
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
-			return { content: [{ type: "text", text }], details: { state: cloneState(state), next: action } };
+			const fullOutputPath = shouldShowSummary(state) && state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
+			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: cloneState(state), next: action } };
 		},
 	});
 
@@ -2104,12 +2336,14 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			const candidate = cloneState(state);
 			reportParams.artifact = recordReportedSteps(candidate, ctx, reportParams) ?? reportParams.artifact;
 			transitionAfterReport(candidate, reportParams);
+			synchronizeCloseReadiness(candidate);
 			state = candidate;
 			persist();
 			updateUi(ctx, state);
 			const snapshot = cloneState(state);
 			const text = shouldShowSummary(snapshot) ? formatDeliverySummary(snapshot, ctx) : formatState(snapshot);
-			return { content: [{ type: "text", text }], details: { state: snapshot, next: nextAction(snapshot) } };
+			const fullOutputPath = shouldShowSummary(snapshot) && snapshot.artifactDir ? path.join(snapshot.artifactDir, "00-delivery-summary.md") : undefined;
+			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: snapshot, next: nextAction(snapshot) } };
 		},
 	});
 
@@ -2125,9 +2359,10 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		parameters: DECIDE_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			applyDecision(state, params.decision as Decision, params.rationale);
+			synchronizeCloseReadiness(state);
 			persist();
 			updateUi(ctx, state);
-			return { content: [{ type: "text", text: formatState(state) }], details: { state: cloneState(state), next: nextAction(state) } };
+			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: nextAction(state) } };
 		},
 	});
 
@@ -2141,7 +2376,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			updateUi(ctx, state);
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
-			return { content: [{ type: "text", text }], details: { state: cloneState(state), next: nextAction(state) } };
+			const fullOutputPath = shouldShowSummary(state) && state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
+			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: cloneState(state), next: nextAction(state) } };
 		},
 	});
 
@@ -2154,7 +2390,9 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			updateUi(ctx, state);
-			return { content: [{ type: "text", text: formatDeliverySummary(state, ctx) }], details: { state: cloneState(state), usage: collectSessionUsage(ctx) } };
+			const text = formatDeliverySummary(state, ctx);
+			const fullOutputPath = state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
+			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: cloneState(state), usage: collectSessionUsage(ctx) } };
 		},
 	});
 

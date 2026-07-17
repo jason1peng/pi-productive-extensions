@@ -30,6 +30,34 @@
         "agent": "delegate",
         "thinking": "high"
       }
+    },
+    "dsm-candidate": {
+      "IMPLEMENT": {
+        "agent": "dsm.implementer",
+        "context": "fresh"
+      },
+      "VERIFY": {
+        "agent": "dsm.verifier",
+        "context": "fresh"
+      },
+      "REVIEW": [
+        {
+          "agent": "dsm.reviewer",
+          "context": "fresh"
+        },
+        {
+          "agent": "dsm.reviewer",
+          "context": "fresh"
+        }
+      ],
+      "CLOSE": {
+        "agent": "dsm.closer",
+        "context": "fresh"
+      },
+      "RETRO": {
+        "agent": "dsm.retrospective",
+        "context": "fresh"
+      }
     }
   }
 }

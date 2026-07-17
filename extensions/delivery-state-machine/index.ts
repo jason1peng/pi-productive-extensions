@@ -781,7 +781,7 @@ function nextAction(state: DeliveryState): NextAction {
 
 	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
-	const childPrompt = `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context)}\n\n${projectHarnessRootContext(state)}`;
+	const promptForLaunch = (launch: LaunchConfig) => `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context, launch.agent)}\n\n${projectHarnessRootContext(state)}`;
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
@@ -791,7 +791,7 @@ function nextAction(state: DeliveryState): NextAction {
 				...launch,
 				acceptance: false as const,
 				...(artifactPath ? { artifact: artifactPath, output: artifactPath, outputMode: "file-only" as const } : {}),
-				childPrompt: parallelChildPrompt(childPrompt, state, launch, index, allLaunches.length),
+				childPrompt: parallelChildPrompt(promptForLaunch(launch), state, launch, index, allLaunches.length),
 			};
 		})
 		: undefined;
@@ -800,6 +800,7 @@ function nextAction(state: DeliveryState): NextAction {
 	const singleArtifact = launches.length === 1
 		? plannedArtifactPath(state, state.phase, phaseAttemptForStep(state, state.phase), primaryLaunch, undefined, 1)
 		: undefined;
+	const childPrompt = promptForLaunch(primaryLaunch);
 	const singlePrompt = singleArtifact
 		? `${childPrompt}\n\nArtifact contract:\n- Write your result to exactly this path: ${singleArtifact}\n- This exact planned path is required when reporting this phase.${CHILD_PROMPT_AUTHORITY_SUFFIX}`
 		: `${childPrompt}${CHILD_PROMPT_AUTHORITY_SUFFIX}`;
@@ -817,6 +818,64 @@ function nextAction(state: DeliveryState): NextAction {
 		orchestratorInstruction,
 		reportInstruction,
 	};
+}
+
+function validateSubagentLaunchThinking(state: DeliveryState, input: unknown): string | undefined {
+	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const action = nextAction(state);
+	const expected = action.parallel?.length ? action.parallel : [action];
+	const outer = input as Record<string, unknown>;
+	const rawTasks = Array.isArray(outer.tasks) ? outer.tasks : [outer];
+	const actual = rawTasks
+		.filter((task): task is Record<string, unknown> => Boolean(task) && typeof task === "object" && !Array.isArray(task))
+		.map((task) => ({ ...outer, ...task }));
+
+	const requiresParallelIdentity = expected.length > 1 && expected.some((launch) => Boolean(launch.thinking));
+	const expectedAgents = new Set(expected.map((launch) => launch.agent));
+	const expectedOutputs = new Set(expected.flatMap((launch) => typeof launch.output === "string" ? [launch.output] : []));
+	const targetsParallelLaunch = requiresParallelIdentity && actual.some((launch) =>
+		expectedAgents.has(String(launch.agent ?? ""))
+		|| (typeof launch.output === "string" && expectedOutputs.has(launch.output)),
+	);
+	if (targetsParallelLaunch) {
+		if (actual.length !== expected.length) {
+			return `Delivery launch blocked: received ${actual.length} parallel task${actual.length === 1 ? "" : "s"}, but delivery_next planned ${expected.length}. Every planned launch must appear exactly once with its exact output path.`;
+		}
+		const usedOutputs = new Set<string>();
+		for (const launch of actual) {
+			if (typeof launch.output !== "string" || !launch.output) {
+				return "Delivery launch blocked: the planned output path is missing from a parallel task, so its explicit thinking override cannot be verified. Retry the subagent call with the exact output returned by delivery_next.";
+			}
+			const expectedLaunch = expected.find((candidate) => candidate.output === launch.output);
+			if (!expectedLaunch) {
+				return `Delivery launch blocked: output=${launch.output} does not match a planned parallel launch, so its explicit thinking override cannot be verified. Retry with the exact planned launch settings returned by delivery_next.`;
+			}
+			if (usedOutputs.has(launch.output)) {
+				return `Delivery launch blocked: planned output path ${launch.output} was used more than once in the parallel call. Each task must map one-to-one to a distinct launch returned by delivery_next.`;
+			}
+			usedOutputs.add(launch.output);
+			if (launch.agent !== expectedLaunch.agent) {
+				return `Delivery launch blocked: output=${launch.output} belongs to ${expectedLaunch.agent}, not ${String(launch.agent)}. Retry with the exact planned launch settings returned by delivery_next.`;
+			}
+			if (expectedLaunch.thinking && launch.thinking !== expectedLaunch.thinking) {
+				return `Delivery launch blocked: pass thinking=${expectedLaunch.thinking} exactly as returned by delivery_next for ${expectedLaunch.agent}; received ${launch.thinking === undefined ? "no thinking value" : `thinking=${String(launch.thinking)}`}. Retry the subagent call with the planned launch settings.`;
+			}
+		}
+		return undefined;
+	}
+
+	for (const launch of actual) {
+		const expectedLaunch = expected.find((candidate) =>
+			(typeof launch.output === "string" && launch.output === candidate.output)
+			|| (expected.length === 1 && launch.agent === candidate.agent)
+			|| (expected.filter((item) => item.agent === launch.agent).length === 1 && launch.agent === candidate.agent),
+		);
+		if (!expectedLaunch?.thinking) continue;
+		if (launch.thinking !== expectedLaunch.thinking) {
+			return `Delivery launch blocked: pass thinking=${expectedLaunch.thinking} exactly as returned by delivery_next for ${expectedLaunch.agent}; received ${launch.thinking === undefined ? "no thinking value" : `thinking=${String(launch.thinking)}`}. Retry the subagent call with the planned launch settings.`;
+		}
+	}
+	return undefined;
 }
 
 function phaseAttemptForStep(state: DeliveryState, phase: RunnablePhase): number {
@@ -2181,6 +2240,11 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
 
 	pi.on("tool_call", async (event, _ctx) => {
+		if (event.toolName === "subagent") {
+			const reason = validateSubagentLaunchThinking(state, event.input);
+			if (reason) return { block: true, reason };
+			return;
+		}
 		if (event.toolName !== "bash") return;
 		const input = event.input as { command?: string } | undefined;
 		const command = input?.command ?? "";
@@ -2298,8 +2362,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptSnippet: "Return the next required delivery state-machine action",
 		promptGuidelines: [
 			"Use delivery_next before launching any delivery workflow subagent.",
-			"Launch the returned agent/model/thinking/context and pass only details.next.childPrompt to the subagent for single-child phases.",
-			"For parallel phases, pass each details.next.parallel[] entry's childPrompt plus output/outputMode when supported so each child artifact is saved to the planned path.",
+			"Launch the returned agent/model/thinking/context and pass only details.next.childPrompt to the subagent for single-child phases; configured thinking is mandatory and mismatched or omitted values are blocked.",
+			"For parallel phases, pass each details.next.parallel[] entry's agent/model/thinking/context, childPrompt, and output/outputMode so each child uses its exact planned settings and artifact path.",
 			"Pass details.next.acceptance or details.next.parallel[].acceptance when present so pi-subagents acceptance is disabled for delivery-managed artifact contracts.",
 			"Keep details.next.orchestratorInstruction and details.next.reportInstruction for the parent/orchestrator.",
 			"Follow delivery_next exactly; do not skip verification/review/close gates.",

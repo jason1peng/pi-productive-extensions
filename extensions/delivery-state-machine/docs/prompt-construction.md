@@ -25,8 +25,9 @@ For a single-child phase, the final prompt is assembled in this order:
 2. Static common child workflow instructions
 3. Resolved phase child prompt
    a. Centrally generated phase artifact contract
-   b. Resolved `## Child prompt`: user/global section when present,
-      otherwise the built-in section
+   b. Resolved user/global `## Child prompt` when present; otherwise the
+      built-in `## DSM child prompt` for `dsm.*` agents or built-in
+      `## Child prompt` for compatibility/builtin agents
    c. Placeholder rendering; built-in templates place dynamic values last
 4. Dynamic resolved project/worktree root
 5. Dynamic output instruction
@@ -82,7 +83,7 @@ The user file has higher precedence. Overrides are merged by section:
 - `## Orchestrator instruction`
 - `## Child prompt`
 
-A user file may override one section and inherit the other from the built-in file. Project-local phase prompt overrides are not loaded.
+Built-in files also contain `## DSM child prompt`, a concise dynamic template used only for package-scoped `dsm.*` launches. Stable DSM role policy lives in `agents/dsm/*.md`. A user file may override one section and inherit the other from the built-in file; a user `## Child prompt` applies to both compatibility and DSM profiles so existing override behavior is preserved. Project-local phase prompt overrides are not loaded.
 
 The resolved templates support these child-prompt values:
 
@@ -139,6 +140,7 @@ A user/global phase prompt override cannot remove or replace this prepended cont
 | Single-child output path / parallel-child identity and output path | No | Added centrally per child |
 | Parent report instruction | No | Generated centrally from state/phase |
 | Agent/model/thinking/context | Not in phase Markdown | Configured through `phase-launches.json` profiles |
+| Stable packaged DSM role/tool policy | No | Package agent frontmatter/system prompt in `agents/dsm/*.md` |
 
 Changing the required headings or verdict set requires a source change to `phase-contract.ts`; there is currently no user configuration override for `PHASE_CONTRACTS`.
 

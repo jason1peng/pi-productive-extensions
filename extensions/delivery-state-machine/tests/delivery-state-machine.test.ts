@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { collectSessionUsage, collectUsageFromJsonlContent, subtractUsageTotals } from "../../../shared/session-usage.ts";
 import deliveryStateMachine from "../index.ts";
 import { PHASE_CONTRACTS, phaseArtifactContractMarkdown, renderPhaseArtifactMarkdown, type RunnablePhase, type Verdict } from "../phase-contract.ts";
@@ -175,6 +175,334 @@ async function advanceHarnessToPhase(harness: ReturnType<typeof createHarness>, 
 	if (target === "RETRO") return result;
 	return harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retrospective complete" });
 }
+
+await runTest("package manifest exposes exactly five package-qualified DSM agents with phase-safe tools", async () => {
+	const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+	const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+	assert.deepEqual(manifest.pi?.subagents?.agents, ["./extensions/delivery-state-machine/agents/dsm"]);
+	const agentsDir = path.join(root, manifest.pi.subagents.agents[0]);
+	const files = fs.readdirSync(agentsDir).filter((name) => name.endsWith(".md")).sort();
+	const expected: Record<string, { phase: RunnablePhase; tools: string[]; thinking?: "low" | "high" }> = {
+		"closer.md": { phase: "CLOSE", tools: ["read", "bash"], thinking: "low" },
+		"implementer.md": { phase: "IMPLEMENT", tools: ["read", "bash", "edit", "write"] },
+		"retrospective.md": { phase: "RETRO", tools: ["read", "bash"], thinking: "high" },
+		"reviewer.md": { phase: "REVIEW", tools: ["read", "bash"] },
+		"verifier.md": { phase: "VERIFY", tools: ["read", "bash"], thinking: "low" },
+	};
+	assert.deepEqual(files, Object.keys(expected));
+	for (const file of files) {
+		const markdown = fs.readFileSync(path.join(agentsDir, file), "utf8");
+		const frontmatter = markdown.split("---", 3)[1];
+		assert.match(frontmatter, /\npackage: dsm\n/);
+		assert.match(frontmatter, new RegExp(`\\nname: ${path.basename(file, ".md")}\\n`));
+		assert.match(frontmatter, new RegExp(`\\ntools: ${expected[file].tools.join(", ")}\\n`));
+		if (expected[file].thinking) assert.match(frontmatter, new RegExp(`\\nthinking: ${expected[file].thinking}\\n`));
+		else assert.doesNotMatch(frontmatter, /\nthinking:/);
+		assert.match(frontmatter, /\nextensions:\n/);
+		assert.doesNotMatch(frontmatter, /delivery_|subagent|edit, write.*(?:verifier|reviewer)/);
+		const contract = PHASE_CONTRACTS[expected[file].phase];
+		for (const verdict of contract.allowedVerdicts) assert.ok(markdown.includes(`RESULT: ${verdict}`), `${file} must agree with ${expected[file].phase} verdict ${verdict}`);
+		for (const heading of contract.requiredHeadings) assert.ok(markdown.includes(`\`${heading}\``), `${file} must agree with ${expected[file].phase} heading ${heading}`);
+		assert.match(markdown, /Before returning, inspect the completed artifact and verify that its harness heading is the exact level-2 line `## Project harness discovery and compliance`; `###` or any other heading level is invalid\./);
+	}
+});
+
+await runTest("pi-subagents discovers DSM roles from the package in an isolated project when the host package is available", async () => {
+	const moduleRoot = (process.env.NODE_PATH ?? "").split(path.delimiter).find((entry) => fs.existsSync(path.join(entry, "pi-subagents", "src", "agents", "agents.ts")));
+	if (!moduleRoot) {
+		console.log("  SKIP host discovery smoke: pi-subagents is not installed in NODE_PATH");
+		return;
+	}
+	const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+	const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-package-discovery-"));
+	const isolatedAgentDir = path.join(isolatedRoot, "agent-home");
+	const packageRoot = path.join(isolatedRoot, "package");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	try {
+		fs.mkdirSync(path.join(packageRoot, ".git"), { recursive: true });
+		fs.mkdirSync(path.join(packageRoot, "extensions", "delivery-state-machine"), { recursive: true });
+		fs.copyFileSync(path.join(sourceRoot, "package.json"), path.join(packageRoot, "package.json"));
+		fs.cpSync(path.join(sourceRoot, "extensions", "delivery-state-machine", "agents", "dsm"), path.join(packageRoot, "extensions", "delivery-state-machine", "agents", "dsm"), { recursive: true });
+		fs.mkdirSync(isolatedAgentDir);
+		fs.writeFileSync(path.join(isolatedAgentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
+		process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+		const { discoverAgentsAll } = await import(pathToFileURL(path.join(moduleRoot, "pi-subagents", "src", "agents", "agents.ts")).href);
+		const all = discoverAgentsAll(isolatedRoot);
+		const discovered = all.package;
+		assert.deepEqual(all.user, []);
+		assert.deepEqual(all.project, []);
+		assert.deepEqual(discovered.map((agent: any) => agent.name).sort(), ["dsm.closer", "dsm.implementer", "dsm.retrospective", "dsm.reviewer", "dsm.verifier"]);
+		for (const agent of discovered) {
+			assert.equal(agent.source, "package");
+			assert.equal(agent.packageName, "dsm");
+		}
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		fs.rmSync(isolatedRoot, { recursive: true, force: true });
+	}
+});
+
+await runTest("isolated host smoke exercises the bundled candidate profile unchanged", () => {
+	const extensionDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+	const smoke = fs.readFileSync(path.join(extensionDir, "scripts", "isolated-host-smoke.sh"), "utf8");
+	assert.doesNotMatch(smoke, /cat > .*phase-launches\.json/);
+	assert.match(smoke, /bundled-phase-launches\.json/);
+	assert.match(smoke, /requested-launches\.json/);
+	assert.match(smoke, /actual-launches\.json/);
+	assert.match(smoke, /"subagents": \{\s*"defaultModel": "\$MODEL"/);
+	assert.match(smoke, /When delivery_next returns parallel launches, launch every parallel entry/);
+	assert.match(smoke, /export PYTHONDONTWRITEBYTECODE=1/);
+	assert.equal((smoke.match(/python3 -B/g) ?? []).length, 2);
+	assert.match(smoke, /source-status-before\.txt/);
+	assert.match(smoke, /source-status-after\.txt/);
+	assert.match(smoke, /cmp -s .*source-status-before\.txt.*source-status-after\.txt/);
+	assert.match(smoke, /TEMP_AGENT_ROOT=.*mktemp -d/);
+	assert.match(smoke, /AGENT_DIR="\$TEMP_AGENT_ROOT\/agent"/);
+	assert.doesNotMatch(smoke, /AGENT_DIR="\$EVIDENCE_DIR\/agent"/);
+	assert.match(smoke, /trap cleanup_agent_home EXIT/);
+	assert.match(smoke, /trap 'forward_host_signal HUP 129' HUP/);
+	assert.match(smoke, /trap 'forward_host_signal INT 130' INT/);
+	assert.match(smoke, /trap 'forward_host_signal TERM 143' TERM/);
+	assert.match(smoke, /kill -s "\$signal_name" "\$SMOKE_HOST_PID"/);
+	assert.match(smoke, /from isolated_host_process import process_group_guard/);
+	assert.match(smoke, /with process_group_guard\(process, on_cleanup=record_cleanup\)/);
+	assert.match(smoke, /find "\$EVIDENCE_DIR" -type f .*'auth\.json'.*'credentials\.json'.*'oauth\.json'/);
+	assert.match(smoke, /args\.get\("tasks"\).*isinstance\(args\.get\("tasks"\), list\)/);
+	assert.match(smoke, /printf '\.pi-subagents\/\\n'.*PROJECT_DIR\/\.gitignore/);
+});
+
+await runTest("isolated host process guard reaps the detached group on HUP, INT, and TERM", async () => {
+	const helperDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts");
+	for (const [signalNumber, expectedExit] of [[1, 129], [2, 130], [15, 143]] as const) {
+		const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-process-guard-"));
+		const childPidPath = path.join(fixture, "child.pid");
+		const readyPath = path.join(fixture, "ready");
+		const wrapper = `
+import os, subprocess, sys, time
+sys.path.insert(0, sys.argv[1])
+from isolated_host_process import process_group_guard
+child_code = "import os,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)"
+process = subprocess.Popen([sys.executable, "-c", child_code, sys.argv[2]], start_new_session=True)
+with process_group_guard(process, grace_seconds=0.2):
+    open(sys.argv[3], "w").write("ready")
+    while process.poll() is None:
+        time.sleep(0.05)
+`;
+		const host = Bun.spawn(["python3", "-B", "-c", wrapper, helperDir, childPidPath, readyPath], { stdout: "pipe", stderr: "pipe" });
+		try {
+			for (let attempt = 0; attempt < 100 && !(fs.existsSync(readyPath) && fs.existsSync(childPidPath)); attempt++) await Bun.sleep(10);
+			assert.ok(fs.existsSync(readyPath) && fs.existsSync(childPidPath), `process guard did not become ready for signal ${signalNumber}`);
+			const childPid = Number(fs.readFileSync(childPidPath, "utf8"));
+			host.kill(signalNumber);
+			assert.equal(await host.exited, expectedExit);
+			assert.throws(() => process.kill(childPid, 0), (error: NodeJS.ErrnoException) => error.code === "ESRCH");
+		} finally {
+			if (host.exitCode === null) host.kill(9);
+			await host.exited;
+			fs.rmSync(fixture, { recursive: true, force: true });
+		}
+	}
+});
+
+await runTest("isolated host process guard cleans up descendants after the group leader exits", async () => {
+	const helperDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts");
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-process-guard-dead-leader-"));
+	const descendantPidPath = path.join(fixture, "descendant.pid");
+	const wrapper = `
+import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from isolated_host_process import process_group_guard
+leader_code = '''
+import os, subprocess, sys, time
+subprocess.Popen([sys.executable, "-c", "import signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1],'w').write(str(__import__('os').getpid())); time.sleep(60)", sys.argv[1]])
+while not os.path.exists(sys.argv[1]):
+    time.sleep(0.01)
+'''
+process = subprocess.Popen([sys.executable, "-c", leader_code, sys.argv[2]], start_new_session=True)
+process.wait()
+with process_group_guard(process, grace_seconds=0.2):
+    pass
+`;
+	const host = Bun.spawn(["python3", "-B", "-c", wrapper, helperDir, descendantPidPath], { stdout: "pipe", stderr: "pipe" });
+	let descendantPid: number | undefined;
+	try {
+		for (let attempt = 0; attempt < 100 && !fs.existsSync(descendantPidPath); attempt++) await Bun.sleep(10);
+		assert.ok(fs.existsSync(descendantPidPath), "detached descendant did not become ready");
+		descendantPid = Number(fs.readFileSync(descendantPidPath, "utf8"));
+		assert.equal(await host.exited, 0);
+		assert.throws(() => process.kill(descendantPid!, 0), (error: NodeJS.ErrnoException) => error.code === "ESRCH");
+	} finally {
+		if (host.exitCode === null) host.kill(9);
+		await host.exited;
+		if (descendantPid !== undefined) {
+			try { process.kill(descendantPid, 9); } catch {}
+		}
+		fs.rmSync(fixture, { recursive: true, force: true });
+	}
+});
+
+await runTest("isolated smoke launch evidence ignores parent and sibling output-path references", () => {
+	const extensionDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+	const helperDir = path.join(extensionDir, "scripts");
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-launch-evidence-"));
+	try {
+		const metadataDir = path.join(fixture, "project", ".pi-subagents", "artifacts");
+		const sessionsDir = path.join(fixture, "sessions");
+		const firstOutput = path.join(fixture, "03-review-1.md");
+		const secondOutput = path.join(fixture, "03-review-2.md");
+		fs.mkdirSync(metadataDir, { recursive: true });
+		for (const [runId, childIndex, ownOutput, referencedOutput] of [
+			["reviewrun", 0, firstOutput, secondOutput],
+			["reviewrun", 1, secondOutput, firstOutput],
+		] as const) {
+			fs.writeFileSync(path.join(metadataDir, `${runId}_dsm.reviewer_${childIndex}_meta.json`), JSON.stringify({
+				runId,
+				agent: "dsm.reviewer",
+				task: `Parent/sibling context references ${referencedOutput}.\nWrite your findings to exactly this path: ${ownOutput}\nThis path is authoritative for this run.`,
+			}));
+			const sessionPath = path.join(sessionsDir, runId, `run-${childIndex}`, "session.jsonl");
+			fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+			fs.writeFileSync(sessionPath, `${JSON.stringify({ type: "session", id: `child-${childIndex}` })}\n`);
+		}
+		fs.mkdirSync(path.join(sessionsDir, "parent"), { recursive: true });
+		fs.writeFileSync(path.join(sessionsDir, "parent", "session.jsonl"), JSON.stringify({ outputs: [firstOutput, secondOutput] }));
+		const resolved = execFileSync("python3", [
+			"-B",
+			"-c",
+			"import json,sys; sys.path.insert(0,sys.argv[1]); from pathlib import Path; from isolated_host_launch_evidence import resolve_child_session; path,records=resolve_child_session(Path(sys.argv[2]),Path(sys.argv[3]),'dsm.reviewer',sys.argv[4]); print(json.dumps({'path':str(path),'id':records[0]['id']}))",
+			helperDir,
+			metadataDir,
+			sessionsDir,
+			secondOutput,
+		], { encoding: "utf8" });
+		assert.deepEqual(JSON.parse(resolved), {
+			path: path.join(sessionsDir, "reviewrun", "run-1", "session.jsonl"),
+			id: "child-1",
+		});
+	} finally {
+		fs.rmSync(fixture, { recursive: true, force: true });
+	}
+});
+
+await runTest("isolated host smoke removes inherited subagent identity markers at runtime", () => {
+	const helperDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts");
+	const output = execFileSync("python3", [
+		"-B",
+		"-c",
+		"import json, os, sys; sys.path.insert(0, sys.argv[1]); from isolated_host_environment import isolated_host_environment; print(json.dumps(isolated_host_environment(os.environ), sort_keys=True))",
+		helperDir,
+	], {
+		encoding: "utf8",
+		env: {
+			PATH: process.env.PATH ?? "",
+			PI_CODING_AGENT: "1",
+			PI_COMS_SERVER: "caller-server",
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_DEPTH: "2",
+			PI_SUBAGENT_MAX_DEPTH: "2",
+			PI_SUBAGENT_RUN_ID: "caller-run",
+			PI_SUBAGENT_PARENT_SESSION: "caller-session",
+			PI_SUBAGENT_FUTURE_MARKER: "must-also-be-removed",
+			PI_SUBAGENTS_ROOT: "/package/config-not-a-child-marker",
+			DSM_SMOKE_SENTINEL: "preserved",
+		},
+	});
+	const sanitized = JSON.parse(output);
+	assert.equal(sanitized.DSM_SMOKE_SENTINEL, "preserved");
+	assert.equal(sanitized.PI_SUBAGENTS_ROOT, "/package/config-not-a-child-marker");
+	assert.equal(sanitized.PI_CODING_AGENT, undefined);
+	assert.equal(sanitized.PI_COMS_SERVER, undefined);
+	assert.equal(Object.keys(sanitized).some((key) => key.startsWith("PI_SUBAGENT_")), false);
+});
+
+await runTest("DSM candidate stays non-default and receives concise agent-aware dynamic prompts", async () => {
+	const extensionDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+	const raw = JSON.parse(fs.readFileSync(path.join(extensionDir, "phase-launches.json"), "utf8"));
+	assert.equal(raw.defaultProfile, "default");
+	const candidate = Object.fromEntries(Object.entries(raw.profiles["dsm-candidate"]).map(([phase, value]) => [phase, (Array.isArray(value) ? value : [value])])) as Record<RunnablePhase, any[]>;
+	const expectedAgents: Record<RunnablePhase, string> = { IMPLEMENT: "dsm.implementer", VERIFY: "dsm.verifier", REVIEW: "dsm.reviewer", CLOSE: "dsm.closer", RETRO: "dsm.retrospective" };
+	const configs = materializePhaseConfigs(candidate);
+	assert.equal(candidate.REVIEW.length, 2);
+	assert.deepEqual(Object.fromEntries((Object.keys(PHASE_CONTRACTS) as RunnablePhase[]).map((phase) => [phase, candidate[phase].map((launch) => launch.thinking)])), {
+		IMPLEMENT: [undefined],
+		VERIFY: [undefined],
+		REVIEW: [undefined, undefined],
+		CLOSE: [undefined],
+		RETRO: [undefined],
+	});
+	for (const phase of Object.keys(PHASE_CONTRACTS) as RunnablePhase[]) {
+		assert.ok(configs[phase].launches.every((launch) => launch.agent === expectedAgents[phase]));
+		assert.ok(configs[phase].launches.every((launch) => launch.model === undefined), `${phase} must remain provider-neutral`);
+		assert.ok(configs[phase].launches.every((launch) => launch.context === "fresh"));
+		const context = { task: `dynamic ${phase} task`, artifactGuidance: "LEGACY ARTIFACT GUIDANCE", verifyRound: 2, maxRepairRounds: 3, pendingIssueInstruction: "repair this issue" };
+		const dsmPrompt = configs[phase].childPrompt(context, expectedAgents[phase]);
+		const compatibilityPrompt = configs[phase].childPrompt(context, raw.profiles.default[phase]?.agent ?? "reviewer");
+		assert.match(dsmPrompt, new RegExp(`Artifact contract for ${phase}`));
+		assert.match(dsmPrompt, new RegExp(`dynamic ${phase} task`));
+		assert.doesNotMatch(dsmPrompt, /LEGACY ARTIFACT GUIDANCE|Instructions:/);
+		assert.match(compatibilityPrompt, /Instructions:/);
+	}
+
+	process.env.PI_DELIVERY_PROFILE = "dsm-candidate";
+	try {
+		const harness = createHarness();
+		const result = await harness.tool("delivery_start", { task: "candidate prompt smoke" });
+		assert.equal(result.details.state.launchProfile.selectedProfile, "dsm-candidate");
+		assert.equal(result.details.next.agent, "dsm.implementer");
+		assert.match(result.details.next.childPrompt, /candidate prompt smoke/);
+		assert.match(result.details.next.childPrompt, new RegExp(result.details.next.artifact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.doesNotMatch(result.details.next.childPrompt, /The Required checklist section must include/);
+	} finally {
+		delete process.env.PI_DELIVERY_PROFILE;
+	}
+});
+
+await runTest("bundled agent thinking defaults avoid relay enforcement while explicit profile overrides remain enforced", async () => {
+	process.env.PI_DELIVERY_PROFILE = "dsm-candidate";
+	try {
+		const harness = createHarness();
+		await harness.tool("delivery_start", { task: "agent-owned thinking default" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		const next = await harness.tool("delivery_next");
+		assert.equal(next.details.next.thinking, undefined);
+		const launch = { agent: next.details.next.agent, output: next.details.next.output };
+		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: launch }), undefined);
+	} finally {
+		delete process.env.PI_DELIVERY_PROFILE;
+	}
+
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		strict: fullProfile({
+			REVIEW: [
+				{ agent: "reviewer", thinking: "low" },
+				{ agent: "reviewer", thinking: "high" },
+			],
+		}),
+	}), async () => {
+		const harness = createHarness();
+		await advanceHarnessToPhase(harness, "REVIEW");
+		const next = await harness.tool("delivery_next");
+		const tasks = next.details.next.parallel.map((item: any) => ({ agent: item.agent, output: item.output, thinking: item.thinking }));
+		assert.deepEqual(tasks.map((item: any) => item.thinking), ["low", "high"]);
+		const missingSecond = tasks.map((item: any, index: number) => index === 1 ? { ...item, thinking: undefined } : item);
+		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { tasks: missingSecond } }))?.reason, /pass thinking=high exactly.*received no thinking value/);
+
+		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { tasks: tasks.slice(0, 1) } }))?.reason, /received 1 parallel task.*planned 2/i);
+
+		const missingOutput = tasks.map((item: any, index: number) => index === 1 ? { agent: item.agent, thinking: item.thinking } : item);
+		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { tasks: missingOutput } }))?.reason, /planned output path.*missing/i);
+
+		const duplicateOutput = tasks.map((item: any, index: number) => index === 1 ? { ...item, output: tasks[0].output } : item);
+		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { tasks: duplicateOutput } }))?.reason, /planned output path.*more than once/i);
+
+		const unknownOutput = tasks.map((item: any, index: number) => index === 1 ? { ...item, output: `${item.output}.unknown` } : item);
+		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { tasks: unknownOutput } }))?.reason, /does not match a planned parallel launch/i);
+
+		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: { tasks: [...tasks].reverse() } }), undefined);
+		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: { tasks } }), undefined);
+	});
+});
 
 await runTest("phase launch prompts derive artifact contracts from the central source", async () => {
 	const launches = Object.fromEntries(Object.keys(PHASE_CONTRACTS).map((phase) => [phase, [{ agent: "test" }]])) as Record<RunnablePhase, [{ agent: string }]>;

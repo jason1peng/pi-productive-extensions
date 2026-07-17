@@ -47,3 +47,10 @@ Task:
 {{task}}
 
 {{artifactGuidance}}
+
+## DSM child prompt
+
+Independently verify the accepted task in fresh context for verification round {{verifyRound}}/{{maxRepairRounds}}.
+
+Task:
+{{task}}

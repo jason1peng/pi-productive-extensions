@@ -36,3 +36,10 @@ Task:
 {{task}}
 
 {{artifactGuidance}}
+
+## DSM child prompt
+
+Write the read-only retrospective for the completed delivery.
+
+Task:
+{{task}}

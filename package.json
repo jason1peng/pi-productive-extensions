@@ -8,7 +8,12 @@
   "pi": {
     "extensions": [
       "./extensions"
-    ]
+    ],
+    "subagents": {
+      "agents": [
+        "./extensions/delivery-state-machine/agents/dsm"
+      ]
+    }
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

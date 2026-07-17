@@ -33,7 +33,7 @@ export interface ProfileResolution {
 export interface PhaseConfig {
 	launches: LaunchConfig[];
 	orchestratorInstruction: (context: PhasePromptContext) => string;
-	childPrompt: (context: PhasePromptContext) => string;
+	childPrompt: (context: PhasePromptContext, agent?: string) => string;
 }
 
 export interface PhaseConfigBundle {
@@ -45,6 +45,7 @@ export interface PhaseConfigBundle {
 interface PromptConfig {
 	orchestratorInstruction?: string;
 	childPrompt?: string;
+	dsmChildPrompt?: string;
 }
 
 interface ProfileLaunchConfig {
@@ -133,6 +134,7 @@ function readPromptConfig(phase: RunnablePhase, filePath: string): PromptConfig 
 	return {
 		orchestratorInstruction: optionalSection(body, "Orchestrator instruction"),
 		childPrompt: optionalSection(body, "Child prompt"),
+		dsmChildPrompt: optionalSection(body, "DSM child prompt"),
 	};
 }
 
@@ -141,6 +143,9 @@ function mergePromptConfig(base: PromptConfig, override?: PromptConfig): PromptC
 	return {
 		orchestratorInstruction: override.orchestratorInstruction ?? base.orchestratorInstruction,
 		childPrompt: override.childPrompt ?? base.childPrompt,
+		// A user Child prompt remains a complete override for every profile. The
+		// built-in DSM variant is selected only when no user child override exists.
+		dsmChildPrompt: override.dsmChildPrompt ?? override.childPrompt ?? base.dsmChildPrompt,
 	};
 }
 
@@ -255,7 +260,10 @@ function materializeConfig(phase: RunnablePhase, prompt: Required<PromptConfig>,
 	return {
 		launches,
 		orchestratorInstruction: (context) => render(prompt.orchestratorInstruction, context),
-		childPrompt: (context) => `${phaseArtifactContractMarkdown(phase)}\n\n${render(prompt.childPrompt, context)}`,
+		childPrompt: (context, agent) => {
+			const template = agent?.startsWith("dsm.") ? prompt.dsmChildPrompt : prompt.childPrompt;
+			return `${phaseArtifactContractMarkdown(phase)}\n\n${render(template, context)}`;
+		},
 	};
 }
 

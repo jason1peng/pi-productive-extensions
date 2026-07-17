@@ -37,3 +37,10 @@ Task:
 {{task}}
 
 {{artifactGuidance}}
+
+## DSM child prompt
+
+Close the verified and reviewed delivery without changing the candidate implementation.
+
+Task:
+{{task}}

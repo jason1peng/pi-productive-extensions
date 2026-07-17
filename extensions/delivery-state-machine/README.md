@@ -21,7 +21,9 @@ Pi extension for parent-controlled delivery orchestration.
 
 ## Setup
 
-The `VERIFY` phase launches a user-scoped subagent named `fresh-verifier`. From this extension directory, install the bundled agent before using `/deliver`:
+This package exposes five package-scoped pi-subagents roles through `pi.subagents.agents`: `dsm.implementer`, `dsm.verifier`, `dsm.reviewer`, `dsm.closer`, and `dsm.retrospective`. They are available for the non-default `dsm-candidate` launch profile without copying agent files into user or project configuration.
+
+The bundled `default` profile remains unchanged until the Stage 7 quality gate. Its `VERIFY` phase still launches the user-scoped `fresh-verifier`; install that compatibility agent before using the default profile:
 
 ```bash
 mkdir -p ~/.pi/agent/agents
@@ -36,6 +38,14 @@ cp extensions/delivery-state-machine/agents/fresh-verifier.md ~/.pi/agent/agents
 ```
 
 The bundled verifier is instructed to be read-only for project/source files. It can run validation commands and write configured verification artifacts, but it should not edit the candidate diff or run destructive git/filesystem commands.
+
+The opt-in Stage 6 host smoke creates an isolated Pi agent directory and Git project, proves all five roles resolve with package source identity, launches each role with a real model, and preserves its evidence directory. It is intentionally excluded from `npm run verify` because it consumes model quota:
+
+```bash
+DSM_SMOKE_MODEL=openai-codex/gpt-5.6-sol extensions/delivery-state-machine/scripts/isolated-host-smoke.sh
+```
+
+Use `DSM_SMOKE_MODEL` to select a model available to the current Pi authentication. The isolated host copies authentication into a separate temporary agent home that is removed on exit or interruption; credential files are never retained in the evidence directory. It sets the selected model as `subagents.defaultModel`, while phase children use the bundled provider-neutral `dsm-candidate` profile unchanged. The candidate deliberately has no explicit model fields: model selection belongs to user profile overrides, `subagents.defaultModel`, or the current Pi model, and Stage 7 pins models for controlled benchmarks. Stable thinking defaults live in the packaged verifier (`low`), closer (`low`), and retrospective (`high`) agent frontmatter so the parent does not need to relay them; explicit profile overrides remain supported and runtime-enforced. The smoke verifies inherited actual models, agent-owned thinking defaults, every configured context and output path, and the parallel REVIEW launch. Set `DSM_SMOKE_EVIDENCE_DIR` to retain evidence at a specific path. The harness preserves the bundled profile plus requested and actual launch records under `results/`, writes timestamped phase/session progress to `results/progress.log`, enforces a 12-minute internal deadline, and terminates and waits for the complete Pi process group on timeout, an exceptional exit, or HUP/INT/TERM interruption (escalating to SIGKILL when needed); override the deadline with `DSM_SMOKE_TIMEOUT_SECONDS` (minimum 60).
 
 ## Delivery configuration
 
@@ -114,6 +124,8 @@ The `/deliver` bootstrap prompt lives in `prompts/deliver.md` so parent/orchestr
 
 Phase prompts live in `phases/*.md`, similar to pi agent-style config files. Launch settings live separately in profile-based `phase-launches.json`. `phase-config.ts` layers built-in defaults and user/global overrides only; project-local phase prompt and launch overrides are not read. See [docs/prompt-construction.md](docs/prompt-construction.md) for the complete prompt assembly order, configurable boundaries, central artifact contract, and report-time enforcement. See [docs/user-space-overrides.md](docs/user-space-overrides.md) for a step-by-step user-space override guide. Common child workflow instructions, such as returning results to the parent and not calling `delivery_report`, are appended centrally from `index.ts`. A stable static project-harness discovery block is placed before the separately generated resolved-root context and the resolved built-in/user phase prompt. This keeps the cacheable prefix stable while allowing a later full user override to refine or override prompt guidance. Parent `delivery_report` instructions are hardcoded state-machine behavior in `index.ts`.
 
+The packaged `dsm.*` agents own stable role policy, safety/mutation rules, evidence methodology, verdict discipline, and artifact expectations in their system prompts. When a DSM agent is selected, the matching built-in `## DSM child prompt` supplies only run-specific task/round/repair context; the runtime still prepends the authoritative `PHASE_CONTRACTS` structure and appends the resolved root and exact artifact path. A user/global `## Child prompt` remains a complete prompt override for default and DSM profiles, preserving existing override behavior. Orchestrator launch/report instructions are never copied into child prompts.
+
 ## Project harness discovery
 
 Every runnable phase starts a bounded discovery attempt at the resolved repository or worktree root. It checks existing common contributor/instruction entrypoints, applicable directory-scoped instructions, and explicit mandatory or phase-relevant references. Package scripts and CI/workflow files are inspected only when needed; agents are told not to recursively read unrelated docs.
@@ -136,7 +148,7 @@ Active profile selection path:
 
 `PI_DELIVERY_PROFILE` overrides the saved active profile for the current process. Profile resolution is pinned at `delivery_start`, so changing `active-profile.json` affects future deliveries, not phases already planned for an active delivery.
 
-Phase files do not configure subagent launch settings or tools. Frontmatter may only declare `phase`; `agent`, `model`, `thinking`, `context`, `tools`, and `parallel` are rejected there. Subagent tool availability comes from the actual agent definition used by the subagent launcher. Verification phases use the `fresh-verifier` agent, installed from `agents/fresh-verifier.md` into `~/.pi/agent/agents/fresh-verifier.md`. If another child should not have delivery tools, configure that in the child agent definition, for example with dedicated delivery agents such as `delivery-worker` or `delivery-verifier`.
+Phase files do not configure subagent launch settings or tools. Frontmatter may only declare `phase`; `agent`, `model`, `thinking`, `context`, `tools`, and `parallel` are rejected there. Subagent tool availability comes from the actual agent definition used by the subagent launcher. The packaged DSM agents load no extensions, so parent-only delivery tools are absent: only `dsm.implementer` receives `edit`/`write`; verifier/reviewer are read-only; closer has Git-capable `bash` but no source editing tools; retrospective is read-only by policy and has no editing tools. The default profile's verification phase continues to use `fresh-verifier`, installed from `agents/fresh-verifier.md` into `~/.pi/agent/agents/fresh-verifier.md`, until the Stage 7 adoption decision.
 
 `delivery_next` returns `details.next.childPrompt` for single-child phases. `details.next.prompt` mirrors the same child prompt for compatibility; parent-only instructions are kept in `details.next.orchestratorInstruction` and hardcoded `details.next.reportInstruction`. Parallel launches receive unique exact artifact paths. The parent saves those artifacts and reports one aggregate result; it no longer needs to copy usage metadata into `delivery_report`.
 
@@ -177,6 +189,13 @@ Launch profile config format (`phase-launches.json`):
       "CLOSE": { "agent": "delegate", "thinking": "low" },
       "RETRO": { "agent": "delegate", "thinking": "high" }
     },
+    "dsm-candidate": {
+      "IMPLEMENT": { "agent": "dsm.implementer", "context": "fresh" },
+      "VERIFY": { "agent": "dsm.verifier", "context": "fresh" },
+      "REVIEW": [{ "agent": "dsm.reviewer", "context": "fresh" }, { "agent": "dsm.reviewer", "context": "fresh" }],
+      "CLOSE": { "agent": "dsm.closer", "context": "fresh" },
+      "RETRO": { "agent": "dsm.retrospective", "context": "fresh" }
+    },
     "quota-saving": {
       "IMPLEMENT": { "agent": "worker", "model": "openai/gpt-5-mini" },
       "VERIFY": { "agent": "fresh-verifier", "model": "openai/gpt-5-mini", "thinking": "low", "context": "fresh" },
@@ -188,7 +207,7 @@ Launch profile config format (`phase-launches.json`):
 }
 ```
 
-Each profile must define every runnable phase: `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`. A phase value may be one launch object or an array of launch objects. Arrays mean parallel children for that phase. Entries support `agent`, `model`, `thinking`, and `context`. To force GPT-only or Claude-only execution, define profiles in user/global `phase-launches.json` with the model names available to your subscription, then select one with `active-profile.json` or `PI_DELIVERY_PROFILE`.
+Each profile must define every runnable phase: `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`. A phase value may be one launch object or an array of launch objects. Arrays mean parallel children for that phase. Entries support `agent`, `model`, `thinking`, and `context`. Agent frontmatter supplies the bundled DSM roles' stable thinking defaults. A profile `thinking` value is an explicit user launch override and remains mandatory during an active delivery: the extension blocks a `subagent` call that omits or changes one and tells the orchestrator to retry with the value returned by `delivery_next`; this applies to both single launches and entries in parallel `tasks[]`. To force GPT-only or Claude-only execution, define profiles in user/global `phase-launches.json` with the model names available to your subscription, then select one with `active-profile.json` or `PI_DELIVERY_PROFILE`.
 
 The phase prompts ask subagents to keep artifacts scan-friendly:
 

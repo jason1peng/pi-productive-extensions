@@ -38,10 +38,10 @@ Current implementation focus:
 
 ## DSM child prompt
 
-Implement the accepted task as the sole writer.
-
 Task:
 {{task}}
 
 Current implementation focus:
 {{pendingIssueInstruction}}
+
+{{artifactGuidance}}

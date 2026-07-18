@@ -14,7 +14,8 @@ Correctness comes before broad refactoring. The persisted state shape, legacy re
 - Stage 4 shipped exact pi-subagents child-usage attribution and immutable reporting in PR #39.
 - Stage 5 shipped trusted runtime configuration, CLOSE guarding, retro extraction, atomic summary handling, and standard Pi truncation in PR #40.
 - Stage 6 packaged dedicated delivery agents and separated static agent policy from dynamic child context. Focused/full verification, two frozen-candidate isolated-host smoke runs, and the independent review gate passed after two repair rounds.
-- Stages 7–8 remain. Stage 7 measures the packaged agents against pi-subagents builtins, and Stage 8 performs the behavior-preserving modularization.
+- Before Stage 7, execute the standalone prerequisite in [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md) to add and validate the reusable eval framework and ready-to-run scenario catalog.
+- Stages 7–8 remain. Stage 7 runs the packaged-agent comparison through that frozen framework, and Stage 8 performs the behavior-preserving modularization.
 
 ## Recommended contract decisions
 
@@ -39,8 +40,11 @@ This plan assumes the following behavior:
 17. Delivery phase roles are package-scoped pi-subagents named `dsm.implementer`, `dsm.verifier`, `dsm.reviewer`, `dsm.closer`, and `dsm.retrospective`; the short `dsm` namespace is independent of the npm package name and avoids builtin-name collisions.
 18. Static role policy, methodology, and tool restrictions belong in each agent system prompt. Child prompts retain only dynamic task/state data and the small runtime-owned artifact/verdict contract needed to prevent prompt/runtime drift.
 19. Builtin names are not shadowed by default. Any later shadowing requires Stage 7 evidence across delivery and general-purpose scenarios and an explicit promotion decision.
+20. Promptfoo `0.121.19` is the standalone eval-prerequisite orchestrator, pinned as an exact npm development dependency with the generated `package-lock.json` committed. Repository-owned TypeScript code remains authoritative for Pi launch behavior, disposable Git fixtures, deterministic scoring, and result normalization; Promptfoo must call the actual Pi/pi-subagents boundary through a custom provider rather than substitute another coding-agent SDK.
+21. Deterministic workspace, Git, test, artifact, verdict, and mutation checks decide safety and correctness. Model-graded rubrics may supplement evidence-quality scoring but cannot override a deterministic critical failure or independently justify adoption.
+22. Raw transcripts and per-run workspaces remain uncommitted. Committed reports record framework version, candidate commit, fixture hash, provider/model, thinking, context, effective tools, repetition, usage, scorer results, and infrastructure status so future reruns remain interpretable.
 
-The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` and Stages 0–5 are complete. Continue implementation from a dedicated latest-`main` worktree. Stage 6 owns packaged delivery agents and prompt separation, Stage 7 owns agent-quality evaluation, and Stage 8 owns modularization.
+The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` and Stages 0–6 are complete. Execute `AGENT_EVAL_PLAN.md` from a dedicated latest-`main` worktree before Stage 7. Stage 7 owns the model-backed agent comparison and adoption decision, and Stage 8 owns modularization.
 
 ## Scope boundaries
 
@@ -56,6 +60,7 @@ The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` and Stages 0–5 are c
 - Retro summary extraction
 - Tool output truncation
 - Package-scoped `dsm.*` delivery agents and static/dynamic prompt separation
+- A pinned Promptfoo integration with repository-owned Pi launch, fixture-isolation, deterministic-scoring, and result-normalization boundaries
 - Reproducible quality comparison against relevant pi-subagents builtins
 - Behavior-preserving modularization of `index.ts`
 - Focused, integration, persistence, and report-viewer tests
@@ -475,51 +480,20 @@ Do not remove the user-scoped `fresh-verifier` in Stage 6 because the current de
 
 Completed on 2026-07-18. The five package-scoped DSM agents own stable role, methodology, harness-discovery, escalation, and parent-reporting policy; generated DSM prompts are limited to dynamic task/state plus runtime-owned artifact, verdict, harness, and launch-path contracts only for the exact phase-owned agent identity, with regressions preserving complete prompts for cross-phase, arbitrary, default, and profile-override agents. The isolated-host smoke verifies every child's effective model against `DSM_SMOKE_MODEL` and requires authoritative `delivery-report.json` state to be `DONE`, with regressions for model mismatch and false sentinel signaling. Focused tests, `npm run verify`, `git diff --check`, and the model-backed isolated-host smoke pass. The independent review gate returned `PASS_WITH_NON_BLOCKING_NOTES` after two repair rounds; only a documentation wording follow-up remains non-blocking.
 
+## Evaluation-framework prerequisite
+
+Execute [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md) as an individual plan after Stage 6 and before Stage 7. It owns the Promptfoo integration, actual Pi runner, versioned contracts, disposable isolation, deterministic scorers, ten scenario fixtures, offline CI coverage, real-Pi canary, documentation, and independent review.
+
+Stage 7 remains blocked until work items W1–W4 and every completion gate in that plan pass. Its output is a frozen, reviewed framework and ready-to-run scenario catalog; it does not run the comparative benchmark or make an adoption decision.
+
 ## Stage 7 — Compare DSM agents with pi-subagents builtins
 
-- **Depends on:** a frozen Stage 6 candidate and its independent package/runtime review PASS.
-- **Produces:** a repeatable isolated benchmark harness, dated evidence report, delivery-default go/no-go decision, and explicit keep-namespaced or builtin-shadowing recommendation.
-- **Done when:** repeated controlled trials cover every DSM role, objective results and usage are recorded, the benchmark methodology is independently reviewed, and both the delivery-default and any builtin-promotion decisions satisfy the gates below.
+- **Depends on:** completed standalone `AGENT_EVAL_PLAN.md`, its independent framework review gate, and the frozen Stage 6 candidate.
+- **Produces:** reviewed pilot/full benchmark evidence, a dated report, an explicit delivery-default decision, and a separate namespaced-versus-shadowing decision.
+- **Consumes:** the prerequisite plan's frozen runner, schemas, scenarios, fixtures, isolation, scorers, and result semantics; affected pairs must be invalidated and rerun if any of those change.
+- **Done when:** the 20-trial pilot and 60-trial full benchmark are complete, infrastructure reruns have joined, objective quality/safety/usage evidence passes independent review, and the user records the delivery-default decision.
 
-Build fixture repositories/tasks with known expected outcomes for implementation, verification, review, close, and retrospective work. Use local temporary repositories, local bare remotes, and stubbed external boundaries where needed so CLOSE trials cannot push or mutate real projects. Include seeded defects, clean candidates, incomplete evidence, and mutation traps.
-
-Compare:
-
-| DSM role | Baseline |
-|---|---|
-| `dsm.implementer` | builtin `worker` |
-| `dsm.verifier` | builtin `reviewer` with explicit fresh context |
-| `dsm.reviewer` | builtin `reviewer` |
-| `dsm.closer` | builtin `delegate` |
-| `dsm.retrospective` | builtin `delegate` |
-
-Pin and record the same model, thinking level, context, task input, fixture revision, and effective tools when isolating prompt quality. Also record a native-configuration comparison when the tool policy itself is part of the candidate advantage. Run multiple trials per scenario because model output is nondeterministic; benchmark runs are manual/release evidence and must not enter normal fast CI.
-
-Measure at least:
-
-- behavioral correctness and focused-test result;
-- seeded-defect detection and false-positive findings;
-- exact artifact/verdict contract compliance;
-- unsupported PASS decisions;
-- unauthorized source, Git, or external mutation;
-- evidence completeness and actionable repair guidance;
-- completion reliability;
-- input, output, cache-read, total tokens, and cost when available.
-
-### Adoption and promotion gates
-
-Using `dsm.*` as the bundled delivery default requires no critical safety regression, no unsupported PASS on a seeded blocker, no worse objective task correctness or defect detection than the relevant baseline, compliant artifacts, and acceptable cost. On PASS, record the DSM-as-delivery-default adoption decision and promote `dsm-candidate` to the bundled default. A supported failure blocks Stage 8 and routes back to Stage 6 for prompt/tool repair while retaining the current default profile; an infrastructure-limited comparison remains inconclusive and must be rerun rather than treated as PASS.
-
-Keep `dsm.*` names unless the reviewed evidence also supports global promotion. Delivery-only superiority does not justify shadowing a general-purpose builtin: before exposing an unqualified builtin name, add representative general-purpose scenarios and require an explicit user promotion decision. Record this as a second, separate keep-namespaced versus shadow-builtin decision. If the delivery-default gate passes but the broader promotion gate does not, adopt the namespaced DSM roles only for delivery and proceed to Stage 8 without shadowing builtins.
-
-### Expected files
-
-- `extensions/delivery-state-machine/benchmarks/agent-quality/run.ts`
-- `extensions/delivery-state-machine/benchmarks/agent-quality/fixtures/`
-- `extensions/delivery-state-machine/benchmarks/agent-quality/artifacts/.gitignore` for uncommitted raw model/run output
-- `extensions/delivery-state-machine/benchmarks/agent-quality/reports/YYYY-MM-DD.md`
-- `extensions/delivery-state-machine/benchmarks/agent-quality/README.md`
-- `package.json` with an opt-in `benchmark:dsm-agents` command that is excluded from normal fast CI
+Use the candidate pairs, ten scenarios, controls, and later-benchmark defaults prepared by `AGENT_EVAL_PLAN.md`. A supported safety or correctness regression blocks Stage 8 and routes prompt/tool repair back to Stage 6; infrastructure-limited evidence remains inconclusive. Keep `dsm.*` names unless a separate general-purpose evaluation and explicit user decision support builtin shadowing.
 
 ## Stage 8 — Modularize `index.ts`
 
@@ -601,12 +575,13 @@ Stop on any:
 
 ## Parallelization
 
-Top-level stages are sequential: each stage consumes the previous stage's evidence, and Stages 6–8 overlap compatibility-sensitive phase contracts, launch profiles, tests, or `index.ts`. Keep one active writer and do not begin a later stage until the prior stage's completion and review gates pass.
+Top-level stages are sequential: each stage consumes the previous stage's evidence, and Stages 6–8 overlap compatibility-sensitive phase contracts, launch profiles, eval controls, tests, or `index.ts`. Keep one active writer and do not begin a later stage until the prior stage's completion and review gates pass.
 
 Safe parallel work is limited to:
 
 - read-only investigation and prompt/test-design review within Stage 6;
 - independent verifier/reviewer passes against a frozen candidate diff;
+- read-only Promptfoo/API research during the standalone eval prerequisite; framework, schema, fixture, scorer, and dependency-lock edits remain under one writer, and the real-Pi canary starts only after offline validation passes;
 - Stage 7 benchmark trials after fixtures, scoring rules, model settings, and candidate revision are frozen, with each trial isolated in its own temporary repository/worktree;
 - isolated smoke-test preparation that does not edit the active worktree.
 
@@ -632,6 +607,8 @@ npm run verify
 git diff --check
 git status --short
 ```
+
+For the standalone eval-prerequisite commands and the prepared Stage 7 benchmark defaults, follow [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md).
 
 Perform a live Pi smoke test covering:
 
@@ -682,14 +659,13 @@ Apply the bounded-review rule above. Review:
 - profile override, artifact-contract, and real-host launch compatibility;
 - project trust, CLOSE guard, report-write policy, and truncation behavior retained from Stage 5.
 
+### After the evaluation-framework prerequisite
+
+Apply the bounded-review rule above to the completion criteria and stop rules in [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md). Do not begin Stage 7 until work items W1–W4 and the independent framework gate pass.
+
 ### After Stage 7
 
-Apply the bounded-review rule above. Review:
-
-- fixture representativeness and isolation from real repositories/remotes;
-- fairness of model, context, thinking, task, and effective-tool controls;
-- objective scoring, repeated-trial evidence, usage accounting, and unsupported-PASS handling;
-- whether any proposed builtin shadowing is supported by both delivery and general-purpose evidence.
+Apply the bounded-review rule above to the Stage 7 benchmark evidence and adoption decision. Do not begin Stage 8 until the pilot/full results join, the independent gate passes, and the explicit user decision is recorded.
 
 ### After Stage 8
 
@@ -712,5 +688,6 @@ Any correctness, persistence, security, artifact-integrity, package-discovery, o
 - [x] **Stage 4:** replace best-effort usage backfill with the version-tolerant pi-subagents adapter, exact per-child attribution, derived parent overhead, immutable reporting, focused/full validation, and the Stage 4 review gate.
 - [x] **Stage 5:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summary policy, and standard truncation; pass focused/full runtime validation and the independent Stage 5 review gate.
 - [x] **Stage 6:** package the five `dsm.*` agents, add a non-default candidate profile with static agent policy and concise dynamic prompts, preserve the current default and profile overrides, and pass clean-home candidate discovery/full delivery smoke plus focused/full validation and review.
-- [ ] **Stage 7:** freeze benchmark fixtures and controls, run isolated repeated DSM-versus-builtin trials, publish and independently review objective quality/safety/usage evidence, separately record the DSM-as-delivery-default decision and the namespaced-versus-shadowing decision, promote the candidate profile only if its adoption gate passes, and only then remove the user-scoped `fresh-verifier` after a final default-profile smoke.
+- [ ] **Evaluation-framework prerequisite:** execute work items W1–W4 in [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md), including all ten scenario fixtures, offline/full verification, the opt-in real-Pi canary, and independent review without model calls in normal CI.
+- [ ] **Stage 7:** freeze the prerequisite outputs, run the 20-trial pilot and 60-trial full paired benchmark, publish and independently review the report, record the explicit delivery-default and namespace decisions, and promote only on an approved PASS.
 - [ ] **Stage 8:** extract modules one concern per commit after agent contracts are frozen, preserve dependency direction and compatibility, run the complete live smoke and final verification commands, and pass the final modularization review gate; stop release on any unresolved blocker.

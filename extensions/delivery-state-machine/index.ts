@@ -11,7 +11,7 @@ import { addUsageTotals, collectSessionUsage as collectSharedSessionUsage, colle
 import { readPiSubagentMetadataFiles, resolvePiSubagentChildUsage } from "./pi-subagents-usage.ts";
 import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportStep } from "../../shared/delivery-report.ts";
 import { PHASE_CONTRACTS, phaseArtifactFilename, renderPhaseArtifactMarkdown, type Verdict } from "./phase-contract.ts";
-import { loadPhaseConfigBundle, loadPhaseConfigs, validatePhaseLaunches, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
+import { isBundledDsmAgentForPhase, loadPhaseConfigBundle, loadPhaseConfigs, validatePhaseLaunches, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
 type Truncation = { content: string; truncated: boolean };
 type PiRuntimeUtilities = {
@@ -682,6 +682,15 @@ Every artifact must include:
 - Conflicts, gaps, or unreadable instructions:
 - Outcome: applied | none discovered | blocked`;
 
+const DSM_PROJECT_HARNESS_CONTRACT = `Project harness artifact contract:
+## Project harness discovery and compliance
+- Discovery scope checked:
+- Entry points discovered:
+- Mandatory references followed:
+- Phase-relevant rules applied:
+- Conflicts, gaps, or unreadable instructions:
+- Outcome: applied | none discovered | blocked`;
+
 function projectHarnessRootContext(state: DeliveryState): string {
 	const root = projectRootForState(state.cwd ?? process.cwd(), state.gitRoot);
 	return `Project harness resolved root for this run: ${root}`;
@@ -731,12 +740,13 @@ function parallelChildPrompt(basePrompt: string, state: DeliveryState, launch: L
 	const aggregatePath = state.artifactDir
 		? path.join(state.artifactDir, phaseArtifactFilename(state.phase, attempt))
 		: phaseArtifactFilename(state.phase, attempt);
+	const authoritySuffix = isBundledDsmAgentForPhase(state.phase, launch.agent) ? "" : CHILD_PROMPT_AUTHORITY_SUFFIX;
 	return `${basePrompt}
 
 Parallel phase instruction:
 - You are child ${index + 1}/${total} for phase ${state.phase} attempt ${attempt}; work independently from the other parallel child outputs.
 - Use or return this unique attempt-specific artifact path for your result: ${artifactPath}.
-- Do not write to the planned aggregate phase artifact path ${aggregatePath}; the parent/orchestrator owns it.${CHILD_PROMPT_AUTHORITY_SUFFIX}`;
+- Do not write to the planned aggregate phase artifact path ${aggregatePath}; the parent/orchestrator owns it.${authoritySuffix}`;
 }
 
 function reportInstructionForPhase(state: DeliveryState, phase: RunnablePhase, parallelCount = 1): string {
@@ -781,7 +791,9 @@ function nextAction(state: DeliveryState): NextAction {
 
 	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
-	const promptForLaunch = (launch: LaunchConfig) => `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context, launch.agent)}\n\n${projectHarnessRootContext(state)}`;
+	const promptForLaunch = (launch: LaunchConfig) => isBundledDsmAgentForPhase(state.phase, launch.agent)
+		? `${config.childPrompt(context, launch.agent)}\n\n${DSM_PROJECT_HARNESS_CONTRACT}\n\n${projectHarnessRootContext(state)}`
+		: `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context, launch.agent)}\n\n${projectHarnessRootContext(state)}`;
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
@@ -801,9 +813,10 @@ function nextAction(state: DeliveryState): NextAction {
 		? plannedArtifactPath(state, state.phase, phaseAttemptForStep(state, state.phase), primaryLaunch, undefined, 1)
 		: undefined;
 	const childPrompt = promptForLaunch(primaryLaunch);
+	const authoritySuffix = isBundledDsmAgentForPhase(state.phase, primaryLaunch.agent) ? "" : CHILD_PROMPT_AUTHORITY_SUFFIX;
 	const singlePrompt = singleArtifact
-		? `${childPrompt}\n\nArtifact contract:\n- Write your result to exactly this path: ${singleArtifact}\n- This exact planned path is required when reporting this phase.${CHILD_PROMPT_AUTHORITY_SUFFIX}`
-		: `${childPrompt}${CHILD_PROMPT_AUTHORITY_SUFFIX}`;
+		? `${childPrompt}\n\nArtifact contract:\n- Write your result to exactly this path: ${singleArtifact}\n- This exact planned path is required when reporting this phase.${authoritySuffix}`
+		: `${childPrompt}${authoritySuffix}`;
 	return {
 		phase: state.phase,
 		agent: primaryLaunch.agent,

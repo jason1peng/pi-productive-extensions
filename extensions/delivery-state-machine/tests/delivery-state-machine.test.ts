@@ -204,6 +204,9 @@ await runTest("package manifest exposes exactly five package-qualified DSM agent
 		for (const verdict of contract.allowedVerdicts) assert.ok(markdown.includes(`RESULT: ${verdict}`), `${file} must agree with ${expected[file].phase} verdict ${verdict}`);
 		for (const heading of contract.requiredHeadings) assert.ok(markdown.includes(`\`${heading}\``), `${file} must agree with ${expected[file].phase} heading ${heading}`);
 		assert.match(markdown, /Before returning, inspect the completed artifact and verify that its harness heading is the exact level-2 line `## Project harness discovery and compliance`; `###` or any other heading level is invalid\./);
+		assert.match(markdown, /Discover the project harness with a bounded, best-effort check/);
+		assert.match(markdown, /Never call `delivery_report`; the parent owns phase reporting and advancement/);
+		assert.match(markdown, /Dynamic task\/state text|Treat task\/state text/);
 	}
 });
 
@@ -270,6 +273,38 @@ await runTest("isolated host smoke exercises the bundled candidate profile uncha
 	assert.match(smoke, /find "\$EVIDENCE_DIR" -type f .*'auth\.json'.*'credentials\.json'.*'oauth\.json'/);
 	assert.match(smoke, /args\.get\("tasks"\).*isinstance\(args\.get\("tasks"\), list\)/);
 	assert.match(smoke, /printf '\.pi-subagents\/\\n'.*PROJECT_DIR\/\.gitignore/);
+	assert.match(smoke, /assert_effective_model\(evidence, os\.environ\["DSM_SMOKE_EXPECTED_MODEL"\]\)/);
+	assert.match(smoke, /assert_delivery_done\(Path\(os\.environ\["DSM_SMOKE_DELIVERY_ROOT"\]\)\)/);
+	assert.doesNotMatch(smoke, /grep -Fq "DSM_DELIVERY_SMOKE_DONE"/);
+});
+
+await runTest("isolated smoke evidence rejects effective-model mismatch and false DONE signaling", () => {
+	const helperDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts");
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-smoke-evidence-"));
+	try {
+		const deliveryRoot = path.join(fixture, "delivery");
+		fs.mkdirSync(deliveryRoot, { recursive: true });
+		fs.writeFileSync(path.join(fixture, "orchestrator.txt"), "DSM_DELIVERY_SMOKE_DONE\n");
+		fs.writeFileSync(path.join(deliveryRoot, "delivery-report.json"), JSON.stringify({ state: { phase: "STOPPED" } }));
+		assert.throws(() => execFileSync("python3", [
+			"-B", "-c",
+			"import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from isolated_host_smoke_evidence import assert_delivery_done; assert_delivery_done(Path(sys.argv[2]))",
+			helperDir, deliveryRoot,
+		]), /authoritative delivery report is not DONE/);
+		assert.throws(() => execFileSync("python3", [
+			"-B", "-c",
+			"import sys; sys.path.insert(0,sys.argv[1]); from isolated_host_smoke_evidence import assert_effective_model; assert_effective_model({'provider':'openai','modelId':'wrong'},'openai/expected')",
+			helperDir,
+		]), /actual child model did not match DSM_SMOKE_MODEL/);
+		fs.writeFileSync(path.join(deliveryRoot, "delivery-report.json"), JSON.stringify({ state: { phase: "DONE" } }));
+		execFileSync("python3", [
+			"-B", "-c",
+			"import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from isolated_host_smoke_evidence import assert_delivery_done,assert_effective_model; assert_delivery_done(Path(sys.argv[2])); assert_effective_model({'provider':'openai','modelId':'expected'},'openai/expected')",
+			helperDir, deliveryRoot,
+		]);
+	} finally {
+		fs.rmSync(fixture, { recursive: true, force: true });
+	}
 });
 
 await runTest("isolated host process guard reaps the detached group on HUP, INT, and TERM", async () => {
@@ -438,10 +473,13 @@ await runTest("DSM candidate stays non-default and receives concise agent-aware 
 		const context = { task: `dynamic ${phase} task`, artifactGuidance: "LEGACY ARTIFACT GUIDANCE", verifyRound: 2, maxRepairRounds: 3, pendingIssueInstruction: "repair this issue" };
 		const dsmPrompt = configs[phase].childPrompt(context, expectedAgents[phase]);
 		const compatibilityPrompt = configs[phase].childPrompt(context, raw.profiles.default[phase]?.agent ?? "reviewer");
+		const crossPhasePrompt = configs[phase].childPrompt(context, expectedAgents[phase === "IMPLEMENT" ? "VERIFY" : "IMPLEMENT"]);
+		const arbitraryDsmPrompt = configs[phase].childPrompt(context, "dsm.custom");
 		assert.match(dsmPrompt, new RegExp(`Artifact contract for ${phase}`));
 		assert.match(dsmPrompt, new RegExp(`dynamic ${phase} task`));
-		assert.doesNotMatch(dsmPrompt, /LEGACY ARTIFACT GUIDANCE|Instructions:/);
-		assert.match(compatibilityPrompt, /Instructions:/);
+		assert.match(dsmPrompt, /LEGACY ARTIFACT GUIDANCE/);
+		assert.doesNotMatch(dsmPrompt, /Instructions:/);
+		for (const fullPrompt of [compatibilityPrompt, crossPhasePrompt, arbitraryDsmPrompt]) assert.match(fullPrompt, /Instructions:/);
 	}
 
 	process.env.PI_DELIVERY_PROFILE = "dsm-candidate";
@@ -456,6 +494,73 @@ await runTest("DSM candidate stays non-default and receives concise agent-aware 
 	} finally {
 		delete process.env.PI_DELIVERY_PROFILE;
 	}
+});
+
+await runTest("DSM dynamic prompts allow only runtime-owned contracts plus task/state context", async () => {
+	process.env.PI_DELIVERY_PROFILE = "dsm-candidate";
+	try {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-dsm-prompt-allowlist-"));
+		try {
+			const harness = createHarness({ cwd });
+			const task = "unique DSM dynamic task";
+			let result = await harness.tool("delivery_start", { task });
+			const forbiddenStablePolicy = [
+				"Project harness discovery (bounded, best effort)",
+				"Common workflow instruction:",
+				"Instruction authority:",
+				"Return your result and evidence to the parent/orchestrator",
+				"do not recursively read unrelated documentation",
+				"Implement the accepted task as the sole writer",
+				"Independently verify the accepted task",
+				"Independently review the current candidate",
+				"Close the verified and reviewed delivery",
+				"Write the read-only retrospective",
+			];
+			for (const phase of Object.keys(PHASE_CONTRACTS) as RunnablePhase[]) {
+				const prompts = result.details.next.parallel?.map((launch: any) => launch.childPrompt) ?? [result.details.next.childPrompt];
+				for (const prompt of prompts) {
+					assert.match(prompt, new RegExp(`Artifact contract for ${phase}`));
+					assert.match(prompt, /Project harness artifact contract:/);
+					assert.match(prompt, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+					assert.match(prompt, new RegExp(task));
+					for (const policy of forbiddenStablePolicy) assert.doesNotMatch(prompt, new RegExp(policy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${phase} leaked stable policy: ${policy}`);
+				}
+				if (phase === "RETRO") break;
+				if (phase === "REVIEW") for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
+				result = await harness.tool("delivery_report", { phase, verdict: phase === "CLOSE" ? "DONE" : "PASS", summary: `${phase} passed` });
+			}
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	} finally {
+		delete process.env.PI_DELIVERY_PROFILE;
+	}
+});
+
+await runTest("cross-phase and arbitrary dsm names retain full compatibility prompts", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		mismatched: fullProfile({
+			IMPLEMENT: { agent: "dsm.verifier" },
+			VERIFY: { agent: "dsm.custom" },
+		}),
+	}), async () => {
+		const harness = createHarness();
+		let result = await harness.tool("delivery_start", { task: "exact DSM phase identity" });
+		assert.equal(result.details.next.agent, "dsm.verifier");
+		assert.match(result.details.next.childPrompt, /Implement this delivery phase as the sole writer/);
+		assert.match(result.details.next.childPrompt, /Project harness discovery \(bounded, best effort\)/);
+		assert.match(result.details.next.childPrompt, /Common workflow instruction:/);
+		assert.match(result.details.next.childPrompt, /Instruction authority:/);
+		assert.doesNotMatch(result.details.next.childPrompt, /Project harness artifact contract:/);
+
+		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		assert.equal(result.details.next.agent, "dsm.custom");
+		assert.match(result.details.next.childPrompt, /Independently verify this task/);
+		assert.match(result.details.next.childPrompt, /Project harness discovery \(bounded, best effort\)/);
+		assert.match(result.details.next.childPrompt, /Common workflow instruction:/);
+		assert.match(result.details.next.childPrompt, /Instruction authority:/);
+		assert.doesNotMatch(result.details.next.childPrompt, /Project harness artifact contract:/);
+	});
 });
 
 await runTest("bundled agent thinking defaults avoid relay enforcement while explicit profile overrides remain enforced", async () => {

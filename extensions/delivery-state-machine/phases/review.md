@@ -56,7 +56,7 @@ Task:
 
 ## DSM child prompt
 
-Independently review the current candidate against the accepted task.
-
 Task:
 {{task}}
+
+{{artifactGuidance}}

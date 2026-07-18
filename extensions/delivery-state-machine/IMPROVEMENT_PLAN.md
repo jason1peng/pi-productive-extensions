@@ -13,7 +13,8 @@ Correctness comes before broad refactoring. The persisted state shape, legacy re
 - Stages 2–3 shipped together in PR #37. The atomic report pipeline and strict artifact contracts pass the focused and full verification suites; the PR records an independent reviewer PASS after two repair rounds.
 - Stage 4 shipped exact pi-subagents child-usage attribution and immutable reporting in PR #39.
 - Stage 5 shipped trusted runtime configuration, CLOSE guarding, retro extraction, atomic summary handling, and standard Pi truncation in PR #40.
-- Stages 6–8 remain. Stage 6 packages dedicated delivery agents and separates static agent policy from dynamic child context, Stage 7 measures those agents against pi-subagents builtins, and Stage 8 performs the behavior-preserving modularization.
+- Stage 6 packaged dedicated delivery agents and separated static agent policy from dynamic child context. Focused/full verification, two frozen-candidate isolated-host smoke runs, and the independent review gate passed after two repair rounds.
+- Stages 7–8 remain. Stage 7 measures the packaged agents against pi-subagents builtins, and Stage 8 performs the behavior-preserving modularization.
 
 ## Recommended contract decisions
 
@@ -470,6 +471,10 @@ Do not depend on the developer's existing `~/.pi/agent/agents/fresh-verifier.md`
 
 Do not remove the user-scoped `fresh-verifier` in Stage 6 because the current default profile still depends on it. Remove it only after Stage 7 promotes the DSM candidate to the bundled default and a final default-profile smoke proves `dsm.verifier` is active; if the adoption gate fails or remains inconclusive, retain it. Session-spawn exhaustion still blocks the independent gate and requires a new Pi session rather than synthetic PASS or parent fallback.
 
+### Completion record
+
+Completed on 2026-07-18. The five package-scoped DSM agents own stable role, methodology, harness-discovery, escalation, and parent-reporting policy; generated DSM prompts are limited to dynamic task/state plus runtime-owned artifact, verdict, harness, and launch-path contracts only for the exact phase-owned agent identity, with regressions preserving complete prompts for cross-phase, arbitrary, default, and profile-override agents. The isolated-host smoke verifies every child's effective model against `DSM_SMOKE_MODEL` and requires authoritative `delivery-report.json` state to be `DONE`, with regressions for model mismatch and false sentinel signaling. Focused tests, `npm run verify`, `git diff --check`, and the model-backed isolated-host smoke pass. The independent review gate returned `PASS_WITH_NON_BLOCKING_NOTES` after two repair rounds; only a documentation wording follow-up remains non-blocking.
+
 ## Stage 7 — Compare DSM agents with pi-subagents builtins
 
 - **Depends on:** a frozen Stage 6 candidate and its independent package/runtime review PASS.
@@ -706,6 +711,6 @@ Any correctness, persistence, security, artifact-integrity, package-discovery, o
 - [x] **Stage 3:** ship exact artifact contracts and filesystem-atomic aggregate replacement in PR #37; pass containment, completeness, compatibility, and mandatory review gates.
 - [x] **Stage 4:** replace best-effort usage backfill with the version-tolerant pi-subagents adapter, exact per-child attribution, derived parent overhead, immutable reporting, focused/full validation, and the Stage 4 review gate.
 - [x] **Stage 5:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summary policy, and standard truncation; pass focused/full runtime validation and the independent Stage 5 review gate.
-- [ ] **Stage 6:** package the five `dsm.*` agents, add a non-default candidate profile with static agent policy and concise dynamic prompts, preserve the current default and profile overrides, and pass clean-home candidate discovery/full delivery smoke plus focused/full validation and review.
+- [x] **Stage 6:** package the five `dsm.*` agents, add a non-default candidate profile with static agent policy and concise dynamic prompts, preserve the current default and profile overrides, and pass clean-home candidate discovery/full delivery smoke plus focused/full validation and review.
 - [ ] **Stage 7:** freeze benchmark fixtures and controls, run isolated repeated DSM-versus-builtin trials, publish and independently review objective quality/safety/usage evidence, separately record the DSM-as-delivery-default decision and the namespaced-versus-shadowing decision, promote the candidate profile only if its adoption gate passes, and only then remove the user-scoped `fresh-verifier` after a final default-profile smoke.
 - [ ] **Stage 8:** extract modules one concern per commit after agent contracts are frozen, preserve dependency direction and compatibility, run the complete live smoke and final verification commands, and pass the final modularization review gate; stop release on any unresolved blocker.

@@ -61,6 +61,18 @@ const PHASE_FILES: Record<RunnablePhase, string> = {
 	RETRO: "retro.md",
 };
 
+export const BUNDLED_DSM_AGENT_BY_PHASE: Record<RunnablePhase, string> = {
+	IMPLEMENT: "dsm.implementer",
+	VERIFY: "dsm.verifier",
+	REVIEW: "dsm.reviewer",
+	CLOSE: "dsm.closer",
+	RETRO: "dsm.retrospective",
+};
+
+export function isBundledDsmAgentForPhase(phase: RunnablePhase, agent: string | undefined): boolean {
+	return agent === BUNDLED_DSM_AGENT_BY_PHASE[phase];
+}
+
 const PHASE_LAUNCHES_FILE = "phase-launches.json";
 const ACTIVE_PROFILE_FILE = "active-profile.json";
 const PROMPT_FRONTMATTER_KEYS = new Set(["phase"]);
@@ -261,7 +273,7 @@ function materializeConfig(phase: RunnablePhase, prompt: Required<PromptConfig>,
 		launches,
 		orchestratorInstruction: (context) => render(prompt.orchestratorInstruction, context),
 		childPrompt: (context, agent) => {
-			const template = agent?.startsWith("dsm.") ? prompt.dsmChildPrompt : prompt.childPrompt;
+			const template = isBundledDsmAgentForPhase(phase, agent) ? prompt.dsmChildPrompt : prompt.childPrompt;
 			return `${phaseArtifactContractMarkdown(phase)}\n\n${render(template, context)}`;
 		},
 	};

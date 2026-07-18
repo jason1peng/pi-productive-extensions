@@ -192,12 +192,12 @@ PY
 SMOKE_HOST_PID=$!
 wait "$SMOKE_HOST_PID"
 SMOKE_HOST_PID=
-grep -Fq "DSM_DELIVERY_SMOKE_DONE" "$RESULTS_DIR/orchestrator.txt"
 
 # Extract requested tool arguments and the corresponding child-session headers.
 # This keeps both sides of launch evidence when an inherited model or configured
 # thinking level, context mode, output path, or parallel entry fails on a future host.
 export DSM_SMOKE_BUNDLED_LAUNCHES="$RESULTS_DIR/bundled-phase-launches.json"
+export DSM_SMOKE_EXPECTED_MODEL="$MODEL"
 export DSM_SMOKE_SESSIONS_DIR="$AGENT_DIR/sessions"
 export DSM_SMOKE_SUBAGENT_METADATA_DIR="$PROJECT_DIR/.pi-subagents/artifacts"
 python3 -B <<'PY'
@@ -208,10 +208,13 @@ from pathlib import Path
 
 sys.path.insert(0, os.environ["DSM_SMOKE_ENV_HELPER_DIR"])
 from isolated_host_launch_evidence import resolve_child_session
+from isolated_host_smoke_evidence import assert_delivery_done, assert_effective_model
 
 sessions_root = Path(os.environ["DSM_SMOKE_SESSIONS_DIR"])
 metadata_root = Path(os.environ["DSM_SMOKE_SUBAGENT_METADATA_DIR"])
 results = Path(os.environ["DSM_SMOKE_RESULTS_DIR"])
+completion = assert_delivery_done(Path(os.environ["DSM_SMOKE_DELIVERY_ROOT"]))
+(results / "completion-state.json").write_text(json.dumps(completion, indent=2) + "\n")
 with open(os.environ["DSM_SMOKE_BUNDLED_LAUNCHES"]) as handle:
     candidate = json.load(handle)["profiles"]["dsm-candidate"]
 expected = []
@@ -280,9 +283,10 @@ for launch in requested:
         "provider": model.get("provider"), "modelId": model.get("modelId"),
         "thinking": thinking.get("thinkingLevel"),
     }
-    actual_models = {evidence.get("modelId"), "/".join((evidence.get("provider") or "", evidence.get("modelId") or ""))}
-    if launch.get("model") and launch["model"] not in actual_models:
-        raise SystemExit(f"actual model did not match requested launch: {evidence}")
+    try:
+        assert_effective_model(evidence, os.environ["DSM_SMOKE_EXPECTED_MODEL"])
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     expected_thinking = launch.get("thinking") or agent_thinking_defaults.get(launch["agent"])
     if expected_thinking and evidence.get("thinking") != expected_thinking:
         raise SystemExit(f"actual thinking did not match configured profile override or agent default: {evidence}")

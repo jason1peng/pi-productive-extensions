@@ -67,9 +67,10 @@ export function resolveChild(run: ProvisionedRun, requested: RuntimeEvidence["re
 	const session = entries.find((entry) => entry.type === "session") ?? {};
 	const model = entries.find((entry) => entry.type === "model_change") ?? {};
 	const thinking = entries.find((entry) => entry.type === "thinking_level_change") ?? {};
-	const effectiveModel = String(model.modelId ?? match.metadata.model ?? "");
-	const requestedModelId = requested.model.includes("/") ? requested.model.slice(requested.model.indexOf("/") + 1) : requested.model;
-	const effectiveCwd = String(session.cwd ?? match.metadata.cwd ?? "");
+	const effectiveProvider = String(model.provider ?? "unknown");
+	const effectiveModelId = String(model.modelId ?? "");
+	const effectiveModel = effectiveModelId.includes("/") ? effectiveModelId : `${effectiveProvider}/${effectiveModelId}`;
+	const effectiveCwd = String(session.cwd ?? "");
 	const conversation = entries.filter((entry) => ["user", "assistant"].includes(String(entry?.message?.role ?? "")));
 	const firstMessage = conversation[0]?.message;
 	const firstText = (firstMessage?.content ?? []).filter((item: any) => item?.type === "text").map((item: any) => String(item.text ?? "")).join("\n");
@@ -79,9 +80,9 @@ export function resolveChild(run: ProvisionedRun, requested: RuntimeEvidence["re
 	}
 	return {
 		agent: requested.agent,
-		provider: String(model.provider ?? "unknown"),
-		model: effectiveModel === requestedModelId ? requested.model : effectiveModel,
-		thinking: String(thinking.thinkingLevel ?? match.metadata.thinking ?? ""),
+		provider: effectiveProvider,
+		model: effectiveModel,
+		thinking: String(thinking.thinkingLevel ?? ""),
 		context: "fresh",
 		tools: effectiveTools,
 		cwd: fs.existsSync(effectiveCwd) && fs.existsSync(requested.cwd) && fs.realpathSync(effectiveCwd) === fs.realpathSync(requested.cwd) ? requested.cwd : effectiveCwd,

@@ -7,7 +7,7 @@ import { loadScenarios } from "../catalog.ts";
 import { provisionScenario, runtimeEnvironment, snapshot } from "../provision.ts";
 import DeliveryAgentProvider, { gradePromptfooOutput, runPromptfooTrial, runScenario, type RuntimeExecutor } from "../run.ts";
 import { artifactPrompt, credentialValuesFromAuthFile, executePiRuntime, publicEvidenceChoiceContract, resolveChild, selectAuthentication, spawnBounded, validateOuterLaunch } from "../runtime.ts";
-import { scoreMutation } from "../scorers/index.ts";
+import { scoreMutation, scoreRuntime } from "../scorers/index.ts";
 import { PROMPTFOO_VERSION, validateResult, validateScenario, type NormalizedResult, type ScenarioRecord } from "../schema.ts";
 
 function command(program: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): string {
@@ -30,7 +30,8 @@ function fakeRuntime(scenario: ScenarioRecord, candidate: string, run: Parameter
 	const metadataFile = path.join(run.rawEvidence, "fake-child-metadata.json");
 	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", cwd: run.workspace })}\n`);
 	fs.writeFileSync(metadataFile, `${JSON.stringify({ runId: "fake", childIndex: 0, agent: candidate })}\n`);
-	const effective = { agent: candidate, provider: "fake", model: scenario.launch.model, thinking: scenario.launch.thinking, context: scenario.launch.context, tools: scenario.launch.tools, cwd: run.workspace, sessionFile, metadataFile };
+	const provider = scenario.launch.model.slice(0, scenario.launch.model.indexOf("/"));
+	const effective = { agent: candidate, provider, model: scenario.launch.model, thinking: scenario.launch.thinking, context: scenario.launch.context, tools: scenario.launch.tools, cwd: run.workspace, sessionFile, metadataFile };
 	return {
 		evidence: { requested: { agent: candidate, model: scenario.launch.model, thinking: scenario.launch.thinking, context: scenario.launch.context, tools: scenario.launch.tools, cwd: run.workspace, output: run.artifactPath }, effective, started: true, completed: true, timedOut: false, infrastructureErrors: [] },
 		outer: { provider: "fake", model: scenario.launch.model, usage: { inputTokens: 1, outputTokens: 1 } },
@@ -639,7 +640,25 @@ try {
 	assert.equal(joined?.metadataFile, metadataFile);
 	assert.equal(joined?.context, "fresh");
 	assert.equal(joined?.usage?.inputTokens, 2);
+	assert.equal(scoreRuntime({ requested, effective: joined, started: true, completed: true, timedOut: false, infrastructureErrors: [] }).passed, false, "authoritative provider mismatch must fail runtime identity even when the model ID matches");
 	const authoritativeSession = fs.readFileSync(session, "utf8");
+	const missingModelEntries = authoritativeSession.trimEnd().split("\n").map((line) => JSON.parse(line));
+	const missingModelChange = missingModelEntries.find((entry) => entry.type === "model_change");
+	missingModelChange.provider = requested.model.slice(0, requested.model.indexOf("/"));
+	delete missingModelChange.modelId;
+	fs.writeFileSync(session, `${missingModelEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+	const missingModel = resolveChild(provisioned, requested, requested.tools);
+	assert.equal(scoreRuntime({ requested, effective: missingModel, started: true, completed: true, timedOut: false, infrastructureErrors: [] }).passed, false, "missing authoritative model ID must not fall back to requested launch metadata");
+	const missingThinkingEntries = authoritativeSession.trimEnd().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.type !== "thinking_level_change");
+	fs.writeFileSync(session, `${missingThinkingEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+	const missingThinking = resolveChild(provisioned, requested, requested.tools);
+	assert.equal(scoreRuntime({ requested, effective: missingThinking, started: true, completed: true, timedOut: false, infrastructureErrors: [] }).passed, false, "missing authoritative thinking must not fall back to launch metadata");
+	const missingCwdEntries = authoritativeSession.trimEnd().split("\n").map((line) => JSON.parse(line));
+	delete missingCwdEntries.find((entry) => entry.type === "session").cwd;
+	fs.writeFileSync(session, `${missingCwdEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+	const missingCwd = resolveChild(provisioned, requested, requested.tools);
+	assert.equal(scoreRuntime({ requested, effective: missingCwd, started: true, completed: true, timedOut: false, infrastructureErrors: [] }).passed, false, "missing authoritative cwd must not fall back to launch metadata");
+	fs.writeFileSync(session, authoritativeSession);
 	const nonFreshEntries = authoritativeSession.trimEnd().split("\n").map((line) => JSON.parse(line));
 	const firstUser = nonFreshEntries.find((entry) => entry?.message?.role === "user");
 	firstUser.message.content[0].text = `Task: unrelated inherited history\n\n${childTask}`;
@@ -657,6 +676,12 @@ try {
 	assert.equal(path.dirname(retainedEvidence.child!.metadataFile), retainedEvidence.rawEvidencePath);
 	assert.equal(fs.existsSync(retainedEvidence.child!.metadataFile), true, "authoritative child metadata must survive temporary-root cleanup");
 	assert.equal(JSON.parse(fs.readFileSync(retainedEvidence.child!.metadataFile, "utf8")).agent, "dsm.verifier");
+	const retainedGit = JSON.parse(fs.readFileSync(path.join(retainedEvidence.rawEvidencePath, "runtime", "git.json"), "utf8"));
+	assert.deepEqual(Object.keys(retainedGit.before).sort(), ["branches", "cachedDiff", "diff", "head", "remotes", "status"]);
+	assert.deepEqual(Object.keys(retainedGit.after).sort(), ["branches", "cachedDiff", "diff", "head", "remotes", "status"]);
+	const retainedControls = JSON.parse(fs.readFileSync(path.join(retainedEvidence.rawEvidencePath, "runtime", "controls.json"), "utf8"));
+	assert.equal(retainedControls.length, joinScenario.controls.focused.length + joinScenario.controls.behavior.length);
+	assert.ok(retainedControls.every((entry: any) => typeof entry.command === "string" && typeof entry.stdout === "string" && typeof entry.stderr === "string" && "exitCode" in entry));
 } finally { fs.rmSync(retainedEvidence.rawEvidencePath, { recursive: true, force: true }); }
 
 const authRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-agent-eval-auth-"));

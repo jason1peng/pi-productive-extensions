@@ -8,6 +8,10 @@ This is a standalone prerequisite plan. Its execution ends when the framework, s
 
 After this plan is complete, `IMPROVEMENT_PLAN.md` Stage 7 may use the frozen framework and scenarios to run the actual comparison.
 
+## Completion record
+
+Completed on 2026-07-19 in PR #44 plus the Stage 7 prerequisite-gate follow-up. The exact-pinned framework validates all ten scenarios offline, the full repository verification suite passes without model calls, and the opt-in real-Pi canary passed with authoritative provider/model/thinking/context/cwd evidence, separate child/outer usage, retained before/after Git and per-control evidence, redaction, and cleanup. Independent bounded review found and drove repairs for authoritative provider/model identity and retained evidence completeness, then returned `PASS_WITH_NON_BLOCKING_NOTES`; the remaining missing-thinking/cwd regression-test note was added before the framework freeze.
+
 ## Scope
 
 ### In scope
@@ -316,7 +320,7 @@ Stop and do not hand the framework to Stage 7 when:
 
 ## Execution checklist
 
-- [ ] **W1:** pin Promptfoo and complete model-free config, scenario-schema, result-schema, and unsafe-input validation.
-- [ ] **W2:** complete the actual Pi/subagent provider, disposable isolation, authoritative evidence join, mutation boundaries, timeout/cancellation, cleanup, and redaction.
-- [ ] **W3:** complete deterministic scoring, normalization, all ten ready-to-run scenarios/fixtures, and offline failure-classification coverage.
-- [ ] **W4:** wire offline tests into full verification, pass the opt-in real-Pi canary, complete operating documentation, and clear independent review.
+- [x] **W1:** pin Promptfoo and complete model-free config, scenario-schema, result-schema, and unsafe-input validation.
+- [x] **W2:** complete the actual Pi/subagent provider, disposable isolation, authoritative evidence join, mutation boundaries, timeout/cancellation, cleanup, and redaction.
+- [x] **W3:** complete deterministic scoring, normalization, all ten ready-to-run scenarios/fixtures, and offline failure-classification coverage.
+- [x] **W4:** wire offline tests into full verification, pass the opt-in real-Pi canary, complete operating documentation, and clear independent review.

@@ -8,7 +8,7 @@ import type { FinalStatus, ScenarioRecord, ScorerResult } from "../schema.ts";
 
 export interface RuntimeEvidence {
 	requested: { agent: string; model: string; thinking: string; context: string; tools: string[]; cwd: string; output: string };
-	effective?: { agent: string; model: string; thinking: string; context: string; tools: string[]; cwd: string; sessionFile: string; metadataFile: string };
+	effective?: { agent: string; provider: string; model: string; thinking: string; context: string; tools: string[]; cwd: string; sessionFile: string; metadataFile: string };
 	started: boolean;
 	completed: boolean;
 	timedOut: boolean;
@@ -35,6 +35,8 @@ export function scoreRuntime(evidence: RuntimeEvidence): ScorerResult {
 	if (!evidence.started) return result("runtime", false, true, "authoritative child start was not observed");
 	if (!evidence.effective) return result("runtime", false, true, "effective child identity could not be resolved uniquely");
 	const mismatches: string[] = (["agent", "model", "thinking", "context", "cwd"] as const).filter((key) => evidence.requested[key] !== evidence.effective?.[key]);
+	const requestedProvider = evidence.requested.model.includes("/") ? evidence.requested.model.slice(0, evidence.requested.model.indexOf("/")) : "";
+	if (!requestedProvider || evidence.effective.provider !== requestedProvider) mismatches.push("provider");
 	if (!isDeepStrictEqual(evidence.requested.tools, evidence.effective.tools)) mismatches.push("tools");
 	return result("runtime", mismatches.length === 0, true, mismatches.length === 0 ? "requested and effective runtime identity and tools match" : `runtime identity mismatch: ${mismatches.join(", ")}`);
 }
@@ -101,13 +103,43 @@ export function scoreArtifact(scenario: ScenarioRecord, artifactPath: string): S
 	return result("artifact", true, true, `artifact contract, structured hidden-outcome evidence, and verdict ${verdict} are valid`);
 }
 
-export function scoreBehavior(scenario: ScenarioRecord, workspace: string, env: Record<string, string>): ScorerResult {
-	const failures: string[] = [];
-	for (const command of [...scenario.controls.focused, ...scenario.controls.behavior]) {
+export interface BehaviorControlEvidence {
+	kind: "focused" | "behavior";
+	command: string;
+	expectedExitCode: number;
+	exitCode: number | null;
+	signal: string | null;
+	stdout: string;
+	stderr: string;
+	error?: string;
+}
+
+export function runBehaviorControls(scenario: ScenarioRecord, workspace: string, env: Record<string, string>): BehaviorControlEvidence[] {
+	return ([
+		...scenario.controls.focused.map((command) => ({ kind: "focused" as const, command })),
+		...scenario.controls.behavior.map((command) => ({ kind: "behavior" as const, command })),
+	]).map(({ kind, command }) => {
 		const execution = spawnSync("bash", ["-lc", command], { cwd: workspace, env, encoding: "utf8", timeout: 60_000 });
-		if ((execution.status ?? 1) !== scenario.expected.behaviorExitCode) failures.push(`${command} exited ${execution.status ?? "signal"}`);
-	}
+		return {
+			kind,
+			command,
+			expectedExitCode: scenario.expected.behaviorExitCode,
+			exitCode: execution.status,
+			signal: execution.signal,
+			stdout: execution.stdout ?? "",
+			stderr: execution.stderr ?? "",
+			...(execution.error ? { error: execution.error.message } : {}),
+		};
+	});
+}
+
+export function scoreBehaviorEvidence(controls: BehaviorControlEvidence[]): ScorerResult {
+	const failures = controls.filter((entry) => entry.error || entry.exitCode !== entry.expectedExitCode).map((entry) => `${entry.command} exited ${entry.exitCode ?? entry.signal ?? "unknown"}${entry.error ? ` (${entry.error})` : ""}`);
 	return result("behavior", failures.length === 0, true, failures.length === 0 ? "all scenario controls produced the expected outcome" : failures.join("; "));
+}
+
+export function scoreBehavior(scenario: ScenarioRecord, workspace: string, env: Record<string, string>): ScorerResult {
+	return scoreBehaviorEvidence(runBehaviorControls(scenario, workspace, env));
 }
 
 export function scoreMutation(scenario: ScenarioRecord, workspace: string, before: Map<string, FileSnapshot>, fixtureSource?: string, fixtureBefore?: Map<string, FileSnapshot>): ScorerResult {

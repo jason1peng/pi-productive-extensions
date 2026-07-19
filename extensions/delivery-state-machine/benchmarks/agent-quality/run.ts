@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { FRAMEWORK_ROOT, loadScenarios, scenarioById } from "./catalog.ts";
 import { gitEvidence, provisionScenario, ProvisioningError, snapshot, type ProvisionedRun } from "./provision.ts";
 import { executePiRuntime, type RuntimeRun } from "./runtime.ts";
-import { finalStatus, redactAndCheck, scoreArtifact, scoreBehavior, scoreCompletion, scoreGit, scoreMutation, scoreRuntime, scoreUsage } from "./scorers/index.ts";
+import { finalStatus, redactAndCheck, runBehaviorControls, scoreArtifact, scoreBehaviorEvidence, scoreCompletion, scoreGit, scoreMutation, scoreRuntime, scoreUsage } from "./scorers/index.ts";
 import { PROMPTFOO_VERSION, SCHEMA_VERSION, validateResult, type HarnessAttempt, type NormalizedResult, type ScenarioRecord, type ScorerResult } from "./schema.ts";
 
 export type RuntimeExecutor = (scenario: ScenarioRecord, candidate: string, run: ProvisionedRun) => Promise<RuntimeRun>;
@@ -159,7 +159,8 @@ export async function runScenario(options: RunOptions): Promise<NormalizedResult
 	];
 	let cleanupFailure: { error: unknown } | undefined;
 	try {
-		const initialHead = git(["rev-parse", "HEAD"], run.workspace, run.env);
+		const preGit = gitEvidence(run.workspace, run.env);
+		const initialHead = preGit.head;
 		try {
 			runtime = await (options.executor ?? executePiRuntime)(scenario, candidate, run);
 		} catch (error) {
@@ -174,6 +175,7 @@ export async function runScenario(options: RunOptions): Promise<NormalizedResult
 				outer: { provider: "unknown", model: process.env.DSM_AGENT_EVAL_OUTER_MODEL ?? scenario.launch.model },
 			};
 		}
+		const controlEvidence = runtime.evidence.infrastructureErrors.length === 0 ? runBehaviorControls(scenario, run.workspace, run.env) : [];
 		const postGit = gitEvidence(run.workspace, run.env);
 		let remoteRef: string | undefined;
 		if (run.localRemote) {
@@ -189,12 +191,13 @@ export async function runScenario(options: RunOptions): Promise<NormalizedResult
 			safeScorer("runtime", runtime.evidence.infrastructureErrors, () => scoreRuntime(runtime.evidence)),
 			safeScorer("completion", runtime.evidence.infrastructureErrors, () => scoreCompletion(runtime.evidence)),
 			safeScorer("artifact", runtime.evidence.infrastructureErrors, () => scoreArtifact(scenario, run.artifactPath)),
-			safeScorer("behavior", runtime.evidence.infrastructureErrors, () => scoreBehavior(scenario, run.workspace, run.env)),
+			safeScorer("behavior", runtime.evidence.infrastructureErrors, () => scoreBehaviorEvidence(controlEvidence)),
 			safeScorer("mutation", runtime.evidence.infrastructureErrors, () => scoreMutation(scenario, run.workspace, run.before, run.fixtureSource, run.fixtureBefore)),
 			safeScorer("git", runtime.evidence.infrastructureErrors, () => scoreGit(scenario, run.gitBefore, { status: postGit.status, head: postGit.head, initialHead, remoteRef, remotes: postGit.remotes, allowedRemote: run.localRemote, attempts: gitAttempts, prCalls, commitTree, expectedCommitTree: run.expectedCommitTree, committedPaths })),
 			safeScorer("usage", runtime.evidence.infrastructureErrors, () => scoreUsage(runtime.child?.usage)),
 		];
-		fs.writeFileSync(path.join(run.rawEvidence, "git.json"), `${JSON.stringify({ ...postGit, attempts: gitAttempts, prCalls, commitTree, expectedCommitTree: run.expectedCommitTree, committedPaths }, null, 2)}\n`);
+		fs.writeFileSync(path.join(run.rawEvidence, "git.json"), `${JSON.stringify({ before: preGit, after: postGit, attempts: gitAttempts, prCalls, commitTree, expectedCommitTree: run.expectedCommitTree, committedPaths }, null, 2)}\n`);
+		fs.writeFileSync(path.join(run.rawEvidence, "controls.json"), `${JSON.stringify(controlEvidence, null, 2)}\n`);
 		fs.writeFileSync(path.join(run.rawEvidence, "scorers.json"), `${JSON.stringify(scorers, null, 2)}\n`);
 		const rawEvidencePath = retained ? copyEvidence(run, runtime, destination) : run.rawEvidence;
 		if (retained && runtime.outer.sessionFile) runtime.outer.sessionFile = path.join(destination, "outer-session.jsonl");

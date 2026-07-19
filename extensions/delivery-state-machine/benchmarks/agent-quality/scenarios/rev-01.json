@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "id": "REV-01",
+  "role": "REVIEW",
+  "candidates": [
+    "dsm.reviewer",
+    "reviewer"
+  ],
+  "fixture": {
+    "path": "rev-01",
+    "revision": "v1",
+    "sha256": "e6ce572082a01129da987309bc189b37b2db2ba874005de336f0521f55d2241d"
+  },
+  "task": "Review the candidate for supported-workflow destructive data loss and provide a realistic reproducer and safeguard gap.",
+  "invariants": [
+    "Renaming a missing record never deletes an existing destination."
+  ],
+  "exclusions": [],
+  "expected": {
+    "verdict": "FAIL",
+    "behaviorExitCode": 1
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "high",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [],
+    "allowedGitOperations": [
+      "none"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "node controls/data-loss.mjs"
+    ],
+    "behavior": [
+      "node controls/data-loss.mjs"
+    ]
+  },
+  "artifact": {
+    "filename": "rev-01-artifact.md",
+    "verdicts": [
+      "FAIL"
+    ],
+    "headings": [
+      "## Summary",
+      "## Must-fix findings",
+      "## Non-blocking notes",
+      "## Evidence reviewed",
+      "## Risk checks",
+      "## Recommendation"
+    ],
+    "requiredEvidence": [
+      "missing record",
+      "data loss",
+      "safeguard"
+    ],
+    "expectedEvidence": {
+      "classification": "must-fix",
+      "issue": "missing-record-rename-deletes-destination",
+      "reproducer": "controls/data-loss.mjs",
+      "safeguardGap": "shallow-tests-miss-supported-sequence"
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

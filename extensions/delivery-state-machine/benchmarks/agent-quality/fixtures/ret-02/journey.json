@@ -1,0 +1,9 @@
+{
+  "outcome": "done",
+  "evidenceComplete": true,
+  "criticalFindings": [],
+  "speculation": [
+    "unsupported hostile mutation",
+    "excluded concurrent writer"
+  ]
+}

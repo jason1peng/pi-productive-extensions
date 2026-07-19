@@ -1,0 +1,1 @@
+import assert from "node:assert/strict"; import {inclusiveRange} from "../lib/range.mjs"; assert.deepEqual(inclusiveRange(2,2), [2]); assert.deepEqual(inclusiveRange(1,3), [1,2,3]); console.log("pass");

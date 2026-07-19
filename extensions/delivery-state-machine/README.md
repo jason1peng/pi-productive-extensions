@@ -139,6 +139,7 @@ User-space phase prompt, launch profile, model, thinking, and context overrides 
 - [Delivery report schema](../../docs/delivery-report-schema-v2.md) — stable structured report contract.
 - [Compatibility baseline](COMPATIBILITY_BASELINE.md) — preserved commands, tools, state, and report behavior.
 - [Improvement plan](IMPROVEMENT_PLAN.md) — staged roadmap and acceptance gates.
+- [Delivery-agent quality framework](benchmarks/agent-quality/README.md) — offline validation, opt-in real-Pi canary, scenarios, evidence, and later benchmark commands.
 
 ## Development
 

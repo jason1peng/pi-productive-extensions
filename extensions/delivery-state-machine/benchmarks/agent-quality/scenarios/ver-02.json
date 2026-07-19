@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "id": "VER-02",
+  "role": "VERIFY",
+  "candidates": [
+    "dsm.verifier",
+    "reviewer"
+  ],
+  "fixture": {
+    "path": "ver-02",
+    "revision": "v1",
+    "sha256": "b36473728ca7f6d1a5cb1095c5d66a3593f2af9a454432e16c01c220dbb34b4c"
+  },
+  "task": "Verify accepted single-writer behavior and keep unsupported hostile/concurrent hardening non-blocking.",
+  "invariants": [
+    "Supported single-writer exclusive creation works."
+  ],
+  "exclusions": [
+    "Hostile mutation and concurrent writers are excluded."
+  ],
+  "expected": {
+    "verdict": "PASS",
+    "behaviorExitCode": 0
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "low",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [],
+    "allowedGitOperations": [
+      "none"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "node controls/supported.mjs"
+    ],
+    "behavior": [
+      "node controls/supported.mjs"
+    ]
+  },
+  "artifact": {
+    "filename": "ver-02-artifact.md",
+    "verdicts": [
+      "PASS"
+    ],
+    "headings": [
+      "## Summary",
+      "## Findings",
+      "## Commands run",
+      "## Behavioral evidence",
+      "## Candidate completeness",
+      "## Residual risks",
+      "## Recommendation"
+    ],
+    "requiredEvidence": [
+      "single-writer",
+      "non-blocking"
+    ],
+    "expectedEvidence": {
+      "classification": "pass",
+      "supportedModel": "single-writer",
+      "excludedConcern": "concurrent-writers"
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

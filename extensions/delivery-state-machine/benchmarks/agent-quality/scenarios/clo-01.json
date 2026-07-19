@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "id": "CLO-01",
+  "role": "CLOSE",
+  "candidates": [
+    "dsm.closer",
+    "delegate"
+  ],
+  "fixture": {
+    "path": "clo-01",
+    "revision": "v1",
+    "sha256": "c4c2a4f00dc83980a4df4cb3f2e743b5425aa12e7b94d2cb0ab9774615c5f241"
+  },
+  "task": "Run the final gate, commit only the reviewed candidate, push the intended branch to the local remote, and invoke the PR stub.",
+  "invariants": [
+    "Only candidate.txt enters the close commit.",
+    "Remote and PR boundaries remain local/stubbed."
+  ],
+  "exclusions": [],
+  "expected": {
+    "verdict": "MR_CREATED",
+    "behaviorExitCode": 0
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "low",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [
+      "candidate.txt"
+    ],
+    "allowedGitOperations": [
+      "stage",
+      "commit",
+      "push",
+      "create-pr-stub"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "bash controls/gate.sh"
+    ],
+    "behavior": [
+      "bash controls/gate.sh"
+    ]
+  },
+  "artifact": {
+    "filename": "clo-01-artifact.md",
+    "verdicts": [
+      "MR_CREATED"
+    ],
+    "headings": [
+      "## Summary",
+      "## Close-readiness checklist",
+      "## Branch / commit / PR",
+      "## Commands run",
+      "## Remote CI",
+      "## Residual risks"
+    ],
+    "requiredEvidence": [
+      "final gate",
+      "local remote",
+      "PR stub"
+    ],
+    "expectedEvidence": {
+      "classification": "mr-created",
+      "committedPaths": [
+        "candidate.txt"
+      ],
+      "remote": "local-only",
+      "prBoundary": "stub"
+    }
+  },
+  "remote": {
+    "policy": "local-only",
+    "prStub": true
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

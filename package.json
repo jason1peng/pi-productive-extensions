@@ -21,11 +21,24 @@
     "typebox": "*"
   },
   "scripts": {
-    "test": "NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/delivery-state-machine/tests/delivery-state-machine.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/session-usage/tests/session-usage.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/git-cleanup/tests/git-cleanup.test.ts",
+    "test": "NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/delivery-state-machine/tests/delivery-state-machine.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/delivery-state-machine/benchmarks/agent-quality/tests/framework.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/session-usage/tests/session-usage.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/git-cleanup/tests/git-cleanup.test.ts",
+    "eval:dsm-agents:validate": "bun extensions/delivery-state-machine/benchmarks/agent-quality/run.ts validate && promptfoo validate -c extensions/delivery-state-machine/benchmarks/agent-quality/promptfooconfig.yaml",
+    "eval:dsm-agents:canary": "bun extensions/delivery-state-machine/benchmarks/agent-quality/canary.ts",
+    "eval:dsm-agents": "promptfoo eval -c extensions/delivery-state-machine/benchmarks/agent-quality/promptfooconfig.yaml --no-cache",
+    "eval:dsm-agents:smoke": "npm run eval:dsm-agents -- --filter-pattern '^VER-01 dsm[.]verifier$' --repeat 1",
+    "eval:dsm-agents:implement": "npm run eval:dsm-agents -- --filter-pattern '^IMP-' --repeat 1",
+    "eval:dsm-agents:verify": "npm run eval:dsm-agents -- --filter-pattern '^VER-' --repeat 1",
+    "eval:dsm-agents:review": "npm run eval:dsm-agents -- --filter-pattern '^REV-' --repeat 1",
+    "eval:dsm-agents:close": "npm run eval:dsm-agents -- --filter-pattern '^CLO-' --repeat 1",
+    "eval:dsm-agents:retro": "npm run eval:dsm-agents -- --filter-pattern '^RET-' --repeat 1",
+    "eval:dsm-agents:full": "npm run eval:dsm-agents -- --repeat 3",
     "report-viewer": "bun apps/report-viewer/src/server.ts",
     "report-viewer:migrate": "bun apps/report-viewer/scripts/migrate-delivery-reports.ts",
     "report-viewer:tailscale": "bash apps/report-viewer/scripts/tailscale.sh",
     "report-viewer:verify": "bun apps/report-viewer/tests/report-viewer.test.ts",
     "verify": "npm run test && npm run report-viewer:verify"
+  },
+  "dependencies": {
+    "promptfoo": "0.121.19"
   }
 }

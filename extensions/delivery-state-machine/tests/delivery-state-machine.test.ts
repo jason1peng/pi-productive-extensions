@@ -36,6 +36,16 @@ interface FakeContext {
 
 const artifactDirs = new Set<string>();
 
+function processIsLive(pid: number): boolean {
+	try {
+		const status = execFileSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+		return status.length > 0 && !status.startsWith("Z");
+	} catch (error) {
+		if ((error as { status?: number }).status === 1) return false;
+		throw error;
+	}
+}
+
 async function withTemporaryUserExtensionFile<T>(relativePath: string, content: string, fn: () => Promise<T>): Promise<T> {
 	const target = path.join(testAgentDir, "extensions", "delivery-state-machine", relativePath);
 	const backup = fs.existsSync(target) ? fs.readFileSync(target) : undefined;
@@ -366,7 +376,7 @@ with process_group_guard(process, grace_seconds=0.2):
 		assert.ok(fs.existsSync(descendantPidPath), "detached descendant did not become ready");
 		descendantPid = Number(fs.readFileSync(descendantPidPath, "utf8"));
 		assert.equal(await host.exited, 0);
-		assert.throws(() => process.kill(descendantPid!, 0), (error: NodeJS.ErrnoException) => error.code === "ESRCH");
+		assert.equal(processIsLive(descendantPid), false, "descendant remained live after process-group cleanup");
 	} finally {
 		if (host.exitCode === null) host.kill(9);
 		await host.exited;

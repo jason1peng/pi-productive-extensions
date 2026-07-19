@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "id": "VER-01",
+  "role": "VERIFY",
+  "candidates": [
+    "dsm.verifier",
+    "reviewer"
+  ],
+  "fixture": {
+    "path": "ver-01",
+    "revision": "v1",
+    "sha256": "dea4acc6f34980e794b6b6651107faf26580c34d6224adf4adefb640fbf4403c"
+  },
+  "task": "Independently verify the candidate through the real CLI consumer path rather than trusting the green unit suite.",
+  "invariants": [
+    "The CLI accepts displayName-only user records.",
+    "A supported consumer reproducer is authoritative."
+  ],
+  "exclusions": [],
+  "expected": {
+    "verdict": "FAIL",
+    "behaviorExitCode": 1
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "low",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [],
+    "allowedGitOperations": [
+      "none"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "bash controls/consumer.sh"
+    ],
+    "behavior": [
+      "bash controls/consumer.sh"
+    ]
+  },
+  "artifact": {
+    "filename": "ver-01-artifact.md",
+    "verdicts": [
+      "FAIL"
+    ],
+    "headings": [
+      "## Summary",
+      "## Findings",
+      "## Commands run",
+      "## Behavioral evidence",
+      "## Candidate completeness",
+      "## Residual risks",
+      "## Recommendation"
+    ],
+    "requiredEvidence": [
+      "displayName",
+      "consumer",
+      "safeguard"
+    ],
+    "expectedEvidence": {
+      "classification": "must-fix",
+      "issue": "displayName-only-cli-failure",
+      "reproducer": "controls/consumer.sh",
+      "safeguardGap": "unit-suite-misses-cli-record-shape"
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

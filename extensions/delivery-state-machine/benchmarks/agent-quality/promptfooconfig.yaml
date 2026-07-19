@@ -1,0 +1,143 @@
+description: Controlled DSM-agent quality framework
+evaluateOptions:
+  repeat: 1
+  maxConcurrency: 1
+prompts:
+  - "{{task}}"
+providers:
+  - id: file://run.ts
+    config:
+      comparisonMode: controlled
+      maxInfrastructureAttempts: 3
+defaultTest:
+  assert:
+    - type: javascript
+      value: |
+        const result = JSON.parse(output);
+        if (result.status === 'INFRASTRUCTURE_FAILURE') {
+          throw new Error('provider boundary must expose exhausted infrastructure as a Promptfoo error, never candidate output');
+        }
+        return result.status === 'PASS'
+          ? { pass: true, score: 1, reason: 'candidate trial passed' }
+          : { pass: false, score: 0, reason: 'candidate trial failed deterministic checks' };
+tests:
+  - description: CLO-01 dsm.closer
+    vars:
+      scenarioId: CLO-01
+      candidate: dsm.closer
+      repetition: 0
+      task: "Run the final gate, commit only the reviewed candidate, push the intended branch to the local remote, and invoke the PR stub."
+  - description: CLO-01 delegate
+    vars:
+      scenarioId: CLO-01
+      candidate: delegate
+      repetition: 0
+      task: "Run the final gate, commit only the reviewed candidate, push the intended branch to the local remote, and invoke the PR stub."
+  - description: CLO-02 dsm.closer
+    vars:
+      scenarioId: CLO-02
+      candidate: dsm.closer
+      repetition: 0
+      task: "Determine close readiness and fail closed when the final gate fails."
+  - description: CLO-02 delegate
+    vars:
+      scenarioId: CLO-02
+      candidate: delegate
+      repetition: 0
+      task: "Determine close readiness and fail closed when the final gate fails."
+  - description: IMP-01 dsm.implementer
+    vars:
+      scenarioId: IMP-01
+      candidate: dsm.implementer
+      repetition: 0
+      task: "Prevent tenant A cache state from being returned to tenant B while preserving default/no-context behavior."
+  - description: IMP-01 worker
+    vars:
+      scenarioId: IMP-01
+      candidate: worker
+      repetition: 0
+      task: "Prevent tenant A cache state from being returned to tenant B while preserving default/no-context behavior."
+  - description: IMP-02 dsm.implementer
+    vars:
+      scenarioId: IMP-02
+      candidate: dsm.implementer
+      repetition: 0
+      task: "Repair only the cited inclusive-range defect and preserve unrelated tracked and untracked harness state."
+  - description: IMP-02 worker
+    vars:
+      scenarioId: IMP-02
+      candidate: worker
+      repetition: 0
+      task: "Repair only the cited inclusive-range defect and preserve unrelated tracked and untracked harness state."
+  - description: RET-01 dsm.retrospective
+    vars:
+      scenarioId: RET-01
+      candidate: dsm.retrospective
+      repetition: 0
+      task: "Produce a scoped retrospective with exactly the proven critical gap and safe evidence-backed improvements."
+  - description: RET-01 delegate
+    vars:
+      scenarioId: RET-01
+      candidate: delegate
+      repetition: 0
+      task: "Produce a scoped retrospective with exactly the proven critical gap and safe evidence-backed improvements."
+  - description: RET-02 dsm.retrospective
+    vars:
+      scenarioId: RET-02
+      candidate: dsm.retrospective
+      repetition: 0
+      task: "Identify only evidence-backed lessons and do not invent a critical fix from excluded speculation."
+  - description: RET-02 delegate
+    vars:
+      scenarioId: RET-02
+      candidate: delegate
+      repetition: 0
+      task: "Identify only evidence-backed lessons and do not invent a critical fix from excluded speculation."
+  - description: REV-01 dsm.reviewer
+    vars:
+      scenarioId: REV-01
+      candidate: dsm.reviewer
+      repetition: 0
+      task: "Review the candidate for supported-workflow destructive data loss and provide a realistic reproducer and safeguard gap."
+  - description: REV-01 reviewer
+    vars:
+      scenarioId: REV-01
+      candidate: reviewer
+      repetition: 0
+      task: "Review the candidate for supported-workflow destructive data loss and provide a realistic reproducer and safeguard gap."
+  - description: REV-02 dsm.reviewer
+    vars:
+      scenarioId: REV-02
+      candidate: dsm.reviewer
+      repetition: 0
+      task: "Review the clean single-writer candidate without expanding the contract to unsupported concurrency."
+  - description: REV-02 reviewer
+    vars:
+      scenarioId: REV-02
+      candidate: reviewer
+      repetition: 0
+      task: "Review the clean single-writer candidate without expanding the contract to unsupported concurrency."
+  - description: VER-01 dsm.verifier
+    vars:
+      scenarioId: VER-01
+      candidate: dsm.verifier
+      repetition: 0
+      task: "Independently verify the candidate through the real CLI consumer path rather than trusting the green unit suite."
+  - description: VER-01 reviewer
+    vars:
+      scenarioId: VER-01
+      candidate: reviewer
+      repetition: 0
+      task: "Independently verify the candidate through the real CLI consumer path rather than trusting the green unit suite."
+  - description: VER-02 dsm.verifier
+    vars:
+      scenarioId: VER-02
+      candidate: dsm.verifier
+      repetition: 0
+      task: "Verify accepted single-writer behavior and keep unsupported hostile/concurrent hardening non-blocking."
+  - description: VER-02 reviewer
+    vars:
+      scenarioId: VER-02
+      candidate: reviewer
+      repetition: 0
+      task: "Verify accepted single-writer behavior and keep unsupported hostile/concurrent hardening non-blocking."

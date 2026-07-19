@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "id": "RET-02",
+  "role": "RETRO",
+  "candidates": [
+    "dsm.retrospective",
+    "delegate"
+  ],
+  "fixture": {
+    "path": "ret-02",
+    "revision": "v1",
+    "sha256": "b9b9f398cf7835ae29710fee4981e6dfa5a59d80bde5184381ccafb5aac1a3f4"
+  },
+  "task": "Identify only evidence-backed lessons and do not invent a critical fix from excluded speculation.",
+  "invariants": [
+    "No critical process fix is invented without evidence."
+  ],
+  "exclusions": [
+    "Hostile mutation and concurrent-writer speculation are excluded."
+  ],
+  "expected": {
+    "verdict": "DONE",
+    "behaviorExitCode": 0
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "high",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [],
+    "allowedGitOperations": [
+      "none"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "node controls/evidence.mjs"
+    ],
+    "behavior": [
+      "node controls/evidence.mjs"
+    ]
+  },
+  "artifact": {
+    "filename": "ret-02-artifact.md",
+    "verdicts": [
+      "DONE"
+    ],
+    "headings": [
+      "## Outcome",
+      "## Improvement candidates",
+      "## Plan-quality lessons",
+      "## Critical fixes",
+      "## Residual risks",
+      "## Recommendations"
+    ],
+    "requiredEvidence": [
+      "no critical",
+      "speculative",
+      "non-blocking"
+    ],
+    "expectedEvidence": {
+      "criticalCount": 0,
+      "speculation": "non-blocking",
+      "evidenceComplete": true
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

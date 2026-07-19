@@ -1,6 +1,81 @@
 # Delivery-agent quality framework
 
-This directory contains the frozen, repository-owned framework used to compare packaged `dsm.*` agents with pi-subagents builtins. It prepares the controlled scenarios and runtime boundary; it does **not** run or interpret the Stage 7 comparative benchmark by itself.
+This directory contains the repository-owned framework for comparing packaged `dsm.*` agents with pi-subagents builtins. It creates controlled test repositories, runs an agent, collects evidence, and scores the result. It does **not** decide whether an agent should be promoted; that happens in Stage 7.
+
+## Start here
+
+For normal development, run the offline checks first. They do not launch Pi or call a model:
+
+```bash
+npm install --no-audit --no-fund
+npm run eval:dsm-agents:validate
+npm run test
+npm run verify
+```
+
+To run one scenario against one agent:
+
+```bash
+bun extensions/delivery-state-machine/benchmarks/agent-quality/run.ts run VER-01 dsm.verifier
+```
+
+To run the configured matrix:
+
+```bash
+npm run eval:dsm-agents
+```
+
+To test the real Pi → pi-subagents boundary, use the opt-in canary described below. It requires credentials and makes two model calls.
+
+## How it works
+
+A trial follows this path:
+
+1. `catalog.ts` loads a record from `scenarios/`.
+2. `provision.ts` copies its `fixtures/` repository into an isolated temporary workspace.
+3. `runtime.ts` launches Pi and the selected child agent with the required model, tools, and context.
+4. `scorers/` checks the artifact, behavior, workspace, Git activity, runtime identity, and usage evidence.
+5. `run.ts` returns a normalized result and cleans the temporary workspace.
+6. Infrastructure failures are retried up to three times; they are not counted as candidate failures.
+
+## Directory structure
+
+| Path | Purpose |
+|---|---|
+| `run.ts` | Main CLI and Promptfoo provider; coordinates trials and retries. |
+| `runtime.ts` | Launches Pi, manages signals/timeouts, and joins child session evidence. |
+| `provision.ts` | Creates isolated repositories, environments, local remotes, and cleanup state. |
+| `schema.ts` | Defines and validates scenarios, results, and attempt manifests. |
+| `catalog.ts` | Loads candidates and scenario records. |
+| `scenarios/` | Ten versioned scenario definitions. |
+| `fixtures/` | Test repositories, setup scripts, controls, and expected behavior inputs. |
+| `scorers/` | Deterministic result checks and precedence rules. |
+| `promptfooconfig.yaml` | Promptfoo candidate/scenario matrix and retry settings. |
+| `canary.ts` | Small real-Pi integration check. |
+| `tests/` | Model-free regression tests. |
+| `artifacts/raw/` | Ignored evidence from runs; never commit it. |
+
+## How to modify it
+
+### Add or change a scenario
+
+1. Add or update its repository under `fixtures/`.
+2. Add or update the matching JSON record under `scenarios/`.
+3. Update `catalog.ts` only when adding a new candidate or scenario identifier.
+4. Add a focused regression in `tests/framework.test.ts`.
+5. Run `npm run eval:dsm-agents:validate` and `npm run verify`.
+
+### Change runtime or isolation behavior
+
+Edit `runtime.ts` for Pi/session/process behavior, or `provision.ts` for repositories, environment, credentials, Git, and cleanup. Add tests for success, failure, timeout/cancellation, and cleanup. Then run the full offline suite and the real-Pi canary.
+
+### Change scoring or result fields
+
+Update `schema.ts` and `scorers/` together. Update scenario expected outcomes and tests so malformed, opposite, missing, and infrastructure results are covered. Do not rely on prose keyword matching.
+
+### Upgrade Promptfoo
+
+Pin one exact version in `package.json` and the lockfile. Then run configuration validation, the full offline suite, the Promptfoo provider-boundary tests, and the real-Pi canary.
 
 ## Guarantees and limits
 

@@ -1,6 +1,26 @@
 # Delivery-agent quality framework
 
-This directory contains the repository-owned framework for comparing packaged `dsm.*` agents with pi-subagents builtins. It creates controlled test repositories, runs an agent, collects evidence, and scores the result. It does **not** decide whether an agent should be promoted; that happens in Stage 7.
+This directory contains a Promptfoo-based evaluation harness for delivery-state-machine agents. It runs a delivery phase against a controlled repository fixture, captures what the agent actually did, and scores the result with deterministic checks.
+
+Use it to answer developer questions such as:
+
+- Does `dsm.implementer` complete an implementation task correctly?
+- Does `dsm.verifier` find the expected supported defect?
+- Does `dsm.reviewer` return the correct review verdict and evidence?
+- Does `dsm.closer` create only the expected commit, ref, and PR action?
+- How does a packaged `dsm.*` agent compare with the corresponding pi-subagents builtin?
+
+## Supported phase evaluations
+
+| Delivery phase | Packaged agent | Comparison agent |
+|---|---|---|
+| IMPLEMENT | `dsm.implementer` | `worker` |
+| VERIFY | `dsm.verifier` | `reviewer` |
+| REVIEW | `dsm.reviewer` | `reviewer` |
+| CLOSE | `dsm.closer` | `delegate` |
+| RETRO | `dsm.retrospective` | `delegate` |
+
+Each phase currently has two scenarios, for ten scenarios total. A scenario defines the task, repository fixture, launch settings, allowed mutations, controls, artifact contract, and deterministic scorers.
 
 ## Start here
 
@@ -117,9 +137,9 @@ Requirements:
 
 The command fails clearly for missing runtime dependencies, authentication/quota failure, identity mismatch, malformed artifacts, or cleanup/redaction failure. Redaction scanning compares retained evidence against both allowlisted environment credentials and ephemeral credential/token values extracted from the selected auth file; those comparison values are never retained in normalized or raw evidence. Expect two model sessions; exact cost depends on the configured provider and model and is read from runtime telemetry only.
 
-## Later controlled evaluations
+## Run evaluations
 
-After the scenario/control set is reviewed and frozen, run a selected trial directly:
+Run a selected trial directly:
 
 ```bash
 bun extensions/delivery-state-machine/benchmarks/agent-quality/run.ts run VER-01 dsm.verifier
@@ -133,7 +153,16 @@ npx promptfoo@0.121.19 eval \
   --no-cache
 ```
 
-The configuration expands scenario/candidate trials but delegates launch, fixture provisioning, evidence joining, bounded infrastructure reruns, and scoring to `run.ts`. `maxInfrastructureAttempts` is fixed at `3`; changing it requires config validation and provider-boundary regression updates. When aggregating Promptfoo output, include only provider outputs with `harness.classification: scored` in candidate comparisons. Promptfoo error rows whose response metadata has `classification: infrastructure_exhausted` are operational evidence requiring rerun/investigation, never candidate losses. Pilot/full repetition counts and adoption decisions remain Stage 7 work; do not infer promotion from a canary or a single run.
+The configuration expands the scenario/candidate matrix, while `run.ts` handles launch, fixture provisioning, evidence collection, retries, and scoring. `maxInfrastructureAttempts` is fixed at `3`; changing it requires config validation and provider-boundary regression updates.
+
+When reading Promptfoo results:
+
+- compare rows whose provider output has `harness.classification: scored`;
+- treat `PASS` as a successful candidate run;
+- treat `CANDIDATE_FAILURE` as a scored candidate failure;
+- treat Promptfoo error rows with `classification: infrastructure_exhausted` as environment/runtime failures to investigate or rerun, not candidate losses.
+
+A canary proves that the real runtime integration works. It does not replace running the scenarios needed for your evaluation.
 
 ## Evidence and failure inspection
 

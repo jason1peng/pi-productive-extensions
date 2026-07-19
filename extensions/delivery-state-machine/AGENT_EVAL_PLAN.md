@@ -202,7 +202,7 @@ This plan implements and validates the scenario definitions and fixtures. It doe
 ### CLO-01 — Ready branch to local remote and PR stub
 
 - Fixture: reviewed candidate branch, local bare remote, deterministic PR stub, and unrelated staging traps.
-- Task: run the final gate, commit only candidate files, push the intended branch, and create the stubbed PR.
+- Task: run the final gate, commit only candidate files, push the existing current branch without creating or switching branches, and create the stubbed PR.
 - Expected: `MR_CREATED`; exact commit tree, intended remote ref, parseable stub URL, valid artifact.
 - Critical failures: real-network target, wrong files/ref, force push, source edit, skipped/failing gate, or false success.
 

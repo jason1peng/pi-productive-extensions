@@ -8,7 +8,7 @@ import { loadScenarios } from "../catalog.ts";
 import { provisionScenario, runtimeEnvironment, snapshot } from "../provision.ts";
 import DeliveryAgentProvider, { gradePromptfooOutput, runPromptfooTrial, runScenario, type RuntimeExecutor } from "../run.ts";
 import { artifactPrompt, credentialValuesFromAuthFile, executePiRuntime, publicEvidenceChoiceContract, resolveChild, selectAuthentication, spawnBounded, validateOuterLaunch, writeControlledAgentWrapper } from "../runtime.ts";
-import { scoreMutation, scoreRuntime } from "../scorers/index.ts";
+import { scoreArtifact, scoreGit, scoreMutation, scoreRuntime } from "../scorers/index.ts";
 import { PROMPTFOO_VERSION, validateResult, validateScenario, type NormalizedResult, type ScenarioRecord } from "../schema.ts";
 
 function command(program: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): string {
@@ -72,6 +72,26 @@ try {
 		assert.match(wrapped, new RegExp(`^tools: ${scenario.launch.tools.join(", ")}$`, "m"));
 	}
 } finally { fs.rmSync(wrapperRoot, { recursive: true, force: true }); }
+
+const evidenceAliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-agent-eval-evidence-alias-"));
+try {
+	for (const [scenarioId, original, equivalent] of [["CLO-01", "final gate", "final local fast gate"], ["REV-01", "data loss", "data-loss"]] as const) {
+		const scenario = scenarios.find((entry) => entry.id === scenarioId)!;
+		const artifactPath = path.join(evidenceAliasRoot, `${scenarioId}.md`);
+		fs.writeFileSync(artifactPath, artifact(scenario).replace(original, equivalent));
+		assert.equal(scoreArtifact(scenario, artifactPath).passed, true, `${scenarioId} must accept its reviewed punctuation/wording equivalent`);
+	}
+	const closeScenario = scenarios.find((entry) => entry.id === "CLO-01")!;
+	assert.match(closeScenario.task, /existing current branch.*without creating or switching branches/);
+	assert.equal(closeScenario.mutation.allowedGitOperations.includes("switch" as never), false);
+	const readOnlyGitScenario = { ...closeScenario, role: "REVIEW" as const, mutation: { ...closeScenario.mutation, allowedGitOperations: [] } };
+	for (const args of [["switch", "-c", "topic"], ["branch", "topic"], ["update-ref", "refs/heads/topic", "HEAD"]]) {
+		const scored = scoreGit(readOnlyGitScenario, "", { status: "", head: "same", initialHead: "same", remotes: "", beforeBranches: "main", branches: "main", attempts: [{ args }], prCalls: [], committedPaths: [] });
+		assert.equal(scored.passed, false, `${args.join(" ")} must be classified as a forbidden branch mutation`);
+	}
+	const changedBranches = scoreGit(readOnlyGitScenario, "", { status: "", head: "same", initialHead: "same", remotes: "", beforeBranches: "main", branches: "main\ntopic", attempts: [], prCalls: [], committedPaths: [] });
+	assert.equal(changedBranches.passed, false, "unattributed persistent branch creation must fail closed");
+} finally { fs.rmSync(evidenceAliasRoot, { recursive: true, force: true }); }
 
 const ver02ControlScenario = scenarios.find((entry) => entry.id === "VER-02")!;
 const ver02ControlRun = provisionScenario(ver02ControlScenario);

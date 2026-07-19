@@ -26,13 +26,13 @@ tests:
       scenarioId: CLO-01
       candidate: dsm.closer
       repetition: 0
-      task: "Run the final gate, commit only the reviewed candidate, push the intended branch to the local remote, and invoke the PR stub."
+      task: "Run the final gate, commit only the reviewed candidate, push the existing current branch to the local remote without creating or switching branches, and invoke the PR stub."
   - description: CLO-01 delegate
     vars:
       scenarioId: CLO-01
       candidate: delegate
       repetition: 0
-      task: "Run the final gate, commit only the reviewed candidate, push the intended branch to the local remote, and invoke the PR stub."
+      task: "Run the final gate, commit only the reviewed candidate, push the existing current branch to the local remote without creating or switching branches, and invoke the PR stub."
   - description: CLO-02 dsm.closer
     vars:
       scenarioId: CLO-02

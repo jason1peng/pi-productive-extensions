@@ -193,7 +193,7 @@ export async function runScenario(options: RunOptions): Promise<NormalizedResult
 			safeScorer("artifact", runtime.evidence.infrastructureErrors, () => scoreArtifact(scenario, run.artifactPath)),
 			safeScorer("behavior", runtime.evidence.infrastructureErrors, () => scoreBehaviorEvidence(controlEvidence)),
 			safeScorer("mutation", runtime.evidence.infrastructureErrors, () => scoreMutation(scenario, run.workspace, run.before, run.fixtureSource, run.fixtureBefore)),
-			safeScorer("git", runtime.evidence.infrastructureErrors, () => scoreGit(scenario, run.gitBefore, { status: postGit.status, head: postGit.head, initialHead, remoteRef, remotes: postGit.remotes, allowedRemote: run.localRemote, attempts: gitAttempts, prCalls, commitTree, expectedCommitTree: run.expectedCommitTree, committedPaths })),
+			safeScorer("git", runtime.evidence.infrastructureErrors, () => scoreGit(scenario, run.gitBefore, { status: postGit.status, head: postGit.head, initialHead, remoteRef, remotes: postGit.remotes, beforeBranches: preGit.branches, branches: postGit.branches, allowedRemote: run.localRemote, attempts: gitAttempts, prCalls, commitTree, expectedCommitTree: run.expectedCommitTree, committedPaths })),
 			safeScorer("usage", runtime.evidence.infrastructureErrors, () => scoreUsage(runtime.child?.usage)),
 		];
 		fs.writeFileSync(path.join(run.rawEvidence, "git.json"), `${JSON.stringify({ before: preGit, after: postGit, attempts: gitAttempts, prCalls, commitTree, expectedCommitTree: run.expectedCommitTree, committedPaths }, null, 2)}\n`);

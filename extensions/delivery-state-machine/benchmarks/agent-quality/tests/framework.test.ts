@@ -699,31 +699,32 @@ try {
 	fs.writeFileSync(malformedRuntime, `#!/bin/bash\nmkdir -p "$PI_CODING_AGENT_DIR/sessions/malformed"\nprintf '{"type":"session"\\n' > "$PI_CODING_AGENT_DIR/sessions/malformed/session.jsonl"\nprintf '%s\\n' ${JSON.stringify(authSecret)} >&2\n`, { mode: 0o755 });
 	const previousAuthFile = process.env.PI_AGENT_AUTH_FILE;
 	const previousPiBin = process.env.PI_BIN;
+	const previousSubagentsRoot = process.env.PI_SUBAGENTS_ROOT;
 	process.env.PI_AGENT_AUTH_FILE = authFile;
 	process.env.PI_BIN = malformedRuntime;
+	// The fake Pi executable ignores its extension argument, but the production
+	// runtime correctly refuses to launch when pi-subagents is absent. Point the
+	// dependency check at this existing isolated directory so CI exercises the
+	// intended malformed-runtime path instead of stopping before launch.
+	process.env.PI_SUBAGENTS_ROOT = authRoot;
 	let malformedEvidence: NormalizedResult | undefined;
 	try {
 		malformedEvidence = await runScenario({ scenario: joinScenario, candidate: "dsm.verifier", executor: executePiRuntime, retain: true });
 	} finally {
 		if (previousAuthFile === undefined) delete process.env.PI_AGENT_AUTH_FILE; else process.env.PI_AGENT_AUTH_FILE = previousAuthFile;
 		if (previousPiBin === undefined) delete process.env.PI_BIN; else process.env.PI_BIN = previousPiBin;
+		if (previousSubagentsRoot === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = previousSubagentsRoot;
 	}
 	assert.ok(malformedEvidence);
 	try {
 		assert.equal(malformedEvidence.status, "INFRASTRUCTURE_FAILURE");
+		assert.equal(malformedEvidence.redactionPassed, false, "a retained exceptional-path credential must be detected before redaction");
+		assert.match(malformedEvidence.diagnostics.join(" "), /credential material required redaction/);
 		const retainedStderr = path.join(malformedEvidence.rawEvidencePath, "runtime", "outer.stderr.txt");
 		const stderr = fs.readFileSync(retainedStderr, "utf8");
 		assert.equal(stderr.includes(authSecret), false, "selected credentials must not survive malformed runtime evidence");
-		assert.equal(JSON.stringify(malformedEvidence).includes(authSecret), false, "selected credentials must not survive normalized evidence");
-		if (malformedEvidence.redactionPassed) {
-			// Some supported hosts close the malformed runtime before its final
-			// stderr write is retained. No redaction is required when the secret
-			// never entered retained evidence.
-			assert.doesNotMatch(malformedEvidence.diagnostics.join(" "), /credential material required redaction/);
-		} else {
-			assert.match(malformedEvidence.diagnostics.join(" "), /credential material required redaction/);
-			assert.match(stderr, /\[REDACTED\]/);
-		}
+		assert.match(stderr, /\[REDACTED\]/);
+		assert.equal(JSON.stringify(malformedEvidence).includes(authSecret), false);
 	} finally { fs.rmSync(malformedEvidence.rawEvidencePath, { recursive: true, force: true }); }
 } finally { fs.rmSync(authRoot, { recursive: true, force: true }); }
 

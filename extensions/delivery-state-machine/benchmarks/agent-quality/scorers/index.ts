@@ -46,14 +46,11 @@ export function scoreCompletion(evidence: RuntimeEvidence): ScorerResult {
 	return result("completion", evidence.completed, true, evidence.completed ? "child completed" : "child did not complete");
 }
 
-const requiredEvidenceAliases: Record<string, readonly string[]> = {
-	"final gate": ["final local fast gate"],
-};
-
 const evidenceAliases: Record<string, readonly string[]> = {
 	"classification:pass": ["accept", "accepted", "approve", "approved", "supported", "pass with non blocking notes"],
 	"supportedModel:single writer": ["single writer exclusive creation"],
 	"excludedConcern:concurrent writers": ["hostile mutation and concurrent writers"],
+	"speculation:non blocking": ["omitted"],
 };
 
 function normalizedEvidenceText(value: string): string {
@@ -92,21 +89,18 @@ export function scoreArtifact(scenario: ScenarioRecord, artifactPath: string): S
 		if (next < 0) return result("artifact", false, true, `required heading is missing or out of order: ${heading}`);
 		position = next + 1;
 	}
-	const normalized = normalizedEvidenceText(content);
-	const missingEvidence = scenario.artifact.requiredEvidence.filter((term) => {
-		const expected = normalizedEvidenceText(term);
-		return ![expected, ...(requiredEvidenceAliases[expected] ?? [])].some((candidate) => normalized.includes(candidate));
-	});
-	if (missingEvidence.length > 0) return result("artifact", false, true, `required evidence is missing: ${missingEvidence.join(", ")}`);
 	const evidenceBlocks = [...content.matchAll(/```eval-evidence\s*\r?\n([\s\S]*?)\r?\n```/g)];
 	if (evidenceBlocks.length !== 1) return result("artifact", false, true, `expected exactly one eval-evidence block, found ${evidenceBlocks.length}`);
 	let evidence: unknown;
 	try { evidence = JSON.parse(evidenceBlocks[0][1]); }
 	catch (error) { return result("artifact", false, true, `eval-evidence JSON is invalid: ${error instanceof Error ? error.message : String(error)}`); }
 	const expectedEvidence = scenario.id === "REV-02" && verdict === "PASS"
-		? { classification: "pass", supportedModel: "single-writer", excludedConcern: "none" }
-		: scenario.artifact.expectedEvidence;
-	if (!matchesExpectedEvidence(evidence, expectedEvidence)) return result("artifact", false, true, "eval-evidence does not match the scenario's hidden known outcome");
+		? [
+			{ ...scenario.artifact.expectedEvidence, classification: "pass" },
+			{ classification: "pass", supportedModel: "single-writer", excludedConcern: "none" },
+		]
+		: [scenario.artifact.expectedEvidence];
+	if (!expectedEvidence.some((expected) => matchesExpectedEvidence(evidence, expected))) return result("artifact", false, true, "eval-evidence does not match the scenario's hidden known outcome");
 	return result("artifact", true, true, `artifact contract, structured hidden-outcome evidence, and verdict ${verdict} are valid`);
 }
 

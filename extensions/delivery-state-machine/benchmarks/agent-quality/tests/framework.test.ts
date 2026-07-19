@@ -73,14 +73,20 @@ try {
 	}
 } finally { fs.rmSync(wrapperRoot, { recursive: true, force: true }); }
 
-const evidenceAliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-agent-eval-evidence-alias-"));
+const evidenceSemanticsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-agent-eval-evidence-semantics-"));
 try {
-	for (const [scenarioId, original, equivalent] of [["CLO-01", "final gate", "final local fast gate"], ["REV-01", "data loss", "data-loss"]] as const) {
+	for (const [scenarioId, original, equivalent] of [["CLO-01", "final gate", "focused control"], ["CLO-02", "no push", "push omitted"]] as const) {
 		const scenario = scenarios.find((entry) => entry.id === scenarioId)!;
-		const artifactPath = path.join(evidenceAliasRoot, `${scenarioId}.md`);
-		fs.writeFileSync(artifactPath, artifact(scenario).replace(original, equivalent));
-		assert.equal(scoreArtifact(scenario, artifactPath).passed, true, `${scenarioId} must accept its reviewed punctuation/wording equivalent`);
+		const artifactPath = path.join(evidenceSemanticsRoot, `${scenarioId}.md`);
+		fs.writeFileSync(artifactPath, artifact(scenario).replaceAll(original, equivalent));
+		assert.equal(scoreArtifact(scenario, artifactPath).passed, true, `${scenarioId} prose wording must not override valid structured evidence and deterministic controls`);
 	}
+	const ret02 = scenarios.find((entry) => entry.id === "RET-02")!;
+	const ret02Path = path.join(evidenceSemanticsRoot, "RET-02.md");
+	let ret02Artifact = artifact(ret02, { criticalCount: 0, speculation: "omitted", evidenceComplete: true });
+	for (const phrase of ret02.artifact.requiredEvidence) ret02Artifact = ret02Artifact.replaceAll(phrase, "evidence reviewed");
+	fs.writeFileSync(ret02Path, ret02Artifact);
+	assert.equal(scoreArtifact(ret02, ret02Path).passed, true, "RET-02 may omit excluded speculation instead of naming it in prose");
 	const closeScenario = scenarios.find((entry) => entry.id === "CLO-01")!;
 	assert.match(closeScenario.task, /existing current branch.*without creating or switching branches/);
 	assert.equal(closeScenario.mutation.allowedGitOperations.includes("switch" as never), false);
@@ -91,7 +97,7 @@ try {
 	}
 	const changedBranches = scoreGit(readOnlyGitScenario, "", { status: "", head: "same", initialHead: "same", remotes: "", beforeBranches: "main", branches: "main\ntopic", attempts: [], prCalls: [], committedPaths: [] });
 	assert.equal(changedBranches.passed, false, "unattributed persistent branch creation must fail closed");
-} finally { fs.rmSync(evidenceAliasRoot, { recursive: true, force: true }); }
+} finally { fs.rmSync(evidenceSemanticsRoot, { recursive: true, force: true }); }
 
 const ver02ControlScenario = scenarios.find((entry) => entry.id === "VER-02")!;
 const ver02ControlRun = provisionScenario(ver02ControlScenario);
@@ -421,6 +427,12 @@ const cleanRev02Pass: RuntimeExecutor = async (scenario, candidate, run) => {
 };
 const cleanRev02Result = await runScenario({ scenario: cleanRev02, candidate: "dsm.reviewer", executor: cleanRev02Pass, retain: false });
 assert.equal(cleanRev02Result.status, "PASS", "REV-02 must accept a justified clean PASS as well as PASS_WITH_NON_BLOCKING_NOTES");
+const contractRev02Pass: RuntimeExecutor = async (scenario, candidate, run) => {
+	fs.writeFileSync(run.artifactPath, artifact(scenario, { ...scenario.artifact.expectedEvidence, classification: "pass" }, "PASS"));
+	return fakeRuntime(scenario, candidate, run);
+};
+const contractRev02Result = await runScenario({ scenario: cleanRev02, candidate: "dsm.reviewer", executor: contractRev02Pass, retain: false });
+assert.equal(contractRev02Result.status, "PASS", "REV-02 PASS may retain the scenario-defined excluded concern while keeping it non-blocking");
 const notesRev02Result = await runScenario({ scenario: cleanRev02, candidate: "dsm.reviewer", executor: successfulFake, retain: false });
 assert.equal(notesRev02Result.status, "PASS", "REV-02 must retain its PASS_WITH_NON_BLOCKING_NOTES outcome");
 

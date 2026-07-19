@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "id": "REV-02",
+  "role": "REVIEW",
+  "candidates": [
+    "dsm.reviewer",
+    "reviewer"
+  ],
+  "fixture": {
+    "path": "rev-02",
+    "revision": "v1",
+    "sha256": "2753fe5c952f712e9275c7bf8d1ce2c8b505cf2b626df448451f4303029d978d"
+  },
+  "task": "Review the clean single-writer candidate without expanding the contract to unsupported concurrency.",
+  "invariants": [
+    "Single-writer append preserves queue contents."
+  ],
+  "exclusions": [
+    "Concurrent shared mutation is excluded."
+  ],
+  "expected": {
+    "verdict": "PASS_WITH_NON_BLOCKING_NOTES",
+    "behaviorExitCode": 0
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "high",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [],
+    "allowedGitOperations": [
+      "none"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "node controls/supported.mjs"
+    ],
+    "behavior": [
+      "node controls/supported.mjs"
+    ]
+  },
+  "artifact": {
+    "filename": "rev-02-artifact.md",
+    "verdicts": [
+      "PASS_WITH_NON_BLOCKING_NOTES",
+      "PASS"
+    ],
+    "headings": [
+      "## Summary",
+      "## Must-fix findings",
+      "## Non-blocking notes",
+      "## Evidence reviewed",
+      "## Risk checks",
+      "## Recommendation"
+    ],
+    "requiredEvidence": [
+      "single-writer"
+    ],
+    "expectedEvidence": {
+      "classification": "pass-with-non-blocking-notes",
+      "supportedModel": "single-writer",
+      "excludedConcern": "concurrent-shared-mutation"
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

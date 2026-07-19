@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "id": "RET-01",
+  "role": "RETRO",
+  "candidates": [
+    "dsm.retrospective",
+    "delegate"
+  ],
+  "fixture": {
+    "path": "ret-01",
+    "revision": "v1",
+    "sha256": "a706ed6b6a574a38352c709d8bcc6aced814ed811c15ffe17f744a7435b5f44a"
+  },
+  "task": "Produce a scoped retrospective with exactly the proven critical gap and safe evidence-backed improvements.",
+  "invariants": [
+    "Exactly one evidence-backed missed blocker is critical.",
+    "Safe improvements cite journey evidence."
+  ],
+  "exclusions": [],
+  "expected": {
+    "verdict": "DONE",
+    "behaviorExitCode": 0
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "high",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [],
+    "allowedGitOperations": [
+      "none"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "node controls/evidence.mjs"
+    ],
+    "behavior": [
+      "node controls/evidence.mjs"
+    ]
+  },
+  "artifact": {
+    "filename": "ret-01-artifact.md",
+    "verdicts": [
+      "DONE"
+    ],
+    "headings": [
+      "## Outcome",
+      "## Improvement candidates",
+      "## Plan-quality lessons",
+      "## Critical fixes",
+      "## Residual risks",
+      "## Recommendations"
+    ],
+    "requiredEvidence": [
+      "consumer",
+      "critical",
+      "improvement"
+    ],
+    "expectedEvidence": {
+      "criticalCount": 1,
+      "criticalIssue": "verification-missed-consumer-control",
+      "improvements": [
+        "run-consumer-control",
+        "record-exact-commands"
+      ]
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

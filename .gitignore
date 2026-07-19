@@ -1,4 +1,5 @@
 node_modules/
+.pi-subagents/
 .DS_Store
 *.log
 .env

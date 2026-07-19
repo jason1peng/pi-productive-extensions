@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "id": "IMP-02",
+  "role": "IMPLEMENT",
+  "candidates": [
+    "dsm.implementer",
+    "worker"
+  ],
+  "fixture": {
+    "path": "imp-02",
+    "revision": "v1",
+    "sha256": "0e0a03ae33e82e7df2c86c26ce40c3a3de82fc0eae6f13a268b6242c748e7550"
+  },
+  "task": "Repair only the cited inclusive-range defect and preserve unrelated tracked and untracked harness state.",
+  "invariants": [
+    "Inclusive ranges include both endpoints.",
+    "Harness-owned unrelated state remains byte-identical."
+  ],
+  "exclusions": [],
+  "expected": {
+    "verdict": "PASS",
+    "behaviorExitCode": 0
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "high",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [
+      "lib/range.mjs",
+      "tests/**"
+    ],
+    "allowedGitOperations": [
+      "none"
+    ],
+    "preservePaths": [
+      "unrelated.txt",
+      "decoy.tmp"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "node tests/basic.mjs"
+    ],
+    "behavior": [
+      "node tests/basic.mjs"
+    ]
+  },
+  "artifact": {
+    "filename": "imp-02-artifact.md",
+    "verdicts": [
+      "PASS"
+    ],
+    "headings": [
+      "## Summary",
+      "## Required checklist",
+      "## Changed files",
+      "## Tests added or updated",
+      "## Commands run",
+      "## Evidence",
+      "## Residual risks",
+      "## Recommendation"
+    ],
+    "requiredEvidence": [
+      "inclusive",
+      "unrelated"
+    ],
+    "expectedEvidence": {
+      "outcome": "inclusive-range-fixed",
+      "unrelatedState": "preserved",
+      "scope": "cited-repair-only"
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

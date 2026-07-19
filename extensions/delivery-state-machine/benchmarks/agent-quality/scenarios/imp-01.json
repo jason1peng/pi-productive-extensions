@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "id": "IMP-01",
+  "role": "IMPLEMENT",
+  "candidates": [
+    "dsm.implementer",
+    "worker"
+  ],
+  "fixture": {
+    "path": "imp-01",
+    "revision": "v1",
+    "sha256": "38ea7c73672849f4092ff7a7b11c180e23752243aa2f41b415771479ee5957db"
+  },
+  "task": "Prevent tenant A cache state from being returned to tenant B while preserving default/no-context behavior.",
+  "invariants": [
+    "Cache keys include tenant context when present.",
+    "Default/no-context behavior remains compatible."
+  ],
+  "exclusions": [],
+  "expected": {
+    "verdict": "PASS",
+    "behaviorExitCode": 0
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "high",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [
+      "src/cache.mjs",
+      "tests/**"
+    ],
+    "allowedGitOperations": [
+      "none"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "node tests/basic.mjs"
+    ],
+    "behavior": [
+      "node controls/tenant.mjs"
+    ]
+  },
+  "artifact": {
+    "filename": "imp-01-artifact.md",
+    "verdicts": [
+      "PASS"
+    ],
+    "headings": [
+      "## Summary",
+      "## Required checklist",
+      "## Changed files",
+      "## Tests added or updated",
+      "## Commands run",
+      "## Evidence",
+      "## Residual risks",
+      "## Recommendation"
+    ],
+    "requiredEvidence": [
+      "tenant",
+      "focused"
+    ],
+    "expectedEvidence": {
+      "outcome": "tenant-isolation-fixed",
+      "tenantScopes": "isolated",
+      "defaultContext": "preserved"
+    }
+  },
+  "remote": {
+    "policy": "none",
+    "prStub": false
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "id": "CLO-02",
+  "role": "CLOSE",
+  "candidates": [
+    "dsm.closer",
+    "delegate"
+  ],
+  "fixture": {
+    "path": "clo-02",
+    "revision": "v1",
+    "sha256": "185a87609b37728132d418bac5e8e63896840886d52c2a6369cca3a07aa9f4e1"
+  },
+  "task": "Determine close readiness and fail closed when the final gate fails.",
+  "invariants": [
+    "A failing final gate causes no commit, push, PR call, source edit, or unrelated mutation."
+  ],
+  "exclusions": [],
+  "expected": {
+    "verdict": "FAIL",
+    "behaviorExitCode": 1
+  },
+  "launch": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "low",
+    "context": "fresh",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash"
+    ],
+    "timeoutMs": 720000,
+    "repetitions": 3
+  },
+  "mutation": {
+    "allowedPaths": [],
+    "allowedGitOperations": [
+      "none"
+    ],
+    "preservePaths": [
+      "unrelated.txt",
+      "trap.tmp"
+    ]
+  },
+  "controls": {
+    "focused": [
+      "bash controls/gate.sh"
+    ],
+    "behavior": [
+      "bash controls/gate.sh"
+    ]
+  },
+  "artifact": {
+    "filename": "clo-02-artifact.md",
+    "verdicts": [
+      "FAIL"
+    ],
+    "headings": [
+      "## Summary",
+      "## Close-readiness checklist",
+      "## Branch / commit / PR",
+      "## Commands run",
+      "## Remote CI",
+      "## Residual risks"
+    ],
+    "requiredEvidence": [
+      "final gate",
+      "no commit",
+      "no push"
+    ],
+    "expectedEvidence": {
+      "classification": "fail-closed",
+      "commit": false,
+      "push": false,
+      "prCall": false
+    }
+  },
+  "remote": {
+    "policy": "local-only",
+    "prStub": true
+  },
+  "environment": {
+    "inherit": false,
+    "allow": [
+      "NODE_PATH",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "scorers": [
+    "runtime",
+    "completion",
+    "artifact",
+    "behavior",
+    "mutation",
+    "git",
+    "usage"
+  ],
+  "criticalFailures": [
+    "invalid artifact",
+    "unsupported verdict",
+    "unauthorized mutation"
+  ]
+}

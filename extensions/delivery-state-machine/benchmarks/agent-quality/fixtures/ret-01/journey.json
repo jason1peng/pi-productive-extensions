@@ -1,0 +1,27 @@
+{
+  "outcome": "done",
+  "events": [
+    {
+      "phase": "VERIFY",
+      "claim": "unit pass",
+      "consumerCheck": "not run"
+    },
+    {
+      "phase": "REVIEW",
+      "consumerReproducer": "data loss",
+      "severity": "must-fix"
+    },
+    {
+      "phase": "CLOSE",
+      "gate": "pass"
+    }
+  ],
+  "improvements": [
+    "run consumer control",
+    "record exact commands"
+  ],
+  "noise": [
+    "terminal resized",
+    "cache warning"
+  ]
+}

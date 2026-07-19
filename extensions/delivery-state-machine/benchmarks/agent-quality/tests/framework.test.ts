@@ -97,6 +97,24 @@ try {
 	}
 	const changedBranches = scoreGit(readOnlyGitScenario, "", { status: "", head: "same", initialHead: "same", remotes: "", beforeBranches: "main", branches: "main\ntopic", attempts: [], prCalls: [], committedPaths: [] });
 	assert.equal(changedBranches.passed, false, "unattributed persistent branch creation must fail closed");
+	const closeGit = { status: "", head: "new", initialHead: "old", remoteRef: "new", remotes: "", beforeBranches: "main", branches: "main", attempts: [], commitTree: "tree", expectedCommitTree: "tree", committedPaths: ["candidate.txt"] };
+	const actualPr = { tool: "gh", args: ["pr", "create"], url: "https://pr.invalid/clo-01/00000000-0000-0000-0000-000000000000" };
+	const helpPr = { tool: "gh", args: ["pr", "create", "--help"], url: "https://pr.invalid/clo-01/11111111-1111-1111-1111-111111111111" };
+	assert.equal(scoreGit(closeScenario, " M candidate.txt", { ...closeGit, prCalls: [helpPr, actualPr] }).passed, true, "PR help plus one actual create must count as one create");
+	assert.equal(scoreGit(closeScenario, " M candidate.txt", { ...closeGit, prCalls: [] }).passed, false, "bare pr or a missing captured create must not satisfy close");
+	assert.equal(scoreGit(closeScenario, " M candidate.txt", { ...closeGit, prCalls: [{ tool: "glab", args: ["mr", "create"], url: actualPr.url }] }).passed, false, "glab must not satisfy the explicit gh contract");
+	assert.equal(scoreGit(closeScenario, " M candidate.txt", { ...closeGit, prCalls: [actualPr, actualPr] }).passed, false, "two actual PR creates must fail");
+	assert.equal(scoreGit(closeScenario, " M candidate.txt", { ...closeGit, prCalls: [{ ...actualPr, url: "not-a-stub-url" }] }).passed, false, "an invalid PR URL must fail");
+	const closeRun = provisionScenario(closeScenario);
+	try {
+		const wrapperBin = closeRun.env.PATH.split(path.delimiter)[0];
+		assert.equal(fs.existsSync(path.join(wrapperBin, "pr")), false, "the harness must not provide an ambiguous bare-pr wrapper");
+		assert.match(command("gh", ["pr", "create", "--help"], closeRun.workspace, closeRun.env), /stub help/);
+		assert.match(command("gh", ["version"], closeRun.workspace, closeRun.env), /stub help/);
+		assert.equal(fs.existsSync(closeRun.prLog), false, "help and version must not create a PR-create log");
+		assert.match(command("gh", ["pr", "create"], closeRun.workspace, closeRun.env), /^https:\/\/pr\.invalid\/clo-01\//);
+		assert.equal(fs.readFileSync(closeRun.prLog, "utf8").trim().split("\n").length, 1, "one actual create must produce one log row");
+	} finally { closeRun.cleanup(); }
 } finally { fs.rmSync(evidenceSemanticsRoot, { recursive: true, force: true }); }
 
 const ver02ControlScenario = scenarios.find((entry) => entry.id === "VER-02")!;

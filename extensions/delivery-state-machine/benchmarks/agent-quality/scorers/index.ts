@@ -224,7 +224,7 @@ export function scoreGit(scenario: ScenarioRecord, beforeStatus: string, after: 
 		if (!isDeepStrictEqual([...after.committedPaths].sort(), expectedPaths)) failures.push("close commit paths do not exactly match the reviewed candidate paths");
 		if (after.status !== "") failures.push("reviewed candidate is not clean after close");
 		if (after.remoteRef !== after.head) failures.push("intended local remote ref does not match the close commit");
-		const validPrCalls = after.prCalls.filter((call) => (call.tool === "gh" && isDeepStrictEqual(call.args.slice(0, 2), ["pr", "create"])) || (call.tool === "glab" && isDeepStrictEqual(call.args.slice(0, 2), ["mr", "create"])));
+		const validPrCalls = after.prCalls.filter((call) => call.tool === "gh" && !["help", "version"].includes(call.args[0]) && !call.args.some((arg) => ["--help", "-h", "--version"].includes(arg)) && isDeepStrictEqual(call.args.slice(0, 2), ["pr", "create"]));
 		if (validPrCalls.length !== 1) failures.push(`expected exactly one valid PR stub create call, found ${validPrCalls.length}`);
 		if (validPrCalls.some((call) => !/^https:\/\/pr\.invalid\/[a-z0-9-]+\/[a-f0-9-]+$/.test(call.url))) failures.push("PR stub URL is missing or not parseable");
 	}

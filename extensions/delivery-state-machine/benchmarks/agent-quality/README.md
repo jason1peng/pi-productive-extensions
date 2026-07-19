@@ -33,19 +33,37 @@ npm run test
 npm run verify
 ```
 
-To run one scenario against one agent:
+Choose the smallest model-backed run that answers your question:
 
 ```bash
-bun extensions/delivery-state-machine/benchmarks/agent-quality/run.ts run VER-01 dsm.verifier
-```
+# One scenario and one candidate: fastest smoke test
+npm run eval:dsm-agents:smoke
 
-To run the configured matrix:
+# Both scenarios and candidates for one phase
+npm run eval:dsm-agents:implement
+npm run eval:dsm-agents:verify
+npm run eval:dsm-agents:review
+npm run eval:dsm-agents:close
+npm run eval:dsm-agents:retro
 
-```bash
+# All ten scenarios and both candidates, one repetition
 npm run eval:dsm-agents
+
+# Complete comparison matrix, three repetitions
+npm run eval:dsm-agents:full
 ```
 
-To test the real Pi → pi-subagents boundary, use the opt-in canary described below. It requires credentials and makes two model calls.
+You can also select an exact trial:
+
+```bash
+npm run eval:dsm-agents -- \
+  --filter-pattern "^VER-01 dsm[.]verifier$" \
+  --repeat 1
+```
+
+The default is one repetition and serial execution. A complete default matrix is 20 autonomous agent trials; the three-repetition full matrix is 60 trials and can take a long time. Keep `maxConcurrency: 1`: runtime signal handling is process-global and has only been validated for serial trials.
+
+To test only the real Pi → pi-subagents integration boundary, use the opt-in canary described below. It requires credentials and makes two model calls.
 
 ## How it works
 

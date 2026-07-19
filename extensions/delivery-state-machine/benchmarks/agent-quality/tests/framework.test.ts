@@ -585,10 +585,18 @@ assert.equal(validateResult(JSON.parse(candidateResponse.output)).harness?.class
 assert.deepEqual(gradePromptfooOutput(candidateResponse.output), { pass: false, score: 0, reason: "candidate trial failed deterministic checks" });
 
 await assert.rejects(() => runPromptfooTrial(boundaryOptions, 0, async () => structuredClone(infrastructureFailure)), /maxInfrastructureAttempts/);
-const promptfooConfig = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "promptfooconfig.yaml"), "utf8");
+const frameworkRoot = path.join(path.dirname(new URL(import.meta.url).pathname), "..");
+const promptfooConfig = fs.readFileSync(path.join(frameworkRoot, "promptfooconfig.yaml"), "utf8");
+assert.match(promptfooConfig, /repeat: 1/, "developer matrix must default to one repetition");
+assert.match(promptfooConfig, /maxConcurrency: 1/, "model trials must remain serial");
 assert.match(promptfooConfig, /maxInfrastructureAttempts: 3/);
 assert.match(promptfooConfig, /provider boundary must expose exhausted infrastructure as a Promptfoo error/);
 assert.doesNotMatch(promptfooConfig, /JSON\.parse\(output\)\.status === 'PASS'/);
+const packageScripts = JSON.parse(fs.readFileSync(path.resolve(frameworkRoot, "../../../../package.json"), "utf8")).scripts as Record<string, string>;
+for (const name of ["smoke", "implement", "verify", "review", "close", "retro", "full"]) {
+	assert.equal(typeof packageScripts[`eval:dsm-agents:${name}`], "string", `missing developer eval script: ${name}`);
+}
+assert.match(packageScripts["eval:dsm-agents:full"], /--repeat 3/, "full matrix must opt into three repetitions");
 
 const scorerCrash: RuntimeExecutor = async (scenario, candidate, run) => {
 	const runtime = await successfulFake(scenario, candidate, run);

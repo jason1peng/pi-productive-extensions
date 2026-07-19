@@ -1,6 +1,6 @@
 description: Controlled DSM-agent quality framework
 evaluateOptions:
-  repeat: 3
+  repeat: 1
   maxConcurrency: 1
 prompts:
   - "{{task}}"

@@ -142,16 +142,17 @@ function childSessionCompleted(sessionFile: string): boolean {
 	return Boolean(lastAssistant) && (!lastAssistant.stopReason || ["stop", "end_turn"].includes(lastAssistant.stopReason));
 }
 
-function writeControlledAgentWrapper(repositoryRoot: string, agentDir: string, candidate: string, scenario: ScenarioRecord): void {
+export function writeControlledAgentWrapper(repositoryRoot: string, agentDir: string, candidate: string, scenario: ScenarioRecord): void {
 	if (!candidate.startsWith("dsm.")) return;
 	const localName = candidate.slice("dsm.".length);
 	const source = path.join(repositoryRoot, "extensions", "delivery-state-machine", "agents", "dsm", `${localName}.md`);
 	if (!fs.existsSync(source)) throw new Error(`packaged agent source is missing: ${source}`);
 	let contents = fs.readFileSync(source, "utf8");
-	if (!/^tools:\s*.+$/m.test(contents) || !/^thinking:\s*.+$/m.test(contents)) throw new Error(`packaged agent frontmatter cannot be controlled: ${source}`);
-	contents = contents
-		.replace(/^tools:\s*.+$/m, `tools: ${scenario.launch.tools.join(", ")}`)
-		.replace(/^thinking:\s*.+$/m, `thinking: ${scenario.launch.thinking}`);
+	if (!/^tools:\s*.+$/m.test(contents)) throw new Error(`packaged agent tool frontmatter cannot be controlled: ${source}`);
+	contents = contents.replace(/^tools:\s*.+$/m, `tools: ${scenario.launch.tools.join(", ")}`);
+	contents = /^thinking:\s*.+$/m.test(contents)
+		? contents.replace(/^thinking:\s*.+$/m, `thinking: ${scenario.launch.thinking}`)
+		: contents.replace(/^tools:\s*.+$/m, `$&\nthinking: ${scenario.launch.thinking}`);
 	const target = path.join(agentDir, "agents", "dsm", `${localName}.md`);
 	fs.mkdirSync(path.dirname(target), { recursive: true });
 	fs.writeFileSync(target, contents, "utf8");

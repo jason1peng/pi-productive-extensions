@@ -3,10 +3,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadScenarios } from "../catalog.ts";
 import { provisionScenario, runtimeEnvironment, snapshot } from "../provision.ts";
 import DeliveryAgentProvider, { gradePromptfooOutput, runPromptfooTrial, runScenario, type RuntimeExecutor } from "../run.ts";
-import { artifactPrompt, credentialValuesFromAuthFile, executePiRuntime, publicEvidenceChoiceContract, resolveChild, selectAuthentication, spawnBounded, validateOuterLaunch } from "../runtime.ts";
+import { artifactPrompt, credentialValuesFromAuthFile, executePiRuntime, publicEvidenceChoiceContract, resolveChild, selectAuthentication, spawnBounded, validateOuterLaunch, writeControlledAgentWrapper } from "../runtime.ts";
 import { scoreMutation, scoreRuntime } from "../scorers/index.ts";
 import { PROMPTFOO_VERSION, validateResult, validateScenario, type NormalizedResult, type ScenarioRecord } from "../schema.ts";
 
@@ -58,6 +59,19 @@ const scenarios = loadScenarios();
 assert.equal(scenarios.length, 10);
 assert.equal(new Set(scenarios.map((scenario) => scenario.id)).size, 10);
 assert.equal(PROMPTFOO_VERSION, "0.121.19");
+
+const wrapperRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-agent-eval-wrapper-"));
+try {
+	const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
+	for (const scenarioId of ["IMP-01", "REV-01"] as const) {
+		const scenario = scenarios.find((entry) => entry.id === scenarioId)!;
+		const candidate = scenario.candidates.find((entry) => entry.startsWith("dsm."))!;
+		writeControlledAgentWrapper(repositoryRoot, wrapperRoot, candidate, scenario);
+		const wrapped = fs.readFileSync(path.join(wrapperRoot, "agents", "dsm", `${candidate.slice(4)}.md`), "utf8");
+		assert.match(wrapped, new RegExp(`^thinking: ${scenario.launch.thinking}$`, "m"), `${candidate} must receive controlled thinking even when its source frontmatter omits a default`);
+		assert.match(wrapped, new RegExp(`^tools: ${scenario.launch.tools.join(", ")}$`, "m"));
+	}
+} finally { fs.rmSync(wrapperRoot, { recursive: true, force: true }); }
 
 const ver02ControlScenario = scenarios.find((entry) => entry.id === "VER-02")!;
 const ver02ControlRun = provisionScenario(ver02ControlScenario);

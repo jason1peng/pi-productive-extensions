@@ -15,7 +15,7 @@ Correctness comes before broad refactoring. The persisted state shape, legacy re
 - Stage 5 shipped trusted runtime configuration, CLOSE guarding, retro extraction, atomic summary handling, and standard Pi truncation in PR #40.
 - Stage 6 packaged dedicated delivery agents and separated static agent policy from dynamic child context. Focused/full verification, two frozen-candidate isolated-host smoke runs, and the independent review gate passed after two repair rounds.
 - The standalone prerequisite in [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md) shipped in PR #44. Its Stage 7 prerequisite-gate follow-up passed offline/full verification and the real-Pi canary, repaired authoritative runtime-identity and retained-evidence review findings, and cleared independent bounded review.
-- Stage 7's repaired/frozen benchmark completed: the authoritative joined pilot passed 20/20, the full comparison passed 60/60, and independent review returned `PASS_WITH_NON_BLOCKING_NOTES`. The dated report is [`benchmarks/agent-quality/reports/2026-07-19-stage7-agent-comparison.md`](benchmarks/agent-quality/reports/2026-07-19-stage7-agent-comparison.md). Stage 7 awaits the explicit delivery-default and namespace decisions; Stage 8 remains blocked until they are recorded.
+- Stage 7's simplified/frozen DSM benchmark completed: the pilot passed 20/20 and the full comparison passed 60/60 at one candidate commit; independent review returned `PASS_WITH_NON_BLOCKING_NOTES`. The dated report is [`benchmarks/agent-quality/reports/2026-07-20-stage7-agent-comparison.md`](benchmarks/agent-quality/reports/2026-07-20-stage7-agent-comparison.md). Stage 7 awaits the explicit delivery-default and namespace decisions; Stage 8 remains blocked until they are recorded.
 
 ## Recommended contract decisions
 
@@ -497,7 +497,7 @@ Use the candidate pairs, ten scenarios, controls, and later-benchmark defaults p
 
 ### Benchmark record
 
-The final authoritative join uses 54 non-CLO rows from `eval-njl-2026-07-19T21:02:00` and six repaired CLO-01 rows from `eval-P0r-2026-07-19T23:03:24`. The joined pilot passed 20/20 and the joined full comparison passed 60/60. Independent review returned `PASS_WITH_NON_BLOCKING_NOTES`; no supported-model correctness, safety, identity, mutation, cleanup, or redaction blocker remains. DSM and builtin quality were tied, while DSM child cost was approximately 35.5% higher. The explicit promotion and namespace decisions remain pending in the [dated report](benchmarks/agent-quality/reports/2026-07-19-stage7-agent-comparison.md).
+After the initial comparison, the five DSM system prompts were simplified to retain static phase policy while removing duplicated runtime-owned output contracts, and inherited skills were disabled to match the builtins. The frozen pilot `eval-p7B-2026-07-20T02:39:06` passed 20/20 and the full comparison `eval-Bqp-2026-07-20T03:18:34` passed 60/60 at commit `08cfb3d802cbb7cff4993f92105e97616663094c`. DSM and builtin quality remained tied; DSM child cost was approximately 26.5% higher and mean trial duration 7.4% longer. Independent review returned `PASS_WITH_NON_BLOCKING_NOTES`; the explicit promotion/namespace decisions remain pending in the [dated report](benchmarks/agent-quality/reports/2026-07-20-stage7-agent-comparison.md).
 
 ## Stage 8 — Modularize `index.ts`
 

@@ -11,7 +11,7 @@
     "revision": "v1",
     "sha256": "c4c2a4f00dc83980a4df4cb3f2e743b5425aa12e7b94d2cb0ab9774615c5f241"
   },
-  "task": "Run the final gate, commit only the reviewed candidate, push the intended branch to the local remote, and invoke the PR stub.",
+  "task": "Run the final gate, commit only the reviewed candidate, push the existing current branch to the local remote without creating or switching branches, then invoke `gh pr create` exactly once and record its returned stub URL.",
   "invariants": [
     "Only candidate.txt enters the close commit.",
     "Remote and PR boundaries remain local/stubbed."

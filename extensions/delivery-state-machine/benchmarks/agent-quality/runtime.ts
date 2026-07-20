@@ -67,9 +67,10 @@ export function resolveChild(run: ProvisionedRun, requested: RuntimeEvidence["re
 	const session = entries.find((entry) => entry.type === "session") ?? {};
 	const model = entries.find((entry) => entry.type === "model_change") ?? {};
 	const thinking = entries.find((entry) => entry.type === "thinking_level_change") ?? {};
-	const effectiveModel = String(model.modelId ?? match.metadata.model ?? "");
-	const requestedModelId = requested.model.includes("/") ? requested.model.slice(requested.model.indexOf("/") + 1) : requested.model;
-	const effectiveCwd = String(session.cwd ?? match.metadata.cwd ?? "");
+	const effectiveProvider = String(model.provider ?? "unknown");
+	const effectiveModelId = String(model.modelId ?? "");
+	const effectiveModel = effectiveModelId.includes("/") ? effectiveModelId : `${effectiveProvider}/${effectiveModelId}`;
+	const effectiveCwd = String(session.cwd ?? "");
 	const conversation = entries.filter((entry) => ["user", "assistant"].includes(String(entry?.message?.role ?? "")));
 	const firstMessage = conversation[0]?.message;
 	const firstText = (firstMessage?.content ?? []).filter((item: any) => item?.type === "text").map((item: any) => String(item.text ?? "")).join("\n");
@@ -79,9 +80,9 @@ export function resolveChild(run: ProvisionedRun, requested: RuntimeEvidence["re
 	}
 	return {
 		agent: requested.agent,
-		provider: String(model.provider ?? "unknown"),
-		model: effectiveModel === requestedModelId ? requested.model : effectiveModel,
-		thinking: String(thinking.thinkingLevel ?? match.metadata.thinking ?? ""),
+		provider: effectiveProvider,
+		model: effectiveModel,
+		thinking: String(thinking.thinkingLevel ?? ""),
 		context: "fresh",
 		tools: effectiveTools,
 		cwd: fs.existsSync(effectiveCwd) && fs.existsSync(requested.cwd) && fs.realpathSync(effectiveCwd) === fs.realpathSync(requested.cwd) ? requested.cwd : effectiveCwd,
@@ -141,16 +142,17 @@ function childSessionCompleted(sessionFile: string): boolean {
 	return Boolean(lastAssistant) && (!lastAssistant.stopReason || ["stop", "end_turn"].includes(lastAssistant.stopReason));
 }
 
-function writeControlledAgentWrapper(repositoryRoot: string, agentDir: string, candidate: string, scenario: ScenarioRecord): void {
+export function writeControlledAgentWrapper(repositoryRoot: string, agentDir: string, candidate: string, scenario: ScenarioRecord): void {
 	if (!candidate.startsWith("dsm.")) return;
 	const localName = candidate.slice("dsm.".length);
 	const source = path.join(repositoryRoot, "extensions", "delivery-state-machine", "agents", "dsm", `${localName}.md`);
 	if (!fs.existsSync(source)) throw new Error(`packaged agent source is missing: ${source}`);
 	let contents = fs.readFileSync(source, "utf8");
-	if (!/^tools:\s*.+$/m.test(contents) || !/^thinking:\s*.+$/m.test(contents)) throw new Error(`packaged agent frontmatter cannot be controlled: ${source}`);
-	contents = contents
-		.replace(/^tools:\s*.+$/m, `tools: ${scenario.launch.tools.join(", ")}`)
-		.replace(/^thinking:\s*.+$/m, `thinking: ${scenario.launch.thinking}`);
+	if (!/^tools:\s*.+$/m.test(contents)) throw new Error(`packaged agent tool frontmatter cannot be controlled: ${source}`);
+	contents = contents.replace(/^tools:\s*.+$/m, `tools: ${scenario.launch.tools.join(", ")}`);
+	contents = /^thinking:\s*.+$/m.test(contents)
+		? contents.replace(/^thinking:\s*.+$/m, `thinking: ${scenario.launch.thinking}`)
+		: contents.replace(/^tools:\s*.+$/m, `$&\nthinking: ${scenario.launch.thinking}`);
 	const target = path.join(agentDir, "agents", "dsm", `${localName}.md`);
 	fs.mkdirSync(path.dirname(target), { recursive: true });
 	fs.writeFileSync(target, contents, "utf8");

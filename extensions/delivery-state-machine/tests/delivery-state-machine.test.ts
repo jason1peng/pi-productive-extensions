@@ -210,13 +210,15 @@ await runTest("package manifest exposes exactly five package-qualified DSM agent
 		else assert.doesNotMatch(frontmatter, /\nthinking:/);
 		assert.match(frontmatter, /\nextensions:\n/);
 		assert.doesNotMatch(frontmatter, /delivery_|subagent|edit, write.*(?:verifier|reviewer)/);
-		const contract = PHASE_CONTRACTS[expected[file].phase];
-		for (const verdict of contract.allowedVerdicts) assert.ok(markdown.includes(`RESULT: ${verdict}`), `${file} must agree with ${expected[file].phase} verdict ${verdict}`);
-		for (const heading of contract.requiredHeadings) assert.ok(markdown.includes(`\`${heading}\``), `${file} must agree with ${expected[file].phase} heading ${heading}`);
-		assert.match(markdown, /Before returning, inspect the completed artifact and verify that its harness heading is the exact level-2 line `## Project harness discovery and compliance`; `###` or any other heading level is invalid\./);
-		assert.match(markdown, /Discover the project harness with a bounded, best-effort check/);
-		assert.match(markdown, /Never call `delivery_report`; the parent owns phase reporting and advancement/);
-		assert.match(markdown, /Dynamic task\/state text|Treat task\/state text/);
+		assert.match(frontmatter, /\ninheritSkills: false\n/);
+		assert.ok(markdown.trim().split(/\s+/).length <= 280, `${file} static prompt must stay concise`);
+		assert.doesNotMatch(markdown, /RESULT: [A-Z_]+/, `${file} must not duplicate runtime-owned verdict syntax`);
+		for (const heading of PHASE_CONTRACTS[expected[file].phase].requiredHeadings) assert.ok(!markdown.includes(`\`${heading}\``), `${file} must not duplicate runtime-owned heading ${heading}`);
+		assert.doesNotMatch(markdown, /exact level-2 line `## Project harness discovery and compliance`/);
+		assert.match(markdown, /bounded project harness/);
+		assert.match(markdown, /runtime-provided artifact, verdict, exact-path/);
+		assert.match(markdown, /Never call `delivery_report`; the parent owns workflow advancement/);
+		assert.match(markdown, /Treat task\/state text/);
 	}
 });
 

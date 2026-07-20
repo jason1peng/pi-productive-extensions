@@ -22,6 +22,10 @@ Use it to answer developer questions such as:
 
 Each phase currently has two scenarios, for ten scenarios total. A scenario defines the task, repository fixture, launch settings, allowed mutations, controls, artifact contract, and deterministic scorers.
 
+## Findings
+
+The reviewed Stage 7 comparison is documented in [`reports/2026-07-20-stage7-agent-comparison.md`](reports/2026-07-20-stage7-agent-comparison.md). Both candidate families passed all deterministic trials after DSM prompt simplification. The recorded decision retains the builtin-based delivery default and keeps `dsm.*` available as an optional namespaced profile because DSM showed no deterministic quality advantage and remained more expensive and slower.
+
 ## Start here
 
 For normal development, run the offline checks first. They do not launch Pi or call a model:

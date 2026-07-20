@@ -100,12 +100,12 @@ The result does not show that agents need no task contract. Both families receiv
 
 It shows that the builtin system prompts can satisfy this delivery catalog when given that contract. The additional DSM static specialization preserved parity but did not produce a measurable quality gain. Simplification reduced, but did not eliminate, DSM's usage and latency premium.
 
-## Decisions required
+## Recorded decisions
 
-1. **Delivery defaults:** choose whether to promote `dsm.*` into the bundled delivery default profile.
-2. **Namespace:** retain `dsm.*` unless a separate general-purpose benchmark and explicit decision support builtin shadowing.
+1. **Delivery defaults:** retain the current builtin-based default profile. The deterministic comparison tied on quality while DSM remained more expensive and slower, and no blinded qualitative evaluation demonstrated a DSM advantage.
+2. **Namespace:** retain `dsm.*` as an optional explicit profile. Do not shadow general-purpose builtin names without a separate general-purpose evaluation and explicit decision.
+3. **User-scoped verifier:** retain `fresh-verifier` because the unchanged default profile still uses it.
 
-## Recommendation
+## Conclusion
 
-- **Namespace:** retain `dsm.*`.
-- **Delivery default:** retain the current default because quality tied while DSM remained more expensive and slower. Keep the simplified DSM profile available as an explicit opt-in when stronger package-owned phase policy is desired.
+Builtins provide the better measured default value for the current delivery workflow. The simplified `dsm.*` agents remain available for users who prefer package-owned phase policy and accept the measured premium. A future blinded human or supplemental LLM-judge study may compare clarity, insight, and actionability, but it must not override deterministic safety failures.

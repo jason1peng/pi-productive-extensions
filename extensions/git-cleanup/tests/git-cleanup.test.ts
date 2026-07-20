@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import gitCleanupExtension, { cleanupAgentPrompt, cleanupGitWorktrees, parseCleanupArgs, parseWorktreeList, type GitExecutor } from "../index.ts";
+import gitCleanupExtension, { cleanupAgentPrompt, cleanupGitWorktrees, formatCleanupResult, parseCleanupArgs, parseWorktreeList, type GitExecutor } from "../index.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,11 +48,27 @@ await runTest("parseCleanupArgs supports dry-run and custom main", () => {
 	assert.deepEqual(parseCleanupArgs("-n --force-current"), { mainBranch: "main", dryRun: true, forceCurrent: true });
 });
 
-await runTest("cleanupAgentPrompt preserves parsed command options", () => {
-	assert.equal(
-		cleanupAgentPrompt({ mainBranch: "trunk", dryRun: true, forceCurrent: false }),
-		'Run the git_cleanup tool exactly once with these arguments, then briefly report its result.\n{"mainBranch":"trunk","dryRun":true,"forceCurrent":false}',
-	);
+await runTest("cleanupAgentPrompt preserves options and requires labeled read-only recommendations", () => {
+	const prompt = cleanupAgentPrompt({ mainBranch: "trunk", dryRun: true, forceCurrent: false });
+	assert.match(prompt, /Run the git_cleanup tool exactly once/);
+	assert.match(prompt, /{"mainBranch":"trunk","dryRun":true,"forceCurrent":false}/);
+	assert.match(prompt, /investigate every labeled skipped worktree using read-only commands/);
+	assert.match(prompt, /GitHub PR or GitLab MR state, target branch, and clickable web URL/);
+	assert.match(prompt, /same path and content blob exists in a commit, remote-tracking ref, or another explicit backup/);
+	assert.match(prompt, /\*\*safe to remove\*\* \| \*\*don't remove yet\*\* \| \*\*uncertain\*\*/);
+	assert.match(prompt, /Evidence: HEAD\/remote recoverability; PR\/MR state, target, and clickable URL/);
+	assert.match(prompt, /Technical: <the raw cleanup reason>/);
+	assert.match(prompt, /Only say safe to remove when every local commit and meaningful untracked artifact is demonstrably recoverable/);
+	assert.match(prompt, /Do not remove any skipped worktree in this run/);
+});
+
+await runTest("cleanup result labels skipped worktrees in stable spreadsheet order", () => {
+	const skipped = Array.from({ length: 28 }, (_, index) => ({ path: `/worktree-${index}`, branch: `branch-${index}`, reason: `reason-${index}` }));
+	const output = formatCleanupResult({ mainBranch: "main", pulled: false, removed: [], skipped, commands: [] }, true);
+	assert.match(output, /- \[A\] \/worktree-0 \(branch-0\): reason-0/);
+	assert.match(output, /- \[Z\] \/worktree-25 \(branch-25\): reason-25/);
+	assert.match(output, /- \[AA\] \/worktree-26 \(branch-26\): reason-26/);
+	assert.match(output, /- \[AB\] \/worktree-27 \(branch-27\): reason-27/);
 });
 
 await runTest("/cleanup dispatches an agent turn configured to invoke the cleanup tool", async () => {
@@ -120,11 +136,11 @@ await runTest("cleanup removes merged worktrees with untracked-only artifacts an
 		assert.equal(fs.existsSync(untrackedOnly), false);
 		assert.equal(fs.existsSync(dirty), true);
 		assert.deepEqual(result.removed.map((item) => item.branch).sort(), ["merged-branch", "untracked-branch"]);
-		assert.equal(result.skipped.some((item) => item.branch === "dirty-branch" && item.reason === "tracked changes"), true);
+		assert.equal(result.skipped.some((item) => item.branch === "dirty-branch" && item.reason.includes("tracked changes") && item.reason.includes("lose uncommitted work")), true);
 		const branches = sh(main, ["git", "branch"]);
 		assert.doesNotMatch(branches, /merged-branch/);
 		assert.doesNotMatch(branches, /untracked-branch/);
-		assert.equal(result.commands.some((command) => command.includes("'clean' '-d' '-f' '-x' '--' '.pi-subagents/'")), true);
+		assert.equal(result.commands.some((command) => command.includes("'clean' '-d' '-f' '-x' '--' '.pi-subagents'")), true);
 		assert.equal(result.commands.some((command) => command.includes("'worktree' 'remove' '--force'")), false);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
@@ -159,7 +175,7 @@ await runTest("cleanup preserves worktrees containing unrecognized untracked or 
 			return execGit(args, options);
 		};
 		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: recordingExec });
-		assert.equal(result.skipped.some((item) => item.branch === "candidate" && item.reason === "untracked or ignored content"), true);
+		assert.equal(result.skipped.some((item) => item.branch === "candidate" && item.reason.startsWith("untracked files (keep-me.txt") && item.reason.includes("would lose")), true);
 		assert.equal(fs.existsSync(path.join(candidate, ".pi-subagents")), true);
 		assert.equal(fs.readFileSync(path.join(candidate, "keep-me.txt"), "utf8"), "untracked\n");
 		assert.equal(fs.readFileSync(path.join(candidate, "keep-me.log"), "utf8"), "ignored\n");
@@ -167,6 +183,109 @@ await runTest("cleanup preserves worktrees containing unrecognized untracked or 
 		assert.match(sh(main, ["git", "branch"]), /candidate/);
 		assert.equal(calls.some((args) => args[0] === "clean" && args.at(-1) === ".pi-subagents/"), false);
 		assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup removes merged worktrees containing arbitrary ignored artifacts", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-ignored-"));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "main");
+	const candidate = path.join(root, "candidate");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, ".gitignore"), ".gradle/\nbuild/\nweb-app/node_modules/\n", "utf8");
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		sh(main, ["git", "add", ".gitignore", "README.md"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+
+		sh(main, ["git", "worktree", "add", "-b", "candidate", candidate, "main"]);
+		for (const artifact of [".gradle/cache/data", "build/classes/App.class", "web-app/node_modules/pkg/index.js"]) {
+			fs.mkdirSync(path.dirname(path.join(candidate, artifact)), { recursive: true });
+			fs.writeFileSync(path.join(candidate, artifact), "generated");
+		}
+
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit });
+		assert.equal(fs.existsSync(candidate), false);
+		assert.equal(result.removed.some((item) => item.branch === "candidate"), true);
+		assert.equal(result.commands.some((command) => command.includes("'clean' '-d' '-f' '-X'")), true);
+		assert.equal(result.commands.some((command) => command.includes("'worktree' 'remove' '--force'")), false);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("cleanup accepts exact-head merged GitLab MR evidence for squash merges", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-cleanup-gitlab-"));
+	const remote = path.join(root, "remote.git");
+	const main = path.join(root, "main");
+	const merged = path.join(root, "merged");
+	const closed = path.join(root, "closed");
+	const ambiguous = path.join(root, "ambiguous");
+	try {
+		sh(root, ["git", "init", "--bare", remote]);
+		sh(root, ["git", "clone", remote, main]);
+		sh(main, ["git", "checkout", "-b", "main"]);
+		sh(main, ["git", "config", "user.email", "test@example.com"]);
+		sh(main, ["git", "config", "user.name", "Test User"]);
+		fs.writeFileSync(path.join(main, "README.md"), "initial\n", "utf8");
+		sh(main, ["git", "add", "README.md"]);
+		sh(main, ["git", "commit", "-m", "initial"]);
+		sh(main, ["git", "push", "-u", "origin", "main"]);
+
+		sh(main, ["git", "worktree", "add", "-b", "feature/squashed", merged, "main"]);
+		fs.writeFileSync(path.join(merged, "feature.txt"), "source version\n", "utf8");
+		sh(merged, ["git", "add", "feature.txt"]);
+		sh(merged, ["git", "commit", "-m", "source commit"]);
+		const mergedHead = sh(merged, ["git", "rev-parse", "HEAD"]);
+
+		sh(main, ["git", "worktree", "add", "-b", "feature/closed", closed, "main"]);
+		fs.writeFileSync(path.join(closed, "closed.txt"), "not merged\n", "utf8");
+		sh(closed, ["git", "add", "closed.txt"]);
+		sh(closed, ["git", "commit", "-m", "closed commit"]);
+		const closedHead = sh(closed, ["git", "rev-parse", "HEAD"]);
+
+		sh(main, ["git", "worktree", "add", "-b", "feature/ambiguous", ambiguous, "main"]);
+		fs.writeFileSync(path.join(ambiguous, "ambiguous.txt"), "ambiguous\n", "utf8");
+		sh(ambiguous, ["git", "add", "ambiguous.txt"]);
+		sh(ambiguous, ["git", "commit", "-m", "ambiguous commit"]);
+		const ambiguousHead = sh(ambiguous, ["git", "rev-parse", "HEAD"]);
+
+		// A squash result need not be patch-equivalent (for example after server-side edits).
+		fs.writeFileSync(path.join(main, "feature.txt"), "squashed and edited\n", "utf8");
+		sh(main, ["git", "add", "feature.txt"]);
+		sh(main, ["git", "commit", "-m", "squash merge"]);
+		sh(main, ["git", "push", "origin", "main"]);
+		const squashCommit = sh(main, ["git", "rev-parse", "HEAD"]);
+
+		const glabCalls: string[][] = [];
+		const execGlab: GitExecutor = async (args) => {
+			glabCalls.push(args);
+			const source = new URL(`https://example.invalid/${args[1]}`).searchParams.get("source_branch");
+			const mergeRequests = source === "feature/squashed"
+				? [{ state: "merged", target_branch: "main", sha: mergedHead, squash_commit_sha: squashCommit }]
+				: source === "feature/ambiguous"
+					? [
+						{ state: "merged", target_branch: "main", sha: ambiguousHead, squash_commit_sha: squashCommit },
+						{ state: "opened", target_branch: "main", sha: ambiguousHead },
+					]
+					: [{ state: "closed", target_branch: "main", sha: closedHead }];
+			return { stdout: JSON.stringify(mergeRequests), stderr: "", code: 0, killed: false };
+		};
+		const result = await cleanupGitWorktrees(main, { mainBranch: "main", dryRun: false, forceCurrent: false }, { exec: execGit, execGlab });
+		assert.equal(fs.existsSync(merged), false);
+		assert.equal(fs.existsSync(closed), true);
+		assert.equal(fs.existsSync(ambiguous), true);
+		assert.equal(result.removed.some((item) => item.branch === "feature/squashed"), true);
+		assert.equal(result.skipped.some((item) => item.branch === "feature/closed" && item.reason.includes("not merged")), true);
+		assert.equal(result.skipped.some((item) => item.branch === "feature/ambiguous" && item.reason.includes("not merged")), true);
+		assert.equal(glabCalls.some((args) => args[1]?.includes("source_branch=feature%2Fsquashed")), true);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

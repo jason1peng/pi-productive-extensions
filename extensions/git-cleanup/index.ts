@@ -38,6 +38,7 @@ export type GitExecutor = (args: string[], options: GitExecutorOptions) => Promi
 
 export interface CleanupRuntimeOptions {
 	exec: GitExecutor;
+	execGlab?: GitExecutor;
 	signal?: AbortSignal;
 	onProgress?: (message: string) => void;
 }
@@ -114,32 +115,35 @@ function isPlanningBranch(branch: string | undefined): boolean {
 
 interface WorktreeDirtyState {
 	hasTrackedChanges: boolean;
-	untrackedOrIgnored: string[];
+	untracked: string[];
+	ignored: string[];
 }
 
 async function dirtyState(worktreePath: string, runtime: CleanupRuntimeOptions): Promise<WorktreeDirtyState> {
 	const status = await git(worktreePath, ["status", "--porcelain"], runtime);
 	const lines = status.split(/\r?\n/).filter(Boolean);
+	const [untracked, ignored] = await untrackedAndIgnoredPaths(worktreePath, runtime);
 	return {
 		hasTrackedChanges: lines.some((line) => !line.startsWith("??")),
-		untrackedOrIgnored: await untrackedAndIgnoredPaths(worktreePath, runtime),
+		untracked,
+		ignored,
 	};
-}
-
-function hasUnexpectedUntracked(paths: string[]): boolean {
-	return paths.some((entry) => entry !== ".pi-subagents" && !entry.startsWith(".pi-subagents/"));
 }
 
 function nulPaths(output: string): string[] {
 	return output.split("\0").filter(Boolean);
 }
 
-async function untrackedAndIgnoredPaths(cwd: string, runtime: CleanupRuntimeOptions): Promise<string[]> {
+async function untrackedAndIgnoredPaths(cwd: string, runtime: CleanupRuntimeOptions): Promise<[string[], string[]]> {
 	const [untracked, ignored] = await Promise.all([
 		git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], runtime, { rawOutput: true }),
 		git(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], runtime, { rawOutput: true }),
 	]);
-	return [...new Set([...nulPaths(untracked), ...nulPaths(ignored)])];
+	return [nulPaths(untracked), nulPaths(ignored)];
+}
+
+function isPiRuntimePath(entry: string): boolean {
+	return entry === ".pi-subagents" || entry.startsWith(".pi-subagents/");
 }
 
 function pathsConflict(left: string, right: string): boolean {
@@ -148,12 +152,13 @@ function pathsConflict(left: string, right: string): boolean {
 
 async function assertNoUntrackedOverwrite(cwd: string, from: string, to: string, runtime: CleanupRuntimeOptions): Promise<void> {
 	const changed = nulPaths(await git(cwd, ["diff", "--name-only", "-z", from, to], runtime, { rawOutput: true }));
-	const local = await untrackedAndIgnoredPaths(cwd, runtime);
-	const conflicts = local.filter((localPath) => changed.some((changedPath) => pathsConflict(localPath, changedPath)));
+	const [untracked, ignored] = await untrackedAndIgnoredPaths(cwd, runtime);
+	const conflicts = [...new Set([...untracked, ...ignored])].filter((localPath) => changed.some((changedPath) => pathsConflict(localPath, changedPath)));
 	if (conflicts.length > 0) {
 		throw new Error(
-			`Cannot update this worktree: local untracked or ignored content would be overwritten (${conflicts.slice(0, 3).join(", ")}` +
-			`${conflicts.length > 3 ? ", …" : ""}). The content was preserved; relocate it and rerun /cleanup.`,
+			`Cannot update the primary worktree: local untracked or ignored content would be overwritten (${conflicts.slice(0, 3).join(", ")}` +
+			`${conflicts.length > 3 ? ", …" : ""}). Ignored content is disposable only when removing a proven-merged linked worktree; ` +
+			"the primary content was preserved. Relocate it and rerun /cleanup.",
 		);
 	}
 }
@@ -166,6 +171,51 @@ async function isAncestor(cwd: string, maybeAncestor: string | undefined, descen
 		timeout: LOCAL_COMMAND_TIMEOUT_MS,
 	});
 	return result.code === 0;
+}
+
+interface GitLabMergeRequest {
+	state?: string;
+	target_branch?: string;
+	sha?: string;
+	merge_commit_sha?: string;
+	squash_commit_sha?: string;
+	diff_refs?: { head_sha?: string };
+}
+
+async function isMergedGitLabMr(
+	cwd: string,
+	branch: string | undefined,
+	branchHead: string | undefined,
+	targetBranch: string,
+	targetHead: string,
+	runtime: CleanupRuntimeOptions,
+): Promise<boolean> {
+	if (!runtime.execGlab || !branch || !branchHead) return false;
+	const response = await runtime.execGlab(
+		["api", `projects/:fullpath/merge_requests?scope=all&source_branch=${encodeURIComponent(branch)}&per_page=100`],
+		{ cwd, signal: runtime.signal, timeout: NETWORK_COMMAND_TIMEOUT_MS },
+	);
+	if (response.code !== 0) {
+		runtime.onProgress?.(`GitLab merge lookup failed for ${branch}; preserving it unless local Git proves it merged.`);
+		return false;
+	}
+	try {
+		const mergeRequests = JSON.parse(response.stdout) as GitLabMergeRequest[];
+		// Refuse an incomplete first page rather than risk missing an open or
+		// closed-unmerged MR for a heavily reused source branch.
+		if (!Array.isArray(mergeRequests) || mergeRequests.length >= 100) return false;
+		const exactHead = mergeRequests.filter((mr) => mr.sha === branchHead || mr.diff_refs?.head_sha === branchHead);
+		if (exactHead.some((mr) => mr.state !== "merged")) return false;
+		for (const mr of exactHead) {
+			if (mr.state !== "merged" || mr.target_branch !== targetBranch) continue;
+			for (const mergeHead of [mr.squash_commit_sha, mr.merge_commit_sha]) {
+				if (mergeHead && await isAncestor(cwd, mergeHead, targetHead, runtime)) return true;
+			}
+		}
+		return false;
+	} catch {
+		return false;
+	}
 }
 
 async function hasNoUniquePatch(cwd: string, branchHead: string | undefined, target: string, runtime: CleanupRuntimeOptions): Promise<boolean> {
@@ -274,7 +324,10 @@ export async function cleanupGitWorktrees(
 	if (!mainWorktree) {
 		const merged = await isAncestor(primaryPath, primaryWorktree.head, target, runtime);
 		const equivalent = !merged && await hasNoUniquePatch(primaryPath, primaryWorktree.head, target, runtime);
-		if (!merged && !equivalent) {
+		const gitLabMerged = !merged && !equivalent && await isMergedGitLabMr(
+			primaryPath, displacedBranch, primaryWorktree.head, options.mainBranch, target, runtime,
+		);
+		if (!merged && !equivalent && !gitLabMerged) {
 			throw new Error(`Primary planning branch ${displacedBranch} is not merged or patch-equivalent to current origin/${options.mainBranch}; it was preserved.`);
 		}
 		await assertNoUntrackedOverwrite(primaryPath, primaryWorktree.head, localMainHead, runtime);
@@ -284,7 +337,7 @@ export async function cleanupGitWorktrees(
 		mainWorktree = { ...primaryWorktree, branch: mainRef };
 		runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
 		await runGit(primaryPath, ["merge", "--ff-only", target], NETWORK_COMMAND_TIMEOUT_MS);
-		await runGit(primaryPath, ["branch", equivalent ? "-D" : "-d", displacedBranch!]);
+		await runGit(primaryPath, ["branch", equivalent || gitLabMerged ? "-D" : "-d", displacedBranch!]);
 	} else {
 		runtime.onProgress?.(`Fast-forwarding ${options.mainBranch}…`);
 		await assertNoUntrackedOverwrite(mainWorktree.path, localMainHead, target, runtime);
@@ -301,30 +354,56 @@ export async function cleanupGitWorktrees(
 		}
 		const dirty = dirtyByPath.get(worktree.path)!;
 		if (dirty.hasTrackedChanges) {
-			result.skipped.push({ path: worktree.path, branch, reason: "tracked changes" });
+			result.skipped.push({ path: worktree.path, branch, reason: "tracked changes; removal would lose uncommitted work" });
 			continue;
 		}
-		if (hasUnexpectedUntracked(dirty.untrackedOrIgnored)) {
-			result.skipped.push({ path: worktree.path, branch, reason: "untracked or ignored content" });
-			continue;
-		}
+		const unrecognizedUntracked = dirty.untracked.filter((entry) => !isPiRuntimePath(entry));
+		const untrackedSummary = unrecognizedUntracked.length > 0
+			? `${unrecognizedUntracked.slice(0, 3).join(", ")}${unrecognizedUntracked.length > 3 ? ", …" : ""}`
+			: undefined;
 		const ancestorMerged = await isAncestor(mainWorktree!.path, worktree.head, target, runtime);
 		const patchEquivalent = !ancestorMerged && await hasNoUniquePatch(mainWorktree!.path, worktree.head, target, runtime);
-		if (!ancestorMerged && !patchEquivalent) {
-			result.skipped.push({ path: worktree.path, branch, reason: `not merged or patch-equivalent to ${target}` });
+		const gitLabMerged = !ancestorMerged && !patchEquivalent && await isMergedGitLabMr(
+			mainWorktree!.path, branch, worktree.head, options.mainBranch, target, runtime,
+		);
+		if (!ancestorMerged && !patchEquivalent && !gitLabMerged) {
+			const contentState = untrackedSummary
+				? `; it also has untracked files (${untrackedSummary}) that would be lost`
+				: "; the worktree has no tracked or non-ignored untracked changes, but removal may lose commits";
+			result.skipped.push({
+				path: worktree.path,
+				branch,
+				reason: `branch is not merged or patch-equivalent to ${options.mainBranch} (${target})${contentState}`,
+			});
+			continue;
+		}
+		if (untrackedSummary) {
+			result.skipped.push({ path: worktree.path, branch, reason: `untracked files (${untrackedSummary}); removal would lose uncommitted local content` });
 			continue;
 		}
 		runtime.onProgress?.(`Removing ${worktree.path}…`);
-		await runGit(worktree.path, ["clean", "-d", "-f", "-x", "--", ".pi-subagents/"]);
+		if (dirty.ignored.length > 0) await runGit(worktree.path, ["clean", "-d", "-f", "-X", "--"]);
+		if (dirty.untracked.some(isPiRuntimePath)) await runGit(worktree.path, ["clean", "-d", "-f", "-x", "--", ".pi-subagents"]);
 		await runGit(mainWorktree!.path, ["worktree", "remove", worktree.path]);
-		if (branch) await runGit(mainWorktree!.path, ["branch", patchEquivalent ? "-D" : "-d", branch]);
+		if (branch) await runGit(mainWorktree!.path, ["branch", patchEquivalent || gitLabMerged ? "-D" : "-d", branch]);
 		result.removed.push({ path: worktree.path, branch });
 	}
 	await runGit(mainWorktree!.path, ["worktree", "prune"]);
 	return result;
 }
 
-function formatCleanupResult(result: CleanupResult, dryRun: boolean): string {
+function resultLabel(index: number): string {
+	let value = index + 1;
+	let label = "";
+	while (value > 0) {
+		value -= 1;
+		label = String.fromCharCode(65 + (value % 26)) + label;
+		value = Math.floor(value / 26);
+	}
+	return label;
+}
+
+export function formatCleanupResult(result: CleanupResult, dryRun: boolean): string {
 	const lines = [
 		`# Git cleanup ${dryRun ? "plan" : "complete"}`,
 		"",
@@ -339,7 +418,9 @@ function formatCleanupResult(result: CleanupResult, dryRun: boolean): string {
 	} else lines.push("none");
 	lines.push("", "## Skipped worktrees");
 	if (result.skipped.length) {
-		for (const item of result.skipped) lines.push(`- ${item.path}${item.branch ? ` (${item.branch})` : ""}: ${item.reason}`);
+		for (const [index, item] of result.skipped.entries()) {
+			lines.push(`- [${resultLabel(index)}] ${item.path}${item.branch ? ` (${item.branch})` : ""}: ${item.reason}`);
+		}
 	} else lines.push("none");
 	lines.push("", "## Commands", ...result.commands.map((command) => `- \`${command}\``));
 	return lines.join("\n");
@@ -347,8 +428,23 @@ function formatCleanupResult(result: CleanupResult, dryRun: boolean): string {
 
 export function cleanupAgentPrompt(options: CleanupOptions): string {
 	return [
-		"Run the git_cleanup tool exactly once with these arguments, then briefly report its result.",
+		"Run the git_cleanup tool exactly once with these arguments:",
 		JSON.stringify(options),
+		"Then investigate every labeled skipped worktree using read-only commands and present a concise recommendation.",
+		"Preserve the tool's [A], [B], ... labels exactly. Infer the forge from the remote URL. For each skip, check as applicable:",
+		"- tracked and non-ignored untracked cleanliness;",
+		"- branch/upstream names, local HEAD, remote branch existence, and whether the exact HEAD and any local-only history are recoverable from a remote ref;",
+		"- GitHub PR or GitLab MR state, target branch, and clickable web URL using gh, glab, or a read-only forge API;",
+		"- each non-ignored untracked artifact's path, file type, size, and modification time;",
+		"- whether each artifact's same path and content blob exists in a commit, remote-tracking ref, or another explicit backup (use read-only metadata, git log/hash-object/rev-list checks as appropriate).",
+		"Do not read or print ignored secret contents. Do not print non-ignored artifact contents; metadata and hashes are sufficient. Do not fetch or mutate, clean, remove, switch, commit, push, or otherwise change any worktree or ref during this investigation.",
+		"For each label use this compact shape:",
+		"- [A] `<path>` (`<branch>`): **safe to remove** | **don't remove yet** | **uncertain** — <plain-English evidence-based reason>",
+		"  Evidence: HEAD/remote recoverability; PR/MR state, target, and clickable URL when one exists; local-only artifact backup summary.",
+		"  Technical: <the raw cleanup reason>",
+		"Always include a discovered PR/MR URL, including for don't-remove or uncertain recommendations.",
+		"Only say safe to remove when every local commit and meaningful untracked artifact is demonstrably recoverable from a remote ref or other explicit backup. A closed PR/MR alone is not sufficient evidence.",
+		"Do not remove any skipped worktree in this run. Wait for an explicit user follow-up naming a label.",
 	].join("\n");
 }
 
@@ -371,6 +467,7 @@ export default function gitCleanupExtension(pi: ExtensionAPI) {
 						onUpdate?.({ content: [{ type: "text", text: message }] });
 					},
 					exec: (gitArgs, execOptions) => pi.exec("env", ["GIT_TERMINAL_PROMPT=0", "git", ...gitArgs], execOptions),
+					execGlab: (glabArgs, execOptions) => pi.exec("env", ["GIT_TERMINAL_PROMPT=0", "glab", ...glabArgs], execOptions),
 				});
 				return {
 					content: [{ type: "text", text: formatCleanupResult(result, options.dryRun) }],

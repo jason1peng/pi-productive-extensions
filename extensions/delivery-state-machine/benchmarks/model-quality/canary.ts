@@ -145,7 +145,14 @@ async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: num
 			const source = path.resolve(ROOT, "../../agents/fresh-verifier.md"); const target = path.join(run.env.PI_CODING_AGENT_DIR, "agents", "fresh-verifier.md");
 			fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(source, target);
 		}
-		return await executePiRuntime(candidateScenario, candidate, run);
+		// The Stage 7 runtime explicitly loads the extension. A source-only shim prevents
+		// current Pi package auto-discovery from loading the same root index a second time.
+		const installed = process.env.PI_SUBAGENTS_ROOT ?? path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-subagents");
+		const shim = fs.mkdtempSync(path.join(os.tmpdir(), "ppe-001-subagents-shim-"));
+		fs.symlinkSync(path.join(installed, "src"), path.join(shim, "src"), "dir");
+		const prior = process.env.PI_SUBAGENTS_ROOT; process.env.PI_SUBAGENTS_ROOT = shim;
+		try { return await executePiRuntime(candidateScenario, candidate, run); }
+		finally { if (prior === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = prior; fs.rmSync(shim, { recursive: true, force: true }); }
 	} }, config.limits.infrastructureRetries + 1);
 	assertRuntimeIdentity(result, phase, config);
 	return result;

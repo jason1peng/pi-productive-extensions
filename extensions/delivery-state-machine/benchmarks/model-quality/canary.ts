@@ -127,8 +127,8 @@ async function judgePhase(config: RealCanaryConfig, row: ManifestRow, candidateA
 		for (const text of candidates.reverse()) { try { record = parseJudgeResponse(text.trim()); break; } catch {} }
 		if (!record) throw new Error("judge returned no strict JSON record");
 		if (Date.now() > deadline) throw new Error("judge exceeded the frozen row deadline");
-		const modelEvents = entries.filter((entry) => entry?.type === "model_change" || entry?.type === "model");
-		const observed = modelEvents.map((entry) => `${entry?.provider ?? entry?.model?.provider ?? ""}/${entry?.modelId ?? entry?.model?.id ?? entry?.model ?? ""}`).find((entry) => entry.includes(config.judge.model));
+		const modelEvents = entries.filter((entry) => entry?.type === "model_change" || entry?.type === "model" || entry?.message?.role === "assistant");
+		const observed = modelEvents.map((entry) => `${entry?.provider ?? entry?.model?.provider ?? entry?.message?.provider ?? ""}/${entry?.modelId ?? entry?.model?.id ?? entry?.message?.model ?? entry?.model ?? ""}`).find((entry) => entry === `${config.judge.provider}/${config.judge.model}`);
 		if (!observed) throw new Error("effective judge identity is unobservable");
 		const effective = { provider: config.judge.provider, model: config.judge.model, version: config.judge.version, family: config.judge.family, rubricVersion: row.judge!.rubricVersion };
 		if (hashObject({ effective, packHash: pack.packHash, rubric: row.judge!.rubricVersion }) !== hashObject({ effective: row.judge, packHash: pack.packHash, rubric: row.judge!.rubricVersion })) throw new Error("effective judge/rubric identity mismatch");
@@ -322,7 +322,10 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 	if (process.env.MODEL_QUALITY_EVIDENCE_ROOT && process.env.MODEL_QUALITY_EVIDENCE_ROOT !== config.evidence.root) throw new Error("evidence root differs from the approved immutable config");
 	fs.mkdirSync(config.evidence.root, { recursive: true, mode: 0o700 }); fs.chmodSync(config.evidence.root, 0o700);
 	const store = new EvidenceStore(config.evidence.root); const started = Date.now(); const deadline = started + config.limits.totalTimeoutMs; const slots: NormalizedSlotResult[] = [];
-	const previousRejectedSpend = fs.existsSync(REPORT_FILE) ? readJson<InfrastructureReport>(REPORT_FILE).metrics.totalCostUsd : 0;
+	const spendLedgerFile = path.join(config.evidence.root, "spend-ledger.json");
+	const ledgerSpend = fs.existsSync(spendLedgerFile) ? Number(readJson<{ rejectedSpendUsd: number }>(spendLedgerFile).rejectedSpendUsd) : 0;
+	const previousRejectedSpend = (fs.existsSync(REPORT_FILE) ? readJson<InfrastructureReport>(REPORT_FILE).metrics.totalCostUsd : 0) + ledgerSpend;
+	if (!Number.isFinite(previousRejectedSpend) || previousRejectedSpend >= config.limits.totalCostUsd) throw new Error("approved cumulative canary budget is exhausted before launch");
 	let totalCost = previousRejectedSpend; const rows = mode === "e2e" ? manifest.rows.filter((row) => row.phase === "E2E") : manifest.rows;
 	for (const row of rows) {
 		if (Date.now() >= deadline) throw new Error("approved total canary timeout exhausted");

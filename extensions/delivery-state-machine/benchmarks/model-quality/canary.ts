@@ -128,9 +128,9 @@ async function judgePhase(config: RealCanaryConfig, row: ManifestRow, candidateA
 	} finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
 
-function controlledScenario(phase: string, config: RealCanaryConfig, timeoutMs: number): ScenarioRecord {
+function controlledScenario(phase: string, config: RealCanaryConfig, timeoutMs: number, legacyCandidate: string): ScenarioRecord {
 	const source = scenarioById(SCENARIO[phase]);
-	return { ...structuredClone(source), candidates: [ROUTE_AGENT[phase]] as any, launch: { ...source.launch, model: `${config.participant.provider}/${config.participant.model}`, thinking: config.participant.thinking, context: config.participant.context, timeoutMs, repetitions: 1 }, environment: { inherit: false, allow: ["NODE_PATH"] } } as ScenarioRecord;
+	return { ...structuredClone(source), candidates: [legacyCandidate] as any, launch: { ...source.launch, model: `${config.participant.provider}/${config.participant.model}`, thinking: config.participant.thinking, context: config.participant.context, timeoutMs, repetitions: 1 }, environment: { inherit: false, allow: ["NODE_PATH"] } } as ScenarioRecord;
 }
 function assertRuntimeIdentity(result: NormalizedResult, phase: string, config: RealCanaryConfig): void {
 	if (!result.child) throw new Error(`${phase} effective child identity is unavailable`);
@@ -139,9 +139,14 @@ function assertRuntimeIdentity(result: NormalizedResult, phase: string, config: 
 	if (result.outer.provider !== config.outer.provider || result.outer.model !== `${config.outer.provider}/${config.outer.model}`) throw new Error(`${phase} effective outer identity mismatch`);
 }
 async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: number): Promise<NormalizedResult> {
-	const scenario = controlledScenario(phase, config, timeoutMs);
-	const result = await runPromptfooTrial({ scenario, candidate: ROUTE_AGENT[phase], repetition: 0, comparisonMode: "canary", retain: true, executor: async (candidateScenario, candidate, run) => {
-		if (candidate === "fresh-verifier") {
+	const actualAgent = ROUTE_AGENT[phase];
+	// The frozen Stage 7 result schema predates the package-owned fresh-verifier route.
+	// Keep its legacy VERIFY candidate label while the authoritative runtime evidence
+	// and retained metadata must prove the actual fresh-verifier launch.
+	const legacyCandidate = phase === "VERIFY" ? "reviewer" : actualAgent;
+	const scenario = controlledScenario(phase, config, timeoutMs, legacyCandidate);
+	const result = await runPromptfooTrial({ scenario, candidate: legacyCandidate, repetition: 0, comparisonMode: "canary", retain: true, executor: async (candidateScenario, _candidate, run) => {
+		if (actualAgent === "fresh-verifier") {
 			const source = path.resolve(ROOT, "../../agents/fresh-verifier.md"); const target = path.join(run.env.PI_CODING_AGENT_DIR, "agents", "fresh-verifier.md");
 			fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(source, target);
 		}
@@ -152,7 +157,7 @@ async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: num
 		fs.symlinkSync(path.join(installed, "src"), path.join(shim, "src"), "dir");
 		fs.writeFileSync(path.join(shim, "package.json"), `${JSON.stringify({ name: "ppe-001-explicit-subagents-shim", private: true, type: "module", pi: { extensions: [] } }, null, 2)}\n`);
 		const prior = process.env.PI_SUBAGENTS_ROOT; process.env.PI_SUBAGENTS_ROOT = shim;
-		try { return await executePiRuntime(candidateScenario, candidate, run); }
+		try { return await executePiRuntime(candidateScenario, actualAgent, run); }
 		finally { if (prior === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = prior; fs.rmSync(shim, { recursive: true, force: true }); }
 	} }, config.limits.infrastructureRetries + 1);
 	assertRuntimeIdentity(result, phase, config);

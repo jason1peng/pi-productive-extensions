@@ -70,7 +70,8 @@ function artifact(result: NormalizedResult): string {
 	return fs.readFileSync(result.artifactPath, "utf8");
 }
 function disposeRaw(result: NormalizedResult): void {
-	if (result.rawEvidencePath && fs.existsSync(result.rawEvidencePath)) fs.rmSync(result.rawEvidencePath, { recursive: true, force: true });
+	const paths = new Set([result.rawEvidencePath, ...(result.harness?.attempts.map((attempt) => attempt.rawEvidencePath) ?? [])]);
+	for (const target of paths) if (target && fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
 }
 
 async function spawnCapture(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ code: number | null; timedOut: boolean; stdout: string; stderr: string }> {
@@ -148,7 +149,12 @@ async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: num
 	const result = await runPromptfooTrial({ scenario, candidate: legacyCandidate, repetition: 0, comparisonMode: "canary", retain: true, executor: async (candidateScenario, _candidate, run) => {
 		if (actualAgent === "fresh-verifier") {
 			const source = path.resolve(ROOT, "../../agents/fresh-verifier.md"); const target = path.join(run.env.PI_CODING_AGENT_DIR, "agents", "fresh-verifier.md");
-			fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(source, target);
+			let contents = fs.readFileSync(source, "utf8")
+				.replace(/^tools:\s*.+$/m, `tools: ${candidateScenario.launch.tools.join(", ")}`)
+				.replace(/^model:\s*.+$/m, `model: ${candidateScenario.launch.model}`)
+				.replace(/^thinking:\s*.+$/m, `thinking: ${candidateScenario.launch.thinking}`)
+				.replace(/^inheritSkills:\s*.+$/m, "inheritSkills: false");
+			fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, contents);
 		}
 		// The Stage 7 runtime explicitly loads the extension. A source-only shim prevents
 		// current Pi package auto-discovery from loading the same root index a second time.

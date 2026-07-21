@@ -1,0 +1,463 @@
+{
+  "schemaVersion": 1,
+  "classification": "INFRASTRUCTURE_ONLY — NOT QUALIFICATION EVIDENCE",
+  "datasetClass": "bootstrap",
+  "qualificationEligible": false,
+  "manifestHash": "29a0237da526eef7c25ad1a460d3517d0dc38d76c804cc00ba5363ed9e719090",
+  "generatedAt": "2026-07-21T04:00:00.000Z",
+  "metrics": {
+    "slots": 6,
+    "passed": 6,
+    "candidateFailures": 0,
+    "infrastructureExhausted": 0,
+    "tainted": 0,
+    "inputTokens": 100,
+    "outputTokens": 50,
+    "cachedTokens": 0,
+    "childCostUsd": 0,
+    "outerCostUsd": 0,
+    "totalCostUsd": 0,
+    "wallTimeMs": 1000,
+    "repairAmplification": 1,
+    "costAmplification": null,
+    "latencyAmplification": 1,
+    "reliability": 1,
+    "handoffCount": 4
+  },
+  "slots": [
+    {
+      "slotId": "BOOT-SLOT-01",
+      "itemId": "BOOT-IMPLEMENT",
+      "itemVersion": 1,
+      "phase": "IMPLEMENT",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "fc43166d4e52a20e90f0ef16951423e3622e1f67bf31939752dcaec4b40f0863",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "fc43166d4e52a20e90f0ef16951423e3622e1f67bf31939752dcaec4b40f0863",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "VERIFY": "fake/verify-route-v1",
+        "REVIEW": "fake/review-route-v1",
+        "CLOSE": "fake/close-route-v1",
+        "RETRO": "fake/retro-route-v1"
+      },
+      "judgeIdentity": {
+        "provider": "judge-fake",
+        "model": "supplemental-judge",
+        "version": "v1",
+        "family": "synthetic-judge",
+        "rubricVersion": "implement-supplemental-v1"
+      },
+      "isolation": {
+        "repository": "disposable://repository/BOOT-SLOT-01",
+        "piHome": "disposable://pi-home/BOOT-SLOT-01",
+        "artifactRoot": "disposable://artifact/BOOT-SLOT-01",
+        "resultNamespace": "bootstrap:BOOT-SLOT-01",
+        "processGroup": "isolated:BOOT-SLOT-01",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 10,
+      "outputTokens": 5,
+      "cachedTokens": 0,
+      "childCostUsd": 0,
+      "outerCostUsd": 0,
+      "wallTimeMs": 100,
+      "firstPlannedPassCostUsd": 0,
+      "defaultFirstPlannedPassWallTimeMs": 100,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
+      ]
+    },
+    {
+      "slotId": "BOOT-SLOT-02",
+      "itemId": "BOOT-VERIFY",
+      "itemVersion": 1,
+      "phase": "VERIFY",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "a9ad23ac2ece323ab6c38d6a6d1c145d87dee2120bd6679acf00b912cbe8aa42",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "a9ad23ac2ece323ab6c38d6a6d1c145d87dee2120bd6679acf00b912cbe8aa42",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "fake/implement-route-v1",
+        "REVIEW": "fake/review-route-v1",
+        "CLOSE": "fake/close-route-v1",
+        "RETRO": "fake/retro-route-v1"
+      },
+      "judgeIdentity": {
+        "provider": "judge-fake",
+        "model": "supplemental-judge",
+        "version": "v1",
+        "family": "synthetic-judge",
+        "rubricVersion": "verify-supplemental-v1"
+      },
+      "isolation": {
+        "repository": "disposable://repository/BOOT-SLOT-02",
+        "piHome": "disposable://pi-home/BOOT-SLOT-02",
+        "artifactRoot": "disposable://artifact/BOOT-SLOT-02",
+        "resultNamespace": "bootstrap:BOOT-SLOT-02",
+        "processGroup": "isolated:BOOT-SLOT-02",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 10,
+      "outputTokens": 5,
+      "cachedTokens": 0,
+      "childCostUsd": 0,
+      "outerCostUsd": 0,
+      "wallTimeMs": 100,
+      "firstPlannedPassCostUsd": 0,
+      "defaultFirstPlannedPassWallTimeMs": 100,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
+      ]
+    },
+    {
+      "slotId": "BOOT-SLOT-03",
+      "itemId": "BOOT-REVIEW",
+      "itemVersion": 1,
+      "phase": "REVIEW",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "af34f850222f340cbcb614eb1de18ccafc7f0d7fb83d24c9aec2121bf78e158f",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "af34f850222f340cbcb614eb1de18ccafc7f0d7fb83d24c9aec2121bf78e158f",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "fake/implement-route-v1",
+        "VERIFY": "fake/verify-route-v1",
+        "CLOSE": "fake/close-route-v1",
+        "RETRO": "fake/retro-route-v1"
+      },
+      "judgeIdentity": {
+        "provider": "judge-fake",
+        "model": "supplemental-judge",
+        "version": "v1",
+        "family": "synthetic-judge",
+        "rubricVersion": "review-supplemental-v1"
+      },
+      "isolation": {
+        "repository": "disposable://repository/BOOT-SLOT-03",
+        "piHome": "disposable://pi-home/BOOT-SLOT-03",
+        "artifactRoot": "disposable://artifact/BOOT-SLOT-03",
+        "resultNamespace": "bootstrap:BOOT-SLOT-03",
+        "processGroup": "isolated:BOOT-SLOT-03",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 10,
+      "outputTokens": 5,
+      "cachedTokens": 0,
+      "childCostUsd": 0,
+      "outerCostUsd": 0,
+      "wallTimeMs": 100,
+      "firstPlannedPassCostUsd": 0,
+      "defaultFirstPlannedPassWallTimeMs": 100,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
+      ]
+    },
+    {
+      "slotId": "BOOT-SLOT-04",
+      "itemId": "BOOT-CLOSE",
+      "itemVersion": 1,
+      "phase": "CLOSE",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "1313510d0706ef8c40fe2d9556a2769be2067fc373303a1d75296584eb376cf5",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "1313510d0706ef8c40fe2d9556a2769be2067fc373303a1d75296584eb376cf5",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "fake/implement-route-v1",
+        "VERIFY": "fake/verify-route-v1",
+        "REVIEW": "fake/review-route-v1",
+        "RETRO": "fake/retro-route-v1"
+      },
+      "isolation": {
+        "repository": "disposable://repository/BOOT-SLOT-04",
+        "piHome": "disposable://pi-home/BOOT-SLOT-04",
+        "artifactRoot": "disposable://artifact/BOOT-SLOT-04",
+        "resultNamespace": "bootstrap:BOOT-SLOT-04",
+        "processGroup": "isolated:BOOT-SLOT-04",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "local-stub"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "NOT_ELIGIBLE_CANDIDATE",
+      "deterministicPassed": true,
+      "qualitativeEligible": false,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 10,
+      "outputTokens": 5,
+      "cachedTokens": 0,
+      "childCostUsd": 0,
+      "outerCostUsd": 0,
+      "wallTimeMs": 100,
+      "firstPlannedPassCostUsd": 0,
+      "defaultFirstPlannedPassWallTimeMs": 100,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
+      ]
+    },
+    {
+      "slotId": "BOOT-SLOT-05",
+      "itemId": "BOOT-RETRO",
+      "itemVersion": 1,
+      "phase": "RETRO",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "f69703dfa95bfe50dc71f7eb8510c8afeb007a9880387bf49b6f8a2ee42111b7",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "f69703dfa95bfe50dc71f7eb8510c8afeb007a9880387bf49b6f8a2ee42111b7",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "fake/implement-route-v1",
+        "VERIFY": "fake/verify-route-v1",
+        "REVIEW": "fake/review-route-v1",
+        "CLOSE": "fake/close-route-v1"
+      },
+      "judgeIdentity": {
+        "provider": "judge-fake",
+        "model": "supplemental-judge",
+        "version": "v1",
+        "family": "synthetic-judge",
+        "rubricVersion": "retro-supplemental-v1"
+      },
+      "isolation": {
+        "repository": "disposable://repository/BOOT-SLOT-05",
+        "piHome": "disposable://pi-home/BOOT-SLOT-05",
+        "artifactRoot": "disposable://artifact/BOOT-SLOT-05",
+        "resultNamespace": "bootstrap:BOOT-SLOT-05",
+        "processGroup": "isolated:BOOT-SLOT-05",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 10,
+      "outputTokens": 5,
+      "cachedTokens": 0,
+      "childCostUsd": 0,
+      "outerCostUsd": 0,
+      "wallTimeMs": 100,
+      "firstPlannedPassCostUsd": 0,
+      "defaultFirstPlannedPassWallTimeMs": 100,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
+      ]
+    },
+    {
+      "slotId": "BOOT-SLOT-06",
+      "itemId": "BOOT-E2E",
+      "itemVersion": 1,
+      "phase": "E2E",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "0c2580a62dc46f3f6110161a30f88e0f40de876bc1faf806c8cc9666ae28ccfe",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "fake",
+        "model": "bootstrap-participant",
+        "version": "v1",
+        "family": "synthetic-participant",
+        "agent": "bootstrap.fake",
+        "promptVersion": "stage7-or-bootstrap-v1",
+        "toolsHash": "0c2580a62dc46f3f6110161a30f88e0f40de876bc1faf806c8cc9666ae28ccfe",
+        "thinking": "off",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "fake/implement-route-v1",
+        "VERIFY": "fake/verify-route-v1",
+        "REVIEW": "fake/review-route-v1",
+        "CLOSE": "fake/close-route-v1",
+        "RETRO": "fake/retro-route-v1"
+      },
+      "isolation": {
+        "repository": "disposable://repository/BOOT-SLOT-06",
+        "piHome": "disposable://pi-home/BOOT-SLOT-06",
+        "artifactRoot": "disposable://artifact/BOOT-SLOT-06",
+        "resultNamespace": "bootstrap:BOOT-SLOT-06",
+        "processGroup": "isolated:BOOT-SLOT-06",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "NOT_ELIGIBLE_CANDIDATE",
+      "deterministicPassed": true,
+      "qualitativeEligible": false,
+      "attempts": 5,
+      "infrastructureAttempts": 0,
+      "inputTokens": 50,
+      "outputTokens": 25,
+      "cachedTokens": 0,
+      "childCostUsd": 0,
+      "outerCostUsd": 0,
+      "wallTimeMs": 500,
+      "firstPlannedPassCostUsd": 0,
+      "defaultFirstPlannedPassWallTimeMs": 500,
+      "minimumPlannedAttempts": 5,
+      "handoffs": [
+        "IMPLEMENT->VERIFY",
+        "VERIFY->REVIEW",
+        "REVIEW->CLOSE",
+        "CLOSE->RETRO"
+      ],
+      "evidenceRefs": [
+        "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
+      ]
+    }
+  ],
+  "evidenceRefs": [
+    "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
+  ],
+  "reportHash": "8054bf80cb976f0e15713a550687df0f4abe623a1102465da22fd28ae6c87312"
+}

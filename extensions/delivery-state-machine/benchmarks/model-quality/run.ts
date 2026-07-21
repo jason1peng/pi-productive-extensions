@@ -1,0 +1,110 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { EvidenceStore } from "./evidence.ts";
+import { buildJudgePack } from "./judge.ts";
+import { loadBootstrapAssets, loadManifest, loadRegistry, resolveRows } from "./manifest.ts";
+import { buildInfrastructureReport, type InfrastructureReport } from "./report.ts";
+import { scorePhaseEvidence } from "./scorers/index.ts";
+import { hashObject, validateHumanReview, validateSlotResult, type ManifestRow, type NormalizedSlotResult, type PhaseEvidence } from "./schema.ts";
+import { validateStage7Sentinels } from "./stage7.ts";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const EXPECTED_REPORT = path.join(ROOT, "reports", "bootstrap-expected.json");
+
+function fakeEvidence(row: ManifestRow): PhaseEvidence | undefined {
+	if (row.phase === "E2E") return undefined;
+	return {
+		phase: row.phase,
+		runtimeIdentityMatch: true,
+		artifactValid: true,
+		cleanupPassed: true,
+		behaviorPassed: true,
+		mutationPassed: true,
+		gitPassed: true,
+		knownOutcomeCorrect: ["VERIFY", "REVIEW"].includes(row.phase) ? true : undefined,
+		readOnlyPassed: ["VERIFY", "REVIEW", "RETRO"].includes(row.phase) ? true : undefined,
+		blockerSupported: row.phase === "REVIEW" ? true : undefined,
+		falsePositive: row.phase === "REVIEW" ? false : undefined,
+		evidenceBacked: row.phase === "RETRO" ? true : undefined,
+		fabricationFree: row.phase === "RETRO" ? true : undefined,
+		judgeRequested: false,
+	};
+}
+
+function fakeSlot(row: ManifestRow, evidenceRef: string): NormalizedSlotResult {
+	const evidence = fakeEvidence(row);
+	const deterministicPassed = evidence ? scorePhaseEvidence(evidence).passed : true;
+	if (row.judge) buildJudgePack({ phase: row.phase, acceptedContract: `Bootstrap contract for ${row.phase}`, eligibleOutputA: "eligible output alpha", eligibleOutputB: "eligible output beta", eligibilitySummary: "all deterministic gates passed", rubric: `Supplemental ${row.phase} rubric`, swap: row.slotId.endsWith("2"), nonce: hashObject(row.slotId).slice(0, 32) });
+	const handoffs = row.phase === "E2E" ? ["IMPLEMENT->VERIFY", "VERIFY->REVIEW", "REVIEW->CLOSE", "CLOSE->RETRO"] : [];
+	return validateSlotResult({
+		slotId: row.slotId, itemId: row.itemId, itemVersion: row.itemVersion, phase: row.phase, datasetClass: "bootstrap", qualificationEligible: false,
+		requested: structuredClone(row.candidate), effective: structuredClone(row.candidate), nonTargetRoutes: structuredClone(row.nonTargetRoutes), ...(row.judge ? { judgeIdentity: structuredClone(row.judge) } : {}),
+		isolation: { repository: `disposable://repository/${row.slotId}`, piHome: `disposable://pi-home/${row.slotId}`, artifactRoot: `disposable://artifact/${row.slotId}`, resultNamespace: `bootstrap:${row.slotId}`, processGroup: `isolated:${row.slotId}`, credentialBoundary: "allowlisted-ephemeral", remotePolicy: row.phase === "CLOSE" ? "local-stub" : "none" },
+		cleanupPassed: true, redactionPassed: true,
+		status: deterministicPassed ? "PASS" : "CANDIDATE_FAILURE", slotState: row.judge ? "JUDGED" : "NOT_ELIGIBLE_CANDIDATE", deterministicPassed,
+		qualitativeEligible: Boolean(row.judge && deterministicPassed), attempts: row.minimumPlannedAttempts, infrastructureAttempts: 0,
+		inputTokens: row.phase === "E2E" ? 50 : 10, outputTokens: row.phase === "E2E" ? 25 : 5, cachedTokens: 0,
+		childCostUsd: 0, outerCostUsd: 0, wallTimeMs: row.phase === "E2E" ? 500 : 100, firstPlannedPassCostUsd: 0,
+		defaultFirstPlannedPassWallTimeMs: row.phase === "E2E" ? 500 : 100, minimumPlannedAttempts: row.minimumPlannedAttempts,
+		handoffs, evidenceRefs: [evidenceRef],
+	}, row);
+}
+
+export function validateInfrastructure(): { items: number; rows: number; sentinels: number } {
+	const registry = loadRegistry();
+	const assets = loadBootstrapAssets(registry);
+	const manifest = loadManifest();
+	const resolved = resolveRows(manifest, registry);
+	const scopes = new Set(resolved.map(({ row }) => row.phase));
+	for (const phase of ["IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO", "E2E"]) if (!scopes.has(phase as any)) throw new Error(`bootstrap adapter is missing: ${phase}`);
+	const stage7 = validateStage7Sentinels();
+	for (const asset of assets.assets) for (const scenario of asset.stage7Scenarios) if (stage7.files[scenario.path] !== scenario.sha256) throw new Error(`bootstrap asset is not pinned to the Stage 7 sentinel: ${scenario.path}`);
+	return { items: registry.items.length, rows: manifest.rows.length, sentinels: Object.keys(stage7.files).length };
+}
+
+export function fakeFull(generatedAt = "2026-07-21T04:00:00.000Z"): InfrastructureReport {
+	validateInfrastructure();
+	const manifest = loadManifest();
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppe-001-fake-evidence-"));
+	try {
+		const store = new EvidenceStore(root);
+		const record = store.put({ value: { kind: "bootstrap-fake", manifestHash: manifest.manifestHash, rawTranscript: "must not be retained", token: "synthetic-secret-12345678" }, schemaVersionRef: "model-quality-v1", assetVersions: ["bootstrap-registry-v1"], participantProvenance: ["fake/bootstrap-participant@v1"], retentionUntil: "2099-01-01T00:00:00.000Z", explicitSecrets: ["synthetic-secret-12345678"] });
+		store.audit();
+		const report = buildInfrastructureReport({ manifestHash: manifest.manifestHash, slots: manifest.rows.map((row) => fakeSlot(row, record.retrievalRef)), generatedAt });
+		validateHumanReview({ recordId: "BOOT-HUMAN-ROUNDTRIP", itemId: "BOOT-VERIFY", itemVersion: 1, resultHash: report.reportHash, decision: "pending", reason: "bootstrap human-record plumbing only", timestamp: generatedAt });
+		return report;
+	} finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+export function auditCleanClone(): { reportHash: string; gitClean: boolean } {
+	const report = fakeFull();
+	const expected = JSON.parse(fs.readFileSync(EXPECTED_REPORT, "utf8")) as InfrastructureReport;
+	if (expected.reportHash !== report.reportHash || JSON.stringify(expected) !== JSON.stringify(report)) throw new Error("clean-clone bootstrap report does not reproduce");
+	const repository = path.resolve(ROOT, "../../../..");
+	const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=no"], { cwd: repository, encoding: "utf8" }).trim();
+	return { reportHash: report.reportHash, gitClean: status === "" };
+}
+
+function requireCanaryConfiguration(): never {
+	const required = ["MODEL_QUALITY_CANARY_PARTICIPANT_MODEL", "MODEL_QUALITY_CANARY_OUTER_MODEL", "MODEL_QUALITY_CANARY_JUDGE_MODEL", "MODEL_QUALITY_CANARY_MAX_COST_USD", "MODEL_QUALITY_EVIDENCE_ROOT"];
+	const missing = required.filter((name) => !process.env[name]);
+	if (process.env.MODEL_QUALITY_CANARY !== "1" || missing.length) throw new Error(`real model-quality canary is fail-closed: set MODEL_QUALITY_CANARY=1 and freeze ${missing.join(", ") || "all exact identities/settings"}`);
+	throw new Error("real model-quality canary is blocked until the frozen participant/judge identities, independent-family check, credential allowlist, and accepted cost ceiling are reviewed into a new immutable canary manifest; bootstrap fakes are not substituted");
+}
+
+if (import.meta.main) {
+	const command = process.argv[2] ?? "validate";
+	try {
+		if (command === "validate") console.log(JSON.stringify(validateInfrastructure(), null, 2));
+		else if (command === "fake-full") console.log(JSON.stringify(fakeFull(), null, 2));
+		else if (command === "audit") console.log(JSON.stringify(auditCleanClone(), null, 2));
+		else if (command === "bootstrap-canary" || command === "bootstrap-e2e") requireCanaryConfiguration();
+		else throw new Error(`unknown model-quality command: ${command}`);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
+	}
+}

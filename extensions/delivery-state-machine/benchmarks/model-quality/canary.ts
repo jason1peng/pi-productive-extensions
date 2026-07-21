@@ -254,8 +254,16 @@ function observedRoutes(row: ManifestRow, config: RealCanaryConfig): Record<stri
 	if (hashObject(routes) !== hashObject(row.nonTargetRoutes)) throw new Error(`observed non-target route binding mismatch: ${row.slotId}`);
 	return routes;
 }
+export function assertObservedExecutionBinding(result: NormalizedResult, config: Pick<RealCanaryConfig, "participant" | "outer" | "routes">): void {
+	if (!result.child || !(result as any).executionBinding) throw new Error("authoritative runtime/provision binding is unavailable");
+	const binding = (result as any).executionBinding;
+	if (result.child.provider !== config.participant.provider || result.child.model !== `${config.participant.provider}/${config.participant.model}` || result.child.thinking !== config.participant.thinking || result.child.context !== config.participant.context) throw new Error("participant runtime binding mismatch");
+	if (result.outer.provider !== config.outer.provider || result.outer.model !== `${config.outer.provider}/${config.outer.model}`) throw new Error("outer runtime binding mismatch");
+	if (binding.fixtureHash !== result.fixtureHash || binding.scorerHash !== hashObject(scenarioById(result.scenarioId).scorers) || hashObject(binding.nonTargetRoutes) !== hashObject(config.routes) || !/^[a-f0-9]{64}$/.test(binding.promptHash) || hashObject(result.child.tools).length !== 64) throw new Error("prompt/tools/fixture/scorer/route binding mismatch");
+}
 function observedCandidate(row: ManifestRow, results: NormalizedResult[], config: RealCanaryConfig): ManifestRow["candidate"] {
 	if (!results.length || results.some((result) => !result.child)) throw new Error("effective participant identity is unobservable");
+	for (const result of results) assertObservedExecutionBinding(result, config);
 	const expectedModel = `${config.participant.provider}/${config.participant.model}`;
 	for (const result of results) if (result.child!.provider !== config.participant.provider || result.child!.model !== expectedModel || result.child!.thinking !== config.participant.thinking || result.child!.context !== config.participant.context) throw new Error("observed participant identity/settings mismatch");
 	const toolsHash = hashObject(results.map((result) => result.child!.tools));
@@ -357,8 +365,8 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 			const handoffs = observedHandoffs.map((entry) => `${entry.from}->${entry.to}`);
 			const transient = { row: row.slotId, phase: row.phase, results: results.map((result) => ({ scenarioId: result.scenarioId, status: result.status, completion: result.completion, scorers: result.scorers, requested: row.candidate, effective: result.child ? { agent: result.child.agent, provider: result.child.provider, model: result.child.model, thinking: result.child.thinking, context: result.child.context, tools: result.child.tools } : null, outer: { provider: result.outer.provider, model: result.outer.model }, executionBinding: (result as any).executionBinding, artifact: artifact(result), diagnostics: result.diagnostics })), handoffs: observedHandoffs, judge: judge ? { record: judge.record, packHash: judge.packHash, effective: judge.effective } : undefined, priorRejectedSpendUsd: previousRejectedSpend, rawTranscript: "not retained" };
 			const record = store.put({ value: transient, schemaVersionRef: "model-quality-real-canary-v2", assetVersions: [`${row.itemId}@${row.itemVersion}`, `manifest:${manifest.manifestHash}`, `config:${config.configHash}`], participantProvenance: [`${config.participant.provider}/${config.participant.model}@${config.participant.version}`, `${config.outer.provider}/${config.outer.model}@${config.outer.version}`, ...(judge ? [`${config.judge.provider}/${config.judge.model}@${config.judge.version}`] : [])], retentionUntil: new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString() });
-			for (const result of results) disposeRaw(result); journeyCleanup?.(); journeyCleanup = undefined;
 			const judgeCost = Number(judge?.usage.costUsd ?? 0); const slot = slotFromResults(row, results, record.retrievalRef, config, handoffs, judgeCost, judge?.effective); const rowCost = slot.childCostUsd + slot.outerCostUsd;
+			for (const result of results) disposeRaw(result); journeyCleanup?.(); journeyCleanup = undefined;
 			if (rowCost > row.budgetUsd + Number.EPSILON) throw new Error(`${row.slotId} exceeded approved cost ceiling: ${rowCost} > ${row.budgetUsd}`);
 			totalCost += rowCost; if (totalCost > config.limits.totalCostUsd + Number.EPSILON) throw new Error(`total canary exceeded approved cost ceiling: ${totalCost}`);
 			slots.push(slot);

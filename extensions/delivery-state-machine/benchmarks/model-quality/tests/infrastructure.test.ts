@@ -4,8 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { scenarioById } from "../../agent-quality/catalog.ts";
 import { AdmissionGuard, signSyntheticHumanResolution, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST, type IncidentReport } from "../admission.ts";
-import { aggregateResultUsage, loadRealCanary, validateConnectedHandoffs, type HandoffRecord } from "../canary.ts";
+import { aggregateResultUsage, assertObservedExecutionBinding, loadRealCanary, validateConnectedHandoffs, type HandoffRecord } from "../canary.ts";
 import { EvidenceStore, assertRedacted, redactValue } from "../evidence.ts";
 import { assertExactSparseSelection, loadBootstrapAssets, loadManifest, loadRegistry, resolveRows } from "../manifest.ts";
 import { lifecycleRecord, validateLifecycleTransition } from "../lifecycle.ts";
@@ -47,6 +48,18 @@ assert.deepEqual(realCanary.config.credentialPolicy.forwardedEnvironment, []);
 assert.deepEqual(realCanary.config.rows.find((row) => row.phase === "REVIEW")?.scenarioIds, ["REV-01", "REV-01"]);
 assert.equal(realCanary.manifest.rows.find((row) => row.phase === "CLOSE")?.judge, undefined);
 assert.equal(realCanary.manifest.rows.find((row) => row.phase === "E2E")?.judge, undefined);
+const observedRuntime: any = { scenarioId: "IMP-01", fixtureHash: "fixture-v1", child: { agent: "worker", provider: "openai-codex", model: "openai-codex/gpt-5.6-sol", thinking: "low", context: "fresh", tools: ["read", "grep", "find", "ls", "bash"], usage: {} }, outer: { provider: "openai-codex", model: "openai-codex/gpt-5.6-sol", usage: {} }, executionBinding: { promptHash: HASH_A, fixtureHash: "fixture-v1", scorerHash: hashObject(scenarioById("IMP-01").scorers), nonTargetRoutes: structuredClone(realCanary.config.routes) } };
+assert.doesNotThrow(() => assertObservedExecutionBinding(observedRuntime, realCanary.config));
+for (const [field, mutate] of [
+	["model", (value: any) => { value.child.model = "openai-codex/wrong"; }],
+	["thinking", (value: any) => { value.child.thinking = "high"; }],
+	["context", (value: any) => { value.child.context = "fork"; }],
+	["outer", (value: any) => { value.outer.model = "openai-codex/wrong"; }],
+	["prompt", (value: any) => { value.executionBinding.promptHash = "wrong"; }],
+	["fixture", (value: any) => { value.executionBinding.fixtureHash = "wrong"; }],
+	["scorer", (value: any) => { value.executionBinding.scorerHash = HASH_B; }],
+	["routes", (value: any) => { value.executionBinding.nonTargetRoutes.IMPLEMENT = ["wrong"]; }],
+] as const) { const value = structuredClone(observedRuntime); mutate(value); assert.throws(() => assertObservedExecutionBinding(value, realCanary.config), /mismatch|unavailable/, `tampered ${field} must fail`); }
 
 function rehash(value: any): any { value.manifestHash = hashObject(manifestContent(value)); return value; }
 function invalidManifest(mutator: (value: any) => void, pattern?: RegExp): void {

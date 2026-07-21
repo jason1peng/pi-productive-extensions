@@ -210,19 +210,21 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 	const taskId = "PPE-001-E2E-CONNECTED-v2"; const base = controlledScenario("IMPLEMENT", config, Math.max(1000, deadline - Date.now()), "worker");
 	const shared = provisionScenario(base); const repositoryId = sha256(`${taskId}:${shared.gitBefore}:${base.fixture.sha256}`);
 	const remote = path.join(shared.root, "connected-remote.git"); Bun.spawnSync(["git", "init", "--bare", remote]); Bun.spawnSync(["git", "remote", "add", "origin", remote], { cwd: shared.workspace });
+	fs.appendFileSync(path.join(shared.workspace, ".git", "info", "exclude"), "\n.delivery-evidence/\n");
 	const results: NormalizedResult[] = [], artifacts: string[] = [], handoffs: HandoffRecord[] = [];
-	let priorOutbound: { phase: string; hash: string; content: string } | undefined; let sequence = 0;
+	let priorOutbound: { phase: string; hash: string; content: string; relativePath: string } | undefined; let sequence = 0;
 	const phases = ["IMPLEMENT", "VERIFY", "REVIEW", "REVIEW", "CLOSE", "RETRO"];
 	try {
 		for (let index = 0; index < phases.length; index++) {
 			const phase = phases[index]; if (Date.now() >= deadline) throw new Error("connected E2E deadline exhausted");
 			const source = scenarioById(SCENARIO[phase]); const actualAgent = ROUTE_AGENT[phase]; const candidate = phase === "VERIFY" ? "reviewer" : actualAgent;
-			const inbound = priorOutbound ? `Inbound handoff from ${priorOutbound.phase}: sha256:${priorOutbound.hash}\n${priorOutbound.content}` : "No inbound handoff: this is the journey origin.";
+			const inbound = priorOutbound ? `Inbound handoff from ${priorOutbound.phase}: read ${priorOutbound.relativePath} and verify sha256:${priorOutbound.hash}.` : "No inbound handoff: this is the journey origin.";
 			const scenario = controlledScenario(phase, config, Math.max(1000, deadline - Date.now()), candidate);
-			scenario.fixture = structuredClone(base.fixture); scenario.task = `${base.task}\n\nConnected delivery task ${taskId}. Operate on the same repository and consume this exact prior state:\n${inbound}`;
+			scenario.fixture = structuredClone(base.fixture); scenario.task = `${base.task}\n\nConnected delivery task ${taskId}. Operate on the same repository. ${inbound}`;
+			scenario.artifact = { ...scenario.artifact, verdicts: ["PASS"] };
 			scenario.invariants = [...base.invariants, "Preserve the connected delivery task and cite the inbound handoff hash when present."];
 			scenario.mutation = phase === "IMPLEMENT" ? structuredClone(base.mutation) : { allowedPaths: phase === "CLOSE" ? ["**"] : [], allowedGitOperations: phase === "CLOSE" ? ["stage", "commit", "push", "create-pr-stub"] : ["none"] };
-			const artifactPath = path.join(shared.root, "connected-artifacts", `${index + 1}-${phase.toLowerCase()}.md`); fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+			const artifactPath = path.join(shared.workspace, ".delivery-evidence", `${index + 1}-${phase.toLowerCase()}.md`); fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
 			const rawEvidence = path.join(shared.root, "connected-raw", `${index + 1}-${phase.toLowerCase()}`); fs.mkdirSync(rawEvidence, { recursive: true });
 			const phaseHome = path.join(shared.root, "connected-agent-homes", `${index + 1}-${phase.toLowerCase()}`); const phaseAgentDir = path.join(phaseHome, ".pi", "agent"); const phaseTmp = path.join(phaseHome, "tmp"); fs.mkdirSync(phaseAgentDir, { recursive: true }); fs.mkdirSync(phaseTmp, { recursive: true });
 			const phaseRun: ProvisionedRun = { ...shared, agentHome: phaseHome, artifactPath, rawEvidence, localRemote: remote, env: { ...shared.env, HOME: phaseHome, PI_CODING_AGENT_DIR: phaseAgentDir, TMPDIR: phaseTmp, PWD: shared.workspace } };
@@ -237,13 +239,14 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 			result.harness = { classification: "scored", maxAttempts: 1, finalAttempt: 1, attempts: [{ attempt: 1, status: "PASS", completion: "completed", diagnostics: [], rawEvidencePath: rawEvidence, artifactPath, outer: runtime.outer, child: runtime.child, scorers: result.scorers, redactionPassed: true }] };
 			(result as any).executionBinding = { promptHash: promptAssetHash(phase, true), fixtureHash: base.fixture.sha256, scorerHash: hashObject(scenario.scorers), nonTargetRoutes: config.routes, taskId, repositoryId, inboundHash: priorOutbound?.hash ?? null, outboundHash };
 			results.push(result); artifacts.push(content);
-			if (phase === "REVIEW" && phases[index + 1] === "REVIEW") priorOutbound = { phase: "REVIEW", hash: outboundHash, content };
-			else if (phase === "REVIEW" && phases[index - 1] === "REVIEW") { const combined = `${artifacts[index - 1]}\n\n${content}`; priorOutbound = { phase: "REVIEW", hash: sha256(combined), content: combined }; }
-			else priorOutbound = { phase, hash: outboundHash, content };
+			const relativePath = path.relative(shared.workspace, artifactPath);
+			if (phase === "REVIEW" && phases[index + 1] === "REVIEW") priorOutbound = { phase: "REVIEW", hash: outboundHash, content, relativePath };
+			else if (phase === "REVIEW" && phases[index - 1] === "REVIEW") { const combined = `${artifacts[index - 1]}\n\n${content}`; const joinedPath = path.join(shared.workspace, ".delivery-evidence", "review-joined.md"); fs.writeFileSync(joinedPath, combined); priorOutbound = { phase: "REVIEW", hash: sha256(combined), content: combined, relativePath: path.relative(shared.workspace, joinedPath) }; }
+			else priorOutbound = { phase, hash: outboundHash, content, relativePath };
 		}
 		validateConnectedHandoffs(handoffs);
 		return { results, artifacts, handoffs, cleanup: shared.cleanup };
-	} catch (error) { shared.cleanup(); throw error; }
+	} catch (error) { if (process.env.MODEL_QUALITY_DEBUG_KEEP !== "1") shared.cleanup(); else console.error(`connected debug root retained: ${shared.root}`); throw error; }
 }
 
 function observedRoutes(row: ManifestRow, config: RealCanaryConfig): Record<string, string> {

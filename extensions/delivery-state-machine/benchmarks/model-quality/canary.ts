@@ -226,7 +226,7 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 			const rawEvidence = path.join(shared.root, "connected-raw", `${index + 1}-${phase.toLowerCase()}`); fs.mkdirSync(rawEvidence, { recursive: true });
 			const phaseRun: ProvisionedRun = { ...shared, artifactPath, rawEvidence, localRemote: remote };
 			const startedAt = new Date().toISOString(); const runtime = await executeConnectedRuntime(scenario, actualAgent, phaseRun); const finishedAt = new Date().toISOString();
-			if (!runtime.evidence.completed || runtime.evidence.timedOut || !runtime.child || !fs.existsSync(artifactPath)) throw new Error(`connected ${phase} runtime did not complete with an artifact`);
+			if (!runtime.evidence.completed || runtime.evidence.timedOut || !runtime.child || !fs.existsSync(artifactPath)) throw new Error(`connected ${phase} runtime did not complete with an artifact: ${JSON.stringify({ evidence: runtime.evidence, childUsage: runtime.child?.usage, outerUsage: runtime.outer.usage })}`);
 			const content = fs.readFileSync(artifactPath, "utf8"); const outboundHash = sha256(content);
 			if (priorOutbound) {
 				const from = priorOutbound.phase === "REVIEW" && phase === "REVIEW" ? undefined : priorOutbound.phase;

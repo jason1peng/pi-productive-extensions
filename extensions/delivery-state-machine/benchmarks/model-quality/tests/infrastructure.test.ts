@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AdmissionGuard, signSyntheticHumanResolution, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST, type IncidentReport } from "../admission.ts";
-import { loadRealCanary } from "../canary.ts";
+import { aggregateResultUsage, loadRealCanary, validateConnectedHandoffs, type HandoffRecord } from "../canary.ts";
 import { EvidenceStore, assertRedacted, redactValue } from "../evidence.ts";
 import { assertExactSparseSelection, loadBootstrapAssets, loadManifest, loadRegistry, resolveRows } from "../manifest.ts";
 import { lifecycleRecord, validateLifecycleTransition } from "../lifecycle.ts";
@@ -33,6 +33,12 @@ assert.equal(assertExactSparseSelection(manifest, ["BOOT-SLOT-01", "BOOT-SLOT-06
 assert.throws(() => assertExactSparseSelection(manifest, ["BOOT-SLOT-01", "BOOT-SLOT-01"]), /duplicate/);
 assert.throws(() => assertExactSparseSelection(manifest, ["MISSING"]), /exactly/);
 assert.equal(validateStage7Sentinels().stage7Commit, "08cfb3d802cbb7cff4993f92105e97616663094c");
+const connectedHandoffs: HandoffRecord[] = ["IMPLEMENT->VERIFY", "VERIFY->REVIEW", "REVIEW->CLOSE", "CLOSE->RETRO"].map((edge, index) => { const [from, to] = edge.split("->"); return { from, to, sequence: index + 1, outboundHash: HASH_A, inboundHash: HASH_A, taskId: "TASK-1", repositoryId: "REPO-1" }; });
+assert.deepEqual(validateConnectedHandoffs(connectedHandoffs), ["IMPLEMENT->VERIFY", "VERIFY->REVIEW", "REVIEW->CLOSE", "CLOSE->RETRO"]);
+assert.throws(() => validateConnectedHandoffs(connectedHandoffs.slice(0, 3)), /incomplete/);
+assert.throws(() => validateConnectedHandoffs(connectedHandoffs.map((entry, index) => index === 1 ? { ...entry, inboundHash: HASH_B } : entry)), /mismatched/);
+assert.throws(() => validateConnectedHandoffs(connectedHandoffs.map((entry, index) => index === 2 ? { ...entry, repositoryId: "REPO-2" } : entry)), /disconnected/);
+
 const realCanary = loadRealCanary();
 assert.equal(realCanary.manifest.rows.length, 6);
 assert.equal(realCanary.manifest.rows.reduce((sum, row) => sum + row.budgetUsd, 0), 18);
@@ -108,6 +114,9 @@ assert.equal(canModelBlockDeterministicPass({ phase: "REVIEW", deterministicPass
 assert.equal(canModelBlockDeterministicPass({ phase: "IMPLEMENT", deterministicPassed: true, reproduced: true }), false);
 for (const decision of ["rejected", "abstained"] as const) assert.equal(validateHumanReview({ recordId: `H-${decision}`, itemId: "BOOT-VERIFY", itemVersion: 1, resultHash: HASH_A, decision, ...(decision === "rejected" ? { actorId: "human-2", actorRole: "authorized-human" as const } : {}), reason: decision, timestamp: "2026-07-21T00:00:00.000Z" }).decision, decision);
 
+const attemptTelemetry = aggregateResultUsage({ child: { usage: { inputTokens: 3, costUsd: 0.2 } }, outer: { usage: { outputTokens: 4, costUsd: 0.3 } }, harness: { attempts: [{ child: { usage: { inputTokens: 10, costUsd: 0.7 } }, outer: { usage: { outputTokens: 11, costUsd: 0.8 } }, status: "INFRASTRUCTURE_FAILURE" }, { child: { usage: { inputTokens: 20, costUsd: 0.9 } }, outer: { usage: { outputTokens: 21, costUsd: 1 } }, status: "PASS" }] } } as any);
+assert.deepEqual(attemptTelemetry, { input: 30, output: 32, cached: 0, childCost: 1.6, outerCost: 1.8 }, "all billable retry attempts must count");
+
 const retryThenPass = boundedOutcome("FROZEN-SLOT", 2, (attempt) => ({ classification: attempt === 1 ? "INFRASTRUCTURE_FAILURE" : "PASS", evidenceRef: `sha256:${attempt}` }));
 assert.equal(retryThenPass.attempts.length, 2);
 assert.equal(retryThenPass.scoredClassification, "PASS");
@@ -142,6 +151,10 @@ try {
 	assert.doesNotMatch(retained, /secret-value|private/);
 	assert.match(retained, /REDACTED|OMITTED/);
 	assert.deepEqual(store.audit(), { objects: 1, indexes: 1 });
+	assert.equal(store.getByRef(record.retrievalRef, { schemaVersionRef: "v1", assetVersions: ["asset-v1"], participantProvenance: ["fake/model@v1"] }).record.contentHash, record.contentHash);
+	const originalIndex = fs.readdirSync(store.indexRoot)[0]; fs.copyFileSync(path.join(store.indexRoot, originalIndex), path.join(store.indexRoot, "duplicate.json"));
+	assert.throws(() => store.getByRef(record.retrievalRef), /exactly one/); fs.rmSync(path.join(store.indexRoot, "duplicate.json"));
+	fs.writeFileSync(path.join(store.objectRoot, HASH_B), "orphan", { mode: 0o600 }); assert.throws(() => store.audit(), /orphan/); fs.rmSync(path.join(store.objectRoot, HASH_B));
 	fs.rmSync(path.join(store.objectRoot, record.contentHash));
 	assert.throws(() => store.get(record), /unavailable/);
 	assert.throws(() => store.get({ ...record, retentionUntil: "2000-01-01T00:00:00.000Z" }), /expired/);
@@ -173,9 +186,14 @@ try {
 	assert.throws(() => guard.applyIncident(report("incident-3")), /downgrade/);
 	assert.throws(() => guard.applyIncident(report("incident-unauthorized", "credible-bootstrap-leakage", "evaluated-model")), /allowlisted/);
 	assert.throws(() => guard.applyIncident({ ...report("incident-stale"), itemHash: HASH_C }), /stale|mismatched/);
-	assert.throws(() => guard.resolve({ action: "dismiss", actorId: "service", actorRole: "authorized-human", signedIntent: "", itemHash: HASH_A, catalogHash: HASH_B, reason: "none" }), /signed/);
-	assert.throws(() => guard.resolve({ action: "dismiss", actorId: "human-1", actorRole: "authorized-human", signedIntent: "forged", itemHash: HASH_A, catalogHash: HASH_B, reason: "synthetic false positive" }), /verified/);
-	const dismissed = guard.resolve(signSyntheticHumanResolution({ action: "dismiss", actorId: "human-1", itemHash: HASH_A, catalogHash: HASH_B, reason: "synthetic false positive" }));
+	const incidentSequence = guard.snapshot().sequence;
+	assert.throws(() => guard.resolve({ action: "dismiss", actorId: "service", actorRole: "authorized-human", signedIntent: "", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["incident-1"], expectedSequence: incidentSequence, reason: "none" }), /signed/);
+	assert.throws(() => guard.resolve({ action: "dismiss", actorId: "human-1", actorRole: "authorized-human", signedIntent: "forged", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["incident-1"], expectedSequence: incidentSequence, reason: "synthetic false positive" }), /verified/);
+	const partial = guard.resolve(signSyntheticHumanResolution({ action: "dismiss", actorId: "human-1", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["incident-1"], expectedSequence: incidentSequence, reason: "first report was a false positive" }));
+	assert.equal(partial.holdState, "pending", "unrelated critical incident must remain pending");
+	assert.equal(partial.incidents.find((entry: any) => entry.report.idempotencyKey === "incident-2")!.status, "pending");
+	assert.throws(() => guard.resolve(signSyntheticHumanResolution({ action: "dismiss", actorId: "human-1", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["incident-2"], expectedSequence: incidentSequence, reason: "stale" })), /stale/);
+	const dismissed = guard.resolve(signSyntheticHumanResolution({ action: "dismiss", actorId: "human-1", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["incident-2"], expectedSequence: partial.sequence, reason: "second report independently resolved" }));
 	assert.equal(dismissed.holdState, "clear");
 	const fresh = guard.authorize("dispatch");
 	assert.ok(fresh.sequence > selection.sequence);
@@ -183,14 +201,31 @@ try {
 	assert.equal(guard.publish({ id: "joined", kind: "join", expectedSequence: fresh.sequence, evidenceHash: HASH_C }).eligibility, "eligible", "publication retry must not duplicate");
 } finally { fs.rmSync(guardRoot, { recursive: true, force: true }); }
 
+for (const kind of ["result-use", "join", "report"] as const) {
+	for (const order of ["publication-first", "hold-first"] as const) {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-linearization-${kind}-${order}-`));
+		try {
+			const guard = makeGuard(root); const authorization = guard.authorize("dispatch");
+			if (order === "publication-first") {
+				assert.equal(guard.publish({ id: `${kind}-before`, kind, expectedSequence: authorization.sequence, evidenceHash: HASH_A }).eligibility, "eligible");
+				guard.applyIncident(report(`${kind}-incident`));
+				assert.equal(guard.snapshot().publications[0].eligibility, "TAINTED_OR_INVALIDATED");
+			} else {
+				guard.applyIncident(report(`${kind}-incident`));
+				assert.equal(guard.publish({ id: `${kind}-after`, kind, expectedSequence: authorization.sequence, evidenceHash: HASH_A }).eligibility, "TAINTED_OR_INVALIDATED");
+			}
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	}
+}
+
 const quarantineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-quarantine-test-"));
 try {
 	const guard = makeGuard(quarantineRoot);
 	guard.applyIncident(report("q-1"));
-	const state = guard.resolve(signSyntheticHumanResolution({ action: "quarantine", actorId: "human-2", itemHash: HASH_A, catalogHash: HASH_B, reason: "confirmed leakage" }));
+	const state = guard.resolve(signSyntheticHumanResolution({ action: "quarantine", actorId: "human-2", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["q-1"], expectedSequence: guard.snapshot().sequence, reason: "confirmed leakage" }));
 	assert.equal(state.admissionState, "quarantined");
 	assert.throws(() => guard.authorize("selection"), /not effectively admitted/);
-	assert.throws(() => guard.resolve(signSyntheticHumanResolution({ action: "dismiss", actorId: "human-2", itemHash: HASH_C, catalogHash: HASH_B, reason: "changed" })), /hashes changed|no pending/);
+	assert.throws(() => guard.resolve(signSyntheticHumanResolution({ action: "dismiss", actorId: "human-2", itemHash: HASH_C, catalogHash: HASH_B, incidentKeys: ["q-1"], expectedSequence: state.sequence, reason: "changed" })), /hashes changed|no pending/);
 } finally { fs.rmSync(quarantineRoot, { recursive: true, force: true }); }
 
 const recoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-recovery-test-"));
@@ -205,6 +240,19 @@ try {
 	fs.writeFileSync(path.join(recoveryRoot, "BOOT-VERIFY-1.json.lock"), "99999999\n");
 	assert.equal(makeGuard(recoveryRoot).snapshot().holdState, "pending", "restart must reclaim a demonstrably dead lock owner");
 } finally { fs.rmSync(recoveryRoot, { recursive: true, force: true }); }
+
+const crossStoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-cross-store-test-"));
+try {
+	const store = new EvidenceStore(path.join(crossStoreRoot, "evidence"));
+	const guard = makeGuard(path.join(crossStoreRoot, "admission")); const authorization = guard.authorize("dispatch");
+	const record = store.put({ value: { boundary: "report", state: "prepared" }, schemaVersionRef: "cross-store-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/service"], retentionUntil: "2099-01-01T00:00:00.000Z" });
+	assert.equal(guard.publish({ id: "cross-store-report", kind: "report", expectedSequence: authorization.sequence, evidenceHash: record.contentHash }).eligibility, "eligible");
+	guard.applyIncident(report("cross-store-incident"));
+	assert.equal(guard.snapshot().publications[0].eligibility, "TAINTED_OR_INVALIDATED");
+	assert.equal(store.getByRef(record.retrievalRef, { schemaVersionRef: "cross-store-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/service"] }).record.contentHash, record.contentHash);
+	fs.rmSync(path.join(store.objectRoot, record.contentHash));
+	assert.throws(() => store.getByRef(record.retrievalRef), /unavailable/);
+} finally { fs.rmSync(crossStoreRoot, { recursive: true, force: true }); }
 
 const baseRow = manifest.rows[0];
 const slot = (overrides: Partial<NormalizedSlotResult> = {}): NormalizedSlotResult => ({ slotId: "S", itemId: "BOOT-X", itemVersion: 1, phase: "IMPLEMENT", datasetClass: "bootstrap", qualificationEligible: false, requested: structuredClone(baseRow.candidate), effective: structuredClone(baseRow.candidate), nonTargetRoutes: structuredClone(baseRow.nonTargetRoutes), judgeIdentity: structuredClone(baseRow.judge), isolation: { repository: "disposable://repo", piHome: "disposable://home", artifactRoot: "disposable://artifact", resultNamespace: "slot:S", processGroup: "isolated:S", credentialBoundary: "allowlisted-ephemeral", remotePolicy: "none" }, cleanupPassed: true, redactionPassed: true, status: "PASS", slotState: "JUDGED", deterministicPassed: true, qualitativeEligible: true, attempts: 2, infrastructureAttempts: 1, inputTokens: 10, outputTokens: 5, cachedTokens: 2, childCostUsd: 2, outerCostUsd: 1, wallTimeMs: 200, firstPlannedPassCostUsd: 2, defaultFirstPlannedPassWallTimeMs: 100, minimumPlannedAttempts: 1, handoffs: ["a->b"], evidenceRefs: ["sha256:x"], ...overrides });

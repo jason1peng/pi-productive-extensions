@@ -76,9 +76,24 @@ export class EvidenceStore {
 		if (sha256(content) !== record.contentHash) throw new Error("durable evidence hash mismatch");
 		return content;
 	}
+	indexes(): EvidenceIndexRecord[] {
+		return fs.readdirSync(this.indexRoot).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(fs.readFileSync(path.join(this.indexRoot, file), "utf8")) as EvidenceIndexRecord);
+	}
+	getByRef(reference: string, expected?: { schemaVersionRef?: string; assetVersions?: string[]; participantProvenance?: string[] }): { record: EvidenceIndexRecord; content: Buffer } {
+		const matches = this.indexes().filter((record) => record.retrievalRef === reference);
+		if (matches.length !== 1) throw new Error(`durable evidence reference requires exactly one index: ${reference}`);
+		const record = matches[0];
+		if (expected?.schemaVersionRef && record.schemaVersionRef !== expected.schemaVersionRef) throw new Error("evidence schema provenance mismatch");
+		for (const asset of expected?.assetVersions ?? []) if (!record.assetVersions.includes(asset)) throw new Error(`evidence asset provenance mismatch: ${asset}`);
+		for (const participant of expected?.participantProvenance ?? []) if (!record.participantProvenance.includes(participant)) throw new Error(`evidence participant provenance mismatch: ${participant}`);
+		return { record, content: this.get(record) };
+	}
 	audit(): { objects: number; indexes: number } {
-		const records = fs.readdirSync(this.indexRoot).filter((file) => file.endsWith(".json"));
-		for (const file of records) this.get(JSON.parse(fs.readFileSync(path.join(this.indexRoot, file), "utf8")) as EvidenceIndexRecord);
-		return { objects: fs.readdirSync(this.objectRoot).length, indexes: records.length };
+		const records = this.indexes();
+		for (const record of records) this.get(record);
+		const referenced = new Set(records.map((record) => record.contentHash));
+		const objects = fs.readdirSync(this.objectRoot);
+		for (const object of objects) if (!referenced.has(object)) throw new Error(`orphan durable evidence object: ${object}`);
+		return { objects: objects.length, indexes: records.length };
 	}
 }

@@ -306,6 +306,8 @@ export function validateSlotResult(value: NormalizedSlotResult, row: ManifestRow
 	if (canonicalJson(value.requested) !== canonicalJson(row.candidate) || canonicalJson(value.effective) !== canonicalJson(row.candidate)) throw new Error("requested/effective runtime identity or settings mismatch");
 	if (canonicalJson(value.nonTargetRoutes) !== canonicalJson(row.nonTargetRoutes)) throw new Error("non-target route identity mismatch");
 	if (canonicalJson(value.judgeIdentity) !== canonicalJson(row.judge)) throw new Error("judge identity mismatch");
+	if (value.attempts < row.minimumPlannedAttempts) throw new Error("attempt denominator is below the mandatory route count");
+	if (value.infrastructureAttempts > row.maxInfrastructureAttempts - 1 || value.attempts > row.minimumPlannedAttempts + row.maxInfrastructureAttempts - 1) throw new Error("row-wide infrastructure retry bound exceeded");
 	for (const [key, nested] of Object.entries(value.isolation)) string(nested, `isolation.${key}`);
 	if (!value.cleanupPassed) throw new Error("cleanup failure is unscored infrastructure");
 	if (!value.redactionPassed) throw new Error("redaction failure is unscored infrastructure");

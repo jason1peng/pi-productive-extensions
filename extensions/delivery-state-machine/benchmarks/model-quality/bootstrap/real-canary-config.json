@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "PPE-001-REAL-CANARY",
-  "version": 1,
+  "version": 2,
   "approvedAt": "2026-07-21T12:00:00.000Z",
   "approvedBy": "user-explicit-approval-2026-07-21",
   "participant": {
@@ -121,5 +121,5 @@
       "judge": false
     }
   ],
-  "configHash": "e77c65b0be3cc7528ab0cfaf92c23bee4cd9708e33b2d982cb7e63c753834d34"
+  "configHash": "eeceb46dce0921c4fdbbf754c829e31815bd94463bd8ec52f26a25093f69deaa"
 }

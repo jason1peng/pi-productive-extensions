@@ -1,9 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "PPE-001-REAL-CANARY",
-  "version": 1,
+  "version": 2,
   "frozenAt": "2026-07-21T12:00:00.000Z",
-  "manifestHash": "388cdf56b3f70da28e3bbf24ef1d2deeba77a76cad2c68ed6d9784ccd8779f78",
   "expectedRows": 6,
   "maxRows": 6,
   "maxCostUsd": 20,
@@ -22,8 +21,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "worker",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "fc43166d4e52a20e90f0ef16951423e3622e1f67bf31939752dcaec4b40f0863",
+        "promptVersion": "sha256:e3496dc94c3817114b7243f63aaef9b33a055e98a6e0d10a4939a5ffc6c0b95d",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -57,8 +56,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "fresh-verifier",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "a9ad23ac2ece323ab6c38d6a6d1c145d87dee2120bd6679acf00b912cbe8aa42",
+        "promptVersion": "sha256:f3b47a977c9acdf1fe50b250bc1ef6c03dce79bccc231df0a3e97697da9c1b2d",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -92,8 +91,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "reviewer",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "af34f850222f340cbcb614eb1de18ccafc7f0d7fb83d24c9aec2121bf78e158f",
+        "promptVersion": "sha256:b70bd034868723a900db8c51fc2dc87bdbc2f4b63fd6e9dd9d9b473d05f08614",
+        "toolsHash": "a5325888cb38fcd0c84e3577cc3869e2c79943acf4eed9c435813e12b7784b33",
         "thinking": "low",
         "context": "fresh"
       },
@@ -105,7 +104,7 @@
       },
       "maxInfrastructureAttempts": 2,
       "budgetUsd": 2,
-      "minimumPlannedAttempts": 1,
+      "minimumPlannedAttempts": 2,
       "judge": {
         "provider": "openai-codex",
         "model": "gpt-5.5",
@@ -127,8 +126,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delegate",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "1313510d0706ef8c40fe2d9556a2769be2067fc373303a1d75296584eb376cf5",
+        "promptVersion": "sha256:4f95e81832e28341405dc6309d8d4a01639bb3e683d1fd85a008b1a0769ea7f6",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -155,8 +154,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delegate",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "f69703dfa95bfe50dc71f7eb8510c8afeb007a9880387bf49b6f8a2ee42111b7",
+        "promptVersion": "sha256:d53588d5a40b144f26d0d3d156f20d2e3e31cd7c037eee7964e731cf9e8f423a",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -190,8 +189,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delivery-state-machine",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "0c2580a62dc46f3f6110161a30f88e0f40de876bc1faf806c8cc9666ae28ccfe",
+        "promptVersion": "sha256:9132aac602fde12969c81260c212cbd06ae455c912cc1c4103b96ccffa7eb14f",
+        "toolsHash": "8847a45471b1cf33f2ad0c364216b747d50c91aba21f0140ecbdec4c04090d8e",
         "thinking": "low",
         "context": "fresh"
       },
@@ -204,7 +203,8 @@
       },
       "maxInfrastructureAttempts": 2,
       "budgetUsd": 8,
-      "minimumPlannedAttempts": 5
+      "minimumPlannedAttempts": 6
     }
-  ]
+  ],
+  "manifestHash": "f976ca58a9fe521fd684395efe91d22d9efca7b900c09bba0e48e02d4c036762"
 }

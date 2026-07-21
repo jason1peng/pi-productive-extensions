@@ -22,6 +22,9 @@ export interface HumanResolution {
 	signedIntent: string;
 	itemHash: string;
 	catalogHash: string;
+	/** Exact immutable incident set covered by this intent. Unrelated holds remain pending. */
+	incidentKeys: string[];
+	expectedSequence: number;
 	reason: string;
 }
 export interface HumanAuthorizer { version: string; verify(input: HumanResolution): boolean }
@@ -157,13 +160,17 @@ export class AdmissionGuard {
 	resolve(input: HumanResolution): AdmissionState {
 		if (input.actorRole !== "authorized-human" || input.actorId.trim() === "" || input.signedIntent.trim() === "" || !this.humanAuthorizer.verify(input)) throw new Error("resolution requires verified signed authorized-human intent");
 		if (input.itemHash !== this.item.itemHash || input.catalogHash !== this.item.catalogHash) throw new Error("resolution hashes changed; create a successor version");
+		if (!Array.isArray(input.incidentKeys) || input.incidentKeys.length === 0 || new Set(input.incidentKeys).size !== input.incidentKeys.length) throw new Error("resolution requires a unique non-empty exact incident set");
 		return this.transaction((state) => {
 			if (state.holdState !== "pending") throw new Error("no pending hold to resolve");
+			if (state.sequence !== input.expectedSequence) throw new Error("resolution sequence is stale");
+			const selected = input.incidentKeys.map((key) => state.incidents.find((entry) => entry.report.idempotencyKey === key));
+			if (selected.some((entry) => !entry || entry.status !== "pending")) throw new Error("resolution incident set is stale, missing, or already resolved");
 			state.sequence += 1;
 			if (input.action === "quarantine") state.admissionState = "quarantined";
-			state.holdState = "clear";
-			for (const incident of state.incidents.filter((entry) => entry.status === "pending")) incident.status = input.action === "quarantine" ? "quarantined" : "dismissed";
-			state.audit.push({ sequence: state.sequence, action: `human:${input.action}:${input.actorId}`, evidenceHash: hashObject({ signedIntent: input.signedIntent, reason: input.reason }) });
+			for (const incident of selected as Incident[]) incident.status = input.action === "quarantine" ? "quarantined" : "dismissed";
+			state.holdState = state.incidents.some((entry) => entry.status === "pending") ? "pending" : "clear";
+			state.audit.push({ sequence: state.sequence, action: `human:${input.action}:${input.actorId}:${input.incidentKeys.sort().join(",")}`, evidenceHash: hashObject({ signedIntent: input.signedIntent, reason: input.reason, incidentKeys: input.incidentKeys, priorSequence: input.expectedSequence }) });
 			return structuredClone(state);
 		});
 	}

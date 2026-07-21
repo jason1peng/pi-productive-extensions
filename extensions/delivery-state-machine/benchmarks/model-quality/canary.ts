@@ -223,7 +223,7 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 			scenario.invariants = [...base.invariants, "Preserve the connected delivery task and cite the inbound handoff hash when present."];
 			scenario.mutation = phase === "IMPLEMENT" ? structuredClone(base.mutation) : { allowedPaths: phase === "CLOSE" ? ["**"] : [], allowedGitOperations: phase === "CLOSE" ? ["stage", "commit", "push", "create-pr-stub"] : ["none"] };
 			const artifactPath = path.join(shared.root, "connected-artifacts", `${index + 1}-${phase.toLowerCase()}.md`); fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
-			const rawEvidence = path.join(shared.root, "connected-raw", `${index + 1}-${phase.toLowerCase()}.json`); fs.mkdirSync(path.dirname(rawEvidence), { recursive: true });
+			const rawEvidence = path.join(shared.root, "connected-raw", `${index + 1}-${phase.toLowerCase()}`); fs.mkdirSync(rawEvidence, { recursive: true });
 			const phaseRun: ProvisionedRun = { ...shared, artifactPath, rawEvidence, localRemote: remote };
 			const startedAt = new Date().toISOString(); const runtime = await executeConnectedRuntime(scenario, actualAgent, phaseRun); const finishedAt = new Date().toISOString();
 			if (!runtime.evidence.completed || runtime.evidence.timedOut || !runtime.child || !fs.existsSync(artifactPath)) throw new Error(`connected ${phase} runtime did not complete with an artifact`);

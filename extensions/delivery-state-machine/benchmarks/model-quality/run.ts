@@ -88,20 +88,16 @@ export function auditCleanClone(): { reportHash: string; gitClean: boolean } {
 	return { reportHash: report.reportHash, gitClean: status === "" };
 }
 
-function requireCanaryConfiguration(): never {
-	const required = ["MODEL_QUALITY_CANARY_PARTICIPANT_MODEL", "MODEL_QUALITY_CANARY_OUTER_MODEL", "MODEL_QUALITY_CANARY_JUDGE_MODEL", "MODEL_QUALITY_CANARY_MAX_COST_USD", "MODEL_QUALITY_EVIDENCE_ROOT"];
-	const missing = required.filter((name) => !process.env[name]);
-	if (process.env.MODEL_QUALITY_CANARY !== "1" || missing.length) throw new Error(`real model-quality canary is fail-closed: set MODEL_QUALITY_CANARY=1 and freeze ${missing.join(", ") || "all exact identities/settings"}`);
-	throw new Error("real model-quality canary is blocked until the frozen participant/judge identities, independent-family check, credential allowlist, and accepted cost ceiling are reviewed into a new immutable canary manifest; bootstrap fakes are not substituted");
-}
-
 if (import.meta.main) {
 	const command = process.argv[2] ?? "validate";
 	try {
 		if (command === "validate") console.log(JSON.stringify(validateInfrastructure(), null, 2));
 		else if (command === "fake-full") console.log(JSON.stringify(fakeFull(), null, 2));
 		else if (command === "audit") console.log(JSON.stringify(auditCleanClone(), null, 2));
-		else if (command === "bootstrap-canary" || command === "bootstrap-e2e") requireCanaryConfiguration();
+		else if (command === "bootstrap-canary" || command === "bootstrap-e2e") {
+			const { runRealCanary } = await import("./canary.ts");
+			console.log(JSON.stringify(await runRealCanary(command === "bootstrap-e2e" ? "e2e" : "all"), null, 2));
+		}
 		else throw new Error(`unknown model-quality command: ${command}`);
 	} catch (error) {
 		console.error(error instanceof Error ? error.message : String(error));

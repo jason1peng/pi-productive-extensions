@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "id": "PPE-001-REAL-CANARY",
+  "version": 1,
+  "approvedAt": "2026-07-21T12:00:00.000Z",
+  "approvedBy": "user-explicit-approval-2026-07-21",
+  "participant": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-sol",
+    "version": "gpt-5.6-sol",
+    "family": "gpt-5.6",
+    "thinking": "low",
+    "context": "fresh"
+  },
+  "outer": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-sol",
+    "version": "gpt-5.6-sol",
+    "family": "gpt-5.6",
+    "thinking": "low"
+  },
+  "judge": {
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "version": "gpt-5.5",
+    "family": "gpt-5.5",
+    "thinking": "high"
+  },
+  "routes": {
+    "IMPLEMENT": [
+      "worker"
+    ],
+    "VERIFY": [
+      "fresh-verifier"
+    ],
+    "REVIEW": [
+      "reviewer",
+      "reviewer"
+    ],
+    "CLOSE": [
+      "delegate"
+    ],
+    "RETRO": [
+      "delegate"
+    ]
+  },
+  "credentialPolicy": {
+    "providers": [
+      "openai-codex"
+    ],
+    "forwardedEnvironment": [],
+    "source": "pi-managed-auth-only"
+  },
+  "evidence": {
+    "root": "/Users/jason/work/projects/model-quality-evidence/ppe-001",
+    "mode": "0700",
+    "retentionDays": 90
+  },
+  "limits": {
+    "totalCostUsd": 20,
+    "phaseCostUsd": 2,
+    "e2eCostUsd": 8,
+    "phaseTimeoutMs": 900000,
+    "e2eTimeoutMs": 2700000,
+    "totalTimeoutMs": 7200000,
+    "infrastructureRetries": 1
+  },
+  "rows": [
+    {
+      "slotId": "BOOT-REAL-01",
+      "phase": "IMPLEMENT",
+      "scenarioIds": [
+        "IMP-01"
+      ],
+      "judge": true
+    },
+    {
+      "slotId": "BOOT-REAL-02",
+      "phase": "VERIFY",
+      "scenarioIds": [
+        "VER-01"
+      ],
+      "judge": true
+    },
+    {
+      "slotId": "BOOT-REAL-03",
+      "phase": "REVIEW",
+      "scenarioIds": [
+        "REV-01",
+        "REV-01"
+      ],
+      "judge": true
+    },
+    {
+      "slotId": "BOOT-REAL-04",
+      "phase": "CLOSE",
+      "scenarioIds": [
+        "CLO-01"
+      ],
+      "judge": false
+    },
+    {
+      "slotId": "BOOT-REAL-05",
+      "phase": "RETRO",
+      "scenarioIds": [
+        "RET-01"
+      ],
+      "judge": true
+    },
+    {
+      "slotId": "BOOT-REAL-06",
+      "phase": "E2E",
+      "scenarioIds": [
+        "IMP-01",
+        "VER-01",
+        "REV-01",
+        "REV-01",
+        "CLO-01",
+        "RET-01"
+      ],
+      "judge": false
+    }
+  ],
+  "configHash": "e77c65b0be3cc7528ab0cfaf92c23bee4cd9708e33b2d982cb7e63c753834d34"
+}

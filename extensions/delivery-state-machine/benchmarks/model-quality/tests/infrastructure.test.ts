@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AdmissionGuard, signSyntheticHumanResolution, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST, type IncidentReport } from "../admission.ts";
+import { loadRealCanary } from "../canary.ts";
 import { EvidenceStore, assertRedacted, redactValue } from "../evidence.ts";
 import { assertExactSparseSelection, loadBootstrapAssets, loadManifest, loadRegistry, resolveRows } from "../manifest.ts";
 import { lifecycleRecord, validateLifecycleTransition } from "../lifecycle.ts";
@@ -32,6 +33,14 @@ assert.equal(assertExactSparseSelection(manifest, ["BOOT-SLOT-01", "BOOT-SLOT-06
 assert.throws(() => assertExactSparseSelection(manifest, ["BOOT-SLOT-01", "BOOT-SLOT-01"]), /duplicate/);
 assert.throws(() => assertExactSparseSelection(manifest, ["MISSING"]), /exactly/);
 assert.equal(validateStage7Sentinels().stage7Commit, "08cfb3d802cbb7cff4993f92105e97616663094c");
+const realCanary = loadRealCanary();
+assert.equal(realCanary.manifest.rows.length, 6);
+assert.equal(realCanary.manifest.rows.reduce((sum, row) => sum + row.budgetUsd, 0), 18);
+assert.equal(realCanary.config.limits.totalCostUsd, 20);
+assert.deepEqual(realCanary.config.credentialPolicy.forwardedEnvironment, []);
+assert.deepEqual(realCanary.config.rows.find((row) => row.phase === "REVIEW")?.scenarioIds, ["REV-01", "REV-01"]);
+assert.equal(realCanary.manifest.rows.find((row) => row.phase === "CLOSE")?.judge, undefined);
+assert.equal(realCanary.manifest.rows.find((row) => row.phase === "E2E")?.judge, undefined);
 
 function rehash(value: any): any { value.manifestHash = hashObject(manifestContent(value)); return value; }
 function invalidManifest(mutator: (value: any) => void, pattern?: RegExp): void {

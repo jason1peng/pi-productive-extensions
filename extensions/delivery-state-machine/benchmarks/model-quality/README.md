@@ -49,17 +49,16 @@ Selection, dispatch, result use, joins, and report publication share a per-item/
 
 ## Opt-in real canaries
 
+The approved immutable I4 configuration is frozen in `bootstrap/real-canary-config.json` and `bootstrap/real-canary-manifest.json`. It uses `openai-codex/gpt-5.6-sol` at low thinking for the participant and outer runtime, and the independent `openai-codex/gpt-5.5` family at high thinking for supplemental judging. It executes the existing builtin IMPLEMENT, VERIFY, two-reviewer REVIEW, CLOSE, and RETRO routes plus one complete E2E chain. CLOSE and E2E have no bootstrap judge.
+
 ```bash
-MODEL_QUALITY_CANARY=1 \
-MODEL_QUALITY_CANARY_PARTICIPANT_MODEL=<exact-provider/model/version> \
-MODEL_QUALITY_CANARY_OUTER_MODEL=<exact-provider/model/version> \
-MODEL_QUALITY_CANARY_JUDGE_MODEL=<independent-exact-provider/model/version> \
-MODEL_QUALITY_CANARY_MAX_COST_USD=<reviewed-ceiling> \
-MODEL_QUALITY_EVIDENCE_ROOT=<absolute-private-durable-root> \
-npm run eval:models:bootstrap:canary
+MODEL_QUALITY_CANARY=1 npm run eval:models:bootstrap:canary
+MODEL_QUALITY_CANARY=1 npm run eval:models:bootstrap:e2e # isolated E2E-only diagnostic
 ```
 
-Real phase/E2E/judge canaries remain fail-closed until those identities, independence, credentials, retry/budget settings, and the immutable canary manifest are reviewed and frozen. Model-free results are never substituted for that I4 acceptance evidence. Missing configuration exits nonzero as infrastructure blocking, not model-quality failure.
+The serial manifest allows one retry only for infrastructure failure, with 15-minute phase, 45-minute E2E, two-hour total, $2 phase, $8 E2E, and $20 total ceilings. Only Pi-managed `openai-codex` authentication is copied into disposable homes; arbitrary environment credentials are not forwarded. Redacted content-addressed evidence is retained for 90 days under the mode-`0700` private root `/Users/jason/work/projects/model-quality-evidence/ppe-001`. Raw transcripts and disposable workspaces are deleted after the selected artifact, strict judge record, deterministic evidence, telemetry, and provenance are redacted and stored.
+
+The opt-in flag, exact config/manifest hashes, identities, family independence, routes, credentials, evidence root, limits, sparse rows, and Stage 7 sentinels are fail-closed. Model-free results are never substituted for I4 evidence, and bootstrap reports still cannot emit qualification or routing actions.
 
 ## PPE-002 boundary
 

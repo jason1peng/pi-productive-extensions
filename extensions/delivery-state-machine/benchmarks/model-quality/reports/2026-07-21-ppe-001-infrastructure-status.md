@@ -35,8 +35,8 @@ The model-free suite includes both hold/publication orders at result-use, join, 
 
 ## Approved immutable I4 configuration
 
-- Config: `bootstrap/real-canary-config.json`, hash `e77c65b0be3cc7528ab0cfaf92c23bee4cd9708e33b2d982cb7e63c753834d34`.
-- Manifest: `bootstrap/real-canary-manifest.json`, hash `388cdf56b3f70da28e3bbf24ef1d2deeba77a76cad2c68ed6d9784ccd8779f78`.
+- Config v2: `bootstrap/real-canary-config.json`, hash `eeceb46dce0921c4fdbbf754c829e31815bd94463bd8ec52f26a25093f69deaa`.
+- Manifest v2: `bootstrap/real-canary-manifest.json`, hash `f976ca58a9fe521fd684395efe91d22d9efca7b900c09bba0e48e02d4c036762`.
 - Participant and outer: `openai-codex/gpt-5.6-sol` at low thinking.
 - Independent supplemental judge: `openai-codex/gpt-5.5` at high thinking.
 - Builtin routes: worker; fresh-verifier; two reviewers; delegate CLOSE; delegate RETRO.
@@ -53,12 +53,13 @@ MODEL_QUALITY_CANARY=1 npm run eval:models:bootstrap:canary  PASS
 npm run eval:models:audit-real                              PASS
 ```
 
-- Result: 6/6 PASS, zero candidate failures, zero exhausted infrastructure rows, zero tainted rows, reliability 1.0, and four required handoffs.
-- Successful frozen-manifest execution cost: `$2.615338`, below every row ceiling and the `$20` total ceiling.
-- Successful execution wall time: `967298ms`, below all frozen timeouts.
-- Tokens: 273,092 input; 31,703 output; 334,336 cached.
-- Real report: `reports/real-canary-result.json`, hash `1d2039f1ccb52f76a11daee3a25a8d3fb9925e230aa1e7a762cc64de6007b3bc`.
-- Durable audit at implementation time: 12 content-addressed objects/indexes, including fail-closed harness-repair evidence and the accepted run; all retrieval hashes and retention records passed.
+- Result: 6/6 PASS, zero candidate failures, zero exhausted infrastructure rows, zero tainted rows, reliability 1.0, and four observed hash-linked handoffs.
+- The E2E row used one disposable task/repository through IMPLEMENT → VERIFY → two REVIEW readers → CLOSE → RETRO; every phase consumed the prior repository artifact by relative path/hash.
+- Successful v2 frozen-manifest execution cost: `$2.651949`; cumulative conservative I4 spend including rejected v1/v2 infrastructure attempts is `$15.791287`, below the approved `$20` total ceiling.
+- Successful execution wall time: `1068005ms`, below all frozen timeouts.
+- Tokens: 273,647 input; 32,405 output; 350,208 cached.
+- Real report: `reports/real-canary-result.json`, hash `06c3fadafcd3a7df595c323255a36cc63fb468975a69198c8c0e76b7cce665b5`.
+- Durable audit at implementation time: 40 content-addressed objects/indexes. Every accepted report reference resolves through exactly one provenance-bound index; the report-hash-linked pending-human record is required. Rejected prior runs remain retained and never count as accepted.
 - Raw transcripts and disposable repositories/Pi homes were deleted. The ignored Stage 7 raw-artifact directory is empty.
 - Judge records are strict tool-less JSON, blinded/order-frozen, independent by exact version/family, and supplemental only. No CLOSE/E2E bootstrap judge was invoked.
 - Human record is `pending` for delivery I5; it cannot reverse deterministic evidence or silently confirm a model-produced blocker.

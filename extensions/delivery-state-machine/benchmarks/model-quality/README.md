@@ -59,7 +59,7 @@ npm run eval:models:audit-real # no model calls; verifies report, evidence, clea
 
 The serial manifest allows one retry only for infrastructure failure, with 15-minute phase, 45-minute E2E, two-hour total, $2 phase, $8 E2E, and $20 total ceilings. Only Pi-managed `openai-codex` authentication is copied into disposable homes; arbitrary environment credentials are not forwarded. Redacted content-addressed evidence is retained for 90 days under the mode-`0700` private root `/Users/jason/work/projects/model-quality-evidence/ppe-001`. Raw transcripts and disposable workspaces are deleted after the selected artifact, strict judge record, deterministic evidence, telemetry, and provenance are redacted and stored.
 
-The opt-in flag, exact config/manifest hashes, identities, family independence, routes, credentials, evidence root, limits, sparse rows, and Stage 7 sentinels are fail-closed. Model-free results are never substituted for I4 evidence, and bootstrap reports still cannot emit qualification or routing actions.
+The opt-in flag, exact config/manifest hashes, identities, family independence, routes, credentials, evidence root, limits, sparse rows, and Stage 7 sentinels are fail-closed. Model-free results are never substituted for I4 evidence, and bootstrap reports still cannot emit qualification or routing actions. The E2E adapter uses one disposable task/repository with hash-linked repository-local handoffs; disconnected trials cannot pass. Effective identities/assets come from authoritative runtime/provision evidence, retry/spend limits are row-wide and cumulative, and `audit-real` retrieves every accepted reference plus the pending-human record through unique provenance-bound indexes.
 
 ## PPE-002 boundary
 

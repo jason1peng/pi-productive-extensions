@@ -3,22 +3,22 @@
   "classification": "INFRASTRUCTURE_ONLY — NOT QUALIFICATION EVIDENCE",
   "datasetClass": "bootstrap",
   "qualificationEligible": false,
-  "manifestHash": "388cdf56b3f70da28e3bbf24ef1d2deeba77a76cad2c68ed6d9784ccd8779f78",
-  "generatedAt": "2026-07-21T04:40:50.419Z",
+  "manifestHash": "f976ca58a9fe521fd684395efe91d22d9efca7b900c09bba0e48e02d4c036762",
+  "generatedAt": "2026-07-21T06:28:14.397Z",
   "metrics": {
     "slots": 6,
     "passed": 6,
     "candidateFailures": 0,
     "infrastructureExhausted": 0,
     "tainted": 0,
-    "inputTokens": 273092,
-    "outputTokens": 31703,
-    "cachedTokens": 334336,
-    "childCostUsd": 1.385496,
-    "outerCostUsd": 1.229842,
-    "totalCostUsd": 2.6153380000000004,
-    "wallTimeMs": 967298,
-    "repairAmplification": 1.2,
+    "inputTokens": 273647,
+    "outputTokens": 32405,
+    "cachedTokens": 350208,
+    "childCostUsd": 1.37589,
+    "outerCostUsd": 1.276059,
+    "totalCostUsd": 2.651949,
+    "wallTimeMs": 1068005,
+    "repairAmplification": 1,
     "costAmplification": 1,
     "latencyAmplification": 1,
     "reliability": 1,
@@ -38,8 +38,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "worker",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "fc43166d4e52a20e90f0ef16951423e3622e1f67bf31939752dcaec4b40f0863",
+        "promptVersion": "sha256:e3496dc94c3817114b7243f63aaef9b33a055e98a6e0d10a4939a5ffc6c0b95d",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -49,8 +49,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "worker",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "fc43166d4e52a20e90f0ef16951423e3622e1f67bf31939752dcaec4b40f0863",
+        "promptVersion": "sha256:e3496dc94c3817114b7243f63aaef9b33a055e98a6e0d10a4939a5ffc6c0b95d",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -84,18 +84,18 @@
       "qualitativeEligible": true,
       "attempts": 1,
       "infrastructureAttempts": 0,
-      "inputTokens": 24662,
-      "outputTokens": 2719,
-      "cachedTokens": 22528,
-      "childCostUsd": 0.12773700000000002,
-      "outerCostUsd": 0.11856700000000002,
-      "wallTimeMs": 78826,
-      "firstPlannedPassCostUsd": 0.24630400000000002,
-      "defaultFirstPlannedPassWallTimeMs": 78826,
+      "inputTokens": 28099,
+      "outputTokens": 2718,
+      "cachedTokens": 19968,
+      "childCostUsd": 0.112257,
+      "outerCostUsd": 0.150072,
+      "wallTimeMs": 103325,
+      "firstPlannedPassCostUsd": 0.26232900000000003,
+      "defaultFirstPlannedPassWallTimeMs": 103325,
       "minimumPlannedAttempts": 1,
       "handoffs": [],
       "evidenceRefs": [
-        "sha256:6d0eb9146353e50bc9f03731324aae6b8921ec6a46b62ad043ff2c5f00ce77bc"
+        "sha256:70675c05dea7b9f8fa11e23c4e6a81ec20d6aafbce5dd7330d8ab84f6695e797"
       ]
     },
     {
@@ -111,8 +111,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "fresh-verifier",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "a9ad23ac2ece323ab6c38d6a6d1c145d87dee2120bd6679acf00b912cbe8aa42",
+        "promptVersion": "sha256:f3b47a977c9acdf1fe50b250bc1ef6c03dce79bccc231df0a3e97697da9c1b2d",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -122,8 +122,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "fresh-verifier",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "a9ad23ac2ece323ab6c38d6a6d1c145d87dee2120bd6679acf00b912cbe8aa42",
+        "promptVersion": "sha256:f3b47a977c9acdf1fe50b250bc1ef6c03dce79bccc231df0a3e97697da9c1b2d",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -157,18 +157,18 @@
       "qualitativeEligible": true,
       "attempts": 1,
       "infrastructureAttempts": 0,
-      "inputTokens": 23835,
-      "outputTokens": 3188,
-      "cachedTokens": 30720,
-      "childCostUsd": 0.13686800000000002,
-      "outerCostUsd": 0.129807,
-      "wallTimeMs": 90186,
-      "firstPlannedPassCostUsd": 0.266675,
-      "defaultFirstPlannedPassWallTimeMs": 90186,
+      "inputTokens": 29125,
+      "outputTokens": 3246,
+      "cachedTokens": 25600,
+      "childCostUsd": 0.12318000000000001,
+      "outerCostUsd": 0.175665,
+      "wallTimeMs": 116100,
+      "firstPlannedPassCostUsd": 0.298845,
+      "defaultFirstPlannedPassWallTimeMs": 116100,
       "minimumPlannedAttempts": 1,
       "handoffs": [],
       "evidenceRefs": [
-        "sha256:a58551d66b8921eaff33ca32c0042cbaea57798ae99e8d33fc41219a78fefd68"
+        "sha256:d3baa2379fe27644dc78ab7386d02f078984e9f3be4c5e9593a82caae2db7d10"
       ]
     },
     {
@@ -184,8 +184,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "reviewer",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "af34f850222f340cbcb614eb1de18ccafc7f0d7fb83d24c9aec2121bf78e158f",
+        "promptVersion": "sha256:b70bd034868723a900db8c51fc2dc87bdbc2f4b63fd6e9dd9d9b473d05f08614",
+        "toolsHash": "a5325888cb38fcd0c84e3577cc3869e2c79943acf4eed9c435813e12b7784b33",
         "thinking": "low",
         "context": "fresh"
       },
@@ -195,8 +195,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "reviewer",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "af34f850222f340cbcb614eb1de18ccafc7f0d7fb83d24c9aec2121bf78e158f",
+        "promptVersion": "sha256:b70bd034868723a900db8c51fc2dc87bdbc2f4b63fd6e9dd9d9b473d05f08614",
+        "toolsHash": "a5325888cb38fcd0c84e3577cc3869e2c79943acf4eed9c435813e12b7784b33",
         "thinking": "low",
         "context": "fresh"
       },
@@ -230,18 +230,18 @@
       "qualitativeEligible": true,
       "attempts": 2,
       "infrastructureAttempts": 0,
-      "inputTokens": 51191,
-      "outputTokens": 4665,
-      "cachedTokens": 35840,
-      "childCostUsd": 0.201834,
-      "outerCostUsd": 0.24826100000000004,
-      "wallTimeMs": 140784,
-      "firstPlannedPassCostUsd": 0.450095,
-      "defaultFirstPlannedPassWallTimeMs": 140784,
-      "minimumPlannedAttempts": 1,
+      "inputTokens": 38577,
+      "outputTokens": 4542,
+      "cachedTokens": 48640,
+      "childCostUsd": 0.177404,
+      "outerCostUsd": 0.21029100000000003,
+      "wallTimeMs": 145365,
+      "firstPlannedPassCostUsd": 0.387695,
+      "defaultFirstPlannedPassWallTimeMs": 145365,
+      "minimumPlannedAttempts": 2,
       "handoffs": [],
       "evidenceRefs": [
-        "sha256:bcfc38bcea8b7ca1135f0435d78e4be68028fe59f6dcad93f2588417644c2399"
+        "sha256:43efaba8c90eef26b9fe8bc1204496cc3a7e10394d0de5cc986aa5d782eecd65"
       ]
     },
     {
@@ -257,8 +257,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delegate",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "1313510d0706ef8c40fe2d9556a2769be2067fc373303a1d75296584eb376cf5",
+        "promptVersion": "sha256:4f95e81832e28341405dc6309d8d4a01639bb3e683d1fd85a008b1a0769ea7f6",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -268,8 +268,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delegate",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "1313510d0706ef8c40fe2d9556a2769be2067fc373303a1d75296584eb376cf5",
+        "promptVersion": "sha256:4f95e81832e28341405dc6309d8d4a01639bb3e683d1fd85a008b1a0769ea7f6",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -296,18 +296,18 @@
       "qualitativeEligible": false,
       "attempts": 1,
       "infrastructureAttempts": 0,
-      "inputTokens": 24238,
-      "outputTokens": 2969,
-      "cachedTokens": 28672,
-      "childCostUsd": 0.12951100000000001,
-      "outerCostUsd": 0.09508500000000002,
-      "wallTimeMs": 84195,
-      "firstPlannedPassCostUsd": 0.22459600000000002,
-      "defaultFirstPlannedPassWallTimeMs": 84195,
+      "inputTokens": 31485,
+      "outputTokens": 3169,
+      "cachedTokens": 35840,
+      "childCostUsd": 0.17515,
+      "outerCostUsd": 0.09526499999999999,
+      "wallTimeMs": 103720,
+      "firstPlannedPassCostUsd": 0.27041499999999996,
+      "defaultFirstPlannedPassWallTimeMs": 103720,
       "minimumPlannedAttempts": 1,
       "handoffs": [],
       "evidenceRefs": [
-        "sha256:5d983531cb4182193b979109c425219739e605556c5b33ae1d4e8a908a7a04a4"
+        "sha256:bdd395be585b67603b66fb74d2273465d723a347d22dac1fae1fb5301ff039fc"
       ]
     },
     {
@@ -323,8 +323,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delegate",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "f69703dfa95bfe50dc71f7eb8510c8afeb007a9880387bf49b6f8a2ee42111b7",
+        "promptVersion": "sha256:d53588d5a40b144f26d0d3d156f20d2e3e31cd7c037eee7964e731cf9e8f423a",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -334,8 +334,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delegate",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "f69703dfa95bfe50dc71f7eb8510c8afeb007a9880387bf49b6f8a2ee42111b7",
+        "promptVersion": "sha256:d53588d5a40b144f26d0d3d156f20d2e3e31cd7c037eee7964e731cf9e8f423a",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
         "thinking": "low",
         "context": "fresh"
       },
@@ -369,18 +369,18 @@
       "qualitativeEligible": true,
       "attempts": 1,
       "infrastructureAttempts": 0,
-      "inputTokens": 14748,
-      "outputTokens": 2275,
-      "cachedTokens": 36352,
-      "childCostUsd": 0.09305699999999999,
-      "outerCostUsd": 0.095799,
-      "wallTimeMs": 89966,
-      "firstPlannedPassCostUsd": 0.18885599999999997,
-      "defaultFirstPlannedPassWallTimeMs": 89966,
+      "inputTokens": 23638,
+      "outputTokens": 2202,
+      "cachedTokens": 26624,
+      "childCostUsd": 0.12760500000000002,
+      "outerCostUsd": 0.098837,
+      "wallTimeMs": 83278,
+      "firstPlannedPassCostUsd": 0.22644200000000003,
+      "defaultFirstPlannedPassWallTimeMs": 83278,
       "minimumPlannedAttempts": 1,
       "handoffs": [],
       "evidenceRefs": [
-        "sha256:4da20b577c277261ffad9b5b7868e9a95755571b6a874e6f17e69a12b3e2d917"
+        "sha256:221ed4d49234b5c798a77d24e9ceaf616b30c0f32afd4999d0b93c2a534c389f"
       ]
     },
     {
@@ -396,8 +396,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delivery-state-machine",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "0c2580a62dc46f3f6110161a30f88e0f40de876bc1faf806c8cc9666ae28ccfe",
+        "promptVersion": "sha256:9132aac602fde12969c81260c212cbd06ae455c912cc1c4103b96ccffa7eb14f",
+        "toolsHash": "8847a45471b1cf33f2ad0c364216b747d50c91aba21f0140ecbdec4c04090d8e",
         "thinking": "low",
         "context": "fresh"
       },
@@ -407,8 +407,8 @@
         "version": "gpt-5.6-sol",
         "family": "gpt-5.6",
         "agent": "delivery-state-machine",
-        "promptVersion": "stage7-or-bootstrap-v1",
-        "toolsHash": "0c2580a62dc46f3f6110161a30f88e0f40de876bc1faf806c8cc9666ae28ccfe",
+        "promptVersion": "sha256:9132aac602fde12969c81260c212cbd06ae455c912cc1c4103b96ccffa7eb14f",
+        "toolsHash": "8847a45471b1cf33f2ad0c364216b747d50c91aba21f0140ecbdec4c04090d8e",
         "thinking": "low",
         "context": "fresh"
       },
@@ -436,15 +436,15 @@
       "qualitativeEligible": false,
       "attempts": 6,
       "infrastructureAttempts": 0,
-      "inputTokens": 134418,
-      "outputTokens": 15887,
-      "cachedTokens": 180224,
-      "childCostUsd": 0.696489,
-      "outerCostUsd": 0.542323,
-      "wallTimeMs": 483341,
-      "firstPlannedPassCostUsd": 1.2388120000000002,
-      "defaultFirstPlannedPassWallTimeMs": 483341,
-      "minimumPlannedAttempts": 5,
+      "inputTokens": 122723,
+      "outputTokens": 16528,
+      "cachedTokens": 193536,
+      "childCostUsd": 0.660294,
+      "outerCostUsd": 0.545929,
+      "wallTimeMs": 516217,
+      "firstPlannedPassCostUsd": 1.2062230000000003,
+      "defaultFirstPlannedPassWallTimeMs": 516217,
+      "minimumPlannedAttempts": 6,
       "handoffs": [
         "IMPLEMENT->VERIFY",
         "VERIFY->REVIEW",
@@ -452,17 +452,17 @@
         "CLOSE->RETRO"
       ],
       "evidenceRefs": [
-        "sha256:5eb66458a332226875f95aa96f7867fa572c3b9006946a13b932c13750cac981"
+        "sha256:fbd6591e03a1e33dd09ce7730d4069bd9667f437dd4646f835ccdf2f2fc6167b"
       ]
     }
   ],
   "evidenceRefs": [
-    "sha256:6d0eb9146353e50bc9f03731324aae6b8921ec6a46b62ad043ff2c5f00ce77bc",
-    "sha256:a58551d66b8921eaff33ca32c0042cbaea57798ae99e8d33fc41219a78fefd68",
-    "sha256:bcfc38bcea8b7ca1135f0435d78e4be68028fe59f6dcad93f2588417644c2399",
-    "sha256:5d983531cb4182193b979109c425219739e605556c5b33ae1d4e8a908a7a04a4",
-    "sha256:4da20b577c277261ffad9b5b7868e9a95755571b6a874e6f17e69a12b3e2d917",
-    "sha256:5eb66458a332226875f95aa96f7867fa572c3b9006946a13b932c13750cac981"
+    "sha256:70675c05dea7b9f8fa11e23c4e6a81ec20d6aafbce5dd7330d8ab84f6695e797",
+    "sha256:d3baa2379fe27644dc78ab7386d02f078984e9f3be4c5e9593a82caae2db7d10",
+    "sha256:43efaba8c90eef26b9fe8bc1204496cc3a7e10394d0de5cc986aa5d782eecd65",
+    "sha256:bdd395be585b67603b66fb74d2273465d723a347d22dac1fae1fb5301ff039fc",
+    "sha256:221ed4d49234b5c798a77d24e9ceaf616b30c0f32afd4999d0b93c2a534c389f",
+    "sha256:fbd6591e03a1e33dd09ce7730d4069bd9667f437dd4646f835ccdf2f2fc6167b"
   ],
-  "reportHash": "1d2039f1ccb52f76a11daee3a25a8d3fb9925e230aa1e7a762cc64de6007b3bc"
+  "reportHash": "06c3fadafcd3a7df595c323255a36cc63fb468975a69198c8c0e76b7cce665b5"
 }

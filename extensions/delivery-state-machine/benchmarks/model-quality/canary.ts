@@ -150,6 +150,7 @@ async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: num
 		const installed = process.env.PI_SUBAGENTS_ROOT ?? path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-subagents");
 		const shim = fs.mkdtempSync(path.join(os.tmpdir(), "ppe-001-subagents-shim-"));
 		fs.symlinkSync(path.join(installed, "src"), path.join(shim, "src"), "dir");
+		fs.writeFileSync(path.join(shim, "package.json"), `${JSON.stringify({ name: "ppe-001-explicit-subagents-shim", private: true, type: "module", pi: { extensions: [] } }, null, 2)}\n`);
 		const prior = process.env.PI_SUBAGENTS_ROOT; process.env.PI_SUBAGENTS_ROOT = shim;
 		try { return await executePiRuntime(candidateScenario, candidate, run); }
 		finally { if (prior === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = prior; fs.rmSync(shim, { recursive: true, force: true }); }

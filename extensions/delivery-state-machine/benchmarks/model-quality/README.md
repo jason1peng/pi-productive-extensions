@@ -33,7 +33,7 @@ npm run verify
 
 `validate` checks the sparse manifest, immutable registry, all-phase/E2E adapter coverage, judge collisions, bootstrap eligibility, and Stage 7 sentinels. `fake-full` exercises all phase adapters, supplemental pack creation, human-record plumbing, durable evidence round trip, joined arithmetic, and the E2E handoff join. `audit` reproduces the committed expected report byte-for-byte.
 
-Normal CI and `npm run verify` remain model-free. Raw evidence and disposable workspaces stay under ignored `artifacts/` or a separately selected absolute durable evidence root.
+Normal CI and `npm run verify` remain model-free. `scripts/test-with-host-modules.sh` makes host discovery deterministic without mutating the host: it copies the installed `pi-subagents` package into a disposable module root, supplies the source lockfile's exact `typebox@1.1.38` peer, requires the host-discovery smoke to execute, and deletes the copy. A skipped host smoke is a failure under the default command. Raw evidence and disposable workspaces stay under ignored `artifacts/` or a separately selected absolute durable evidence root.
 
 ## Bootstrap coverage
 
@@ -45,11 +45,11 @@ CLOSE rejects default judge admission. Other judge packs are tool-less data cont
 
 `admission.ts` provides the PPE-001 synthetic policy injection seam. Only the allowlisted bootstrap incident service can create/escalate a persistent pending hold. It cannot clear, quarantine, or change lifecycle/admission state. Signed authorized humans alone can dismiss an unchanged-hash false positive or convert a pending hold to durable quarantine.
 
-Selection, dispatch, result use, joins, and report publication share a per-item/version linearizable guard with incident holds. Hold-first publications become `TAINTED_OR_INVALIDATED`; publication-first holds durably taint all linked publications before acknowledgement. A write-ahead journal, monotonic sequence, idempotency keys, startup reconciliation, and fail-closed stale-hash behavior cover crash/retry/restart paths. Holds never auto-expire and frozen slots are never substituted.
+Selection, dispatch, result use, joins, and report publication share a per-item/version linearizable guard with incident holds in both fake and real runners. `EvidenceAdmissionCoordinator` journals content-addressed evidence retention together with guard publication/incident acknowledgement, verifies evidence existence before acknowledgement, and idempotently reconciles every crash boundary. Hold-first publications become `TAINTED_OR_INVALIDATED`; publication-first holds durably taint all linked publications before acknowledgement. A write-ahead journal, monotonic sequence, idempotency keys, startup reconciliation, and fail-closed stale-hash behavior cover crash/retry/restart paths. Holds never auto-expire and frozen slots are never substituted.
 
 ## Opt-in real canaries
 
-The approved immutable I4 configuration is frozen in `bootstrap/real-canary-config.json` and `bootstrap/real-canary-manifest.json`. It uses `openai-codex/gpt-5.6-sol` at low thinking for the participant and outer runtime, and the independent `openai-codex/gpt-5.5` family at high thinking for supplemental judging. It executes the existing builtin IMPLEMENT, VERIFY, two-reviewer REVIEW, CLOSE, and RETRO routes plus one complete E2E chain. CLOSE and E2E have no bootstrap judge.
+The approved immutable I4 v3 configuration is frozen in `bootstrap/real-canary-config.json` and `bootstrap/real-canary-manifest.json`. It uses `openai-codex/gpt-5.6-sol` at low thinking for the participant and outer runtime, and the independent `openai-codex/gpt-5.5` family at high thinking for supplemental judging. It executes the existing builtin IMPLEMENT, VERIFY, two-reviewer REVIEW, CLOSE, and RETRO routes plus one complete E2E chain. CLOSE and E2E have no bootstrap judge.
 
 ```bash
 MODEL_QUALITY_CANARY=1 npm run eval:models:bootstrap:canary
@@ -59,7 +59,11 @@ npm run eval:models:audit-real # no model calls; verifies report, evidence, clea
 
 The serial manifest allows one retry only for infrastructure failure, with 15-minute phase, 45-minute E2E, two-hour total, $2 phase, $8 E2E, and $20 total ceilings. Only Pi-managed `openai-codex` authentication is copied into disposable homes; arbitrary environment credentials are not forwarded. Redacted content-addressed evidence is retained for 90 days under the mode-`0700` private root `/Users/jason/work/projects/model-quality-evidence/ppe-001`. Raw transcripts and disposable workspaces are deleted after the selected artifact, strict judge record, deterministic evidence, telemetry, and provenance are redacted and stored.
 
-The opt-in flag, exact config/manifest hashes, identities, family independence, routes, credentials, evidence root, limits, sparse rows, and Stage 7 sentinels are fail-closed. Model-free results are never substituted for I4 evidence, and bootstrap reports still cannot emit qualification or routing actions. The E2E adapter uses one disposable task/repository with hash-linked repository-local handoffs; disconnected trials cannot pass. Effective identities/assets come from authoritative runtime/provision evidence, retry/spend limits are row-wide and cumulative, and `audit-real` retrieves every accepted reference plus the pending-human record through unique provenance-bound indexes.
+The opt-in flag, exact config/manifest hashes, identities, family independence, routes, credentials, evidence root, limits, sparse rows, and Stage 7 sentinels are fail-closed. Model-free results are never substituted for I4 evidence, and bootstrap reports still cannot emit qualification or routing actions. The E2E adapter uses one disposable task/repository; each receiver must emit an independently parsed `CONSUMED_INBOUND` hash/path record bound to exact prior file content. Prelaunch prompt, fixture, scorer, tool and route assets are sealed before execution, while participant/outer/judge identities and settings derive from runtime/session events or sealed launch argv. Admission sequences/publications are persisted in every normalized slot.
+
+`SpendLedger` content-addresses every cumulative state. It reserves budget before a paid row, records participant/outer/judge tokens, cost and wall time, conservatively charges incomplete/failed attempts, reconciles crashes at startup, and can never lower imported spend. Evidence indexes are themselves authenticated; `audit-real` joins exact participant provenance, admission state, report/config/manifest hashes, the pending-human record, and the content-addressed spend ledger.
+
+**Current v3 status:** model-free repairs and the exact default/clean-clone verification path pass, but no accepted v3 report exists. A failed judge-observation attempt is conservatively charged, bringing cumulative retained spend to `$17.791287`. The remaining `$2.208713` is below the expected cost of one complete authoritative rerun. `audit-real` therefore fails closed until a human approves a `$25` cumulative ceiling and one v3 run passes. `reports/rejected-real-canary-v2.json` is retained only as explicitly rejected historical evidence.
 
 ## PPE-002 boundary
 

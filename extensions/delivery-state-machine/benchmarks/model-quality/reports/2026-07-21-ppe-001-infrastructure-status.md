@@ -4,72 +4,54 @@
 
 ## Outcome
 
-PPE-001 I1–I4 implementation evidence is complete. All model-free gates and the approved immutable real-runtime phase/E2E/judge canary passed. Independent delivery VERIFY and REVIEW remain the I5 acceptance authority, so this report does not mark PPE-001 done and cannot support a model, phase pairing, profile, or routing action.
+I1–I3 and the REVIEW #2 model-free repairs are complete. I4 v3 is **BLOCKED BY THE APPROVED CUMULATIVE COST CEILING**, so PPE-001 remains ready/claimed, I5 remains open, no PPE-002 handoff is issued, and no qualification, profile, or routing action is supported.
 
-## Implemented contracts
+## Passing model-free evidence
 
-- Existing Stage 7 agent-quality runtime remains the shared runtime/isolation foundation; its scenarios, core contracts, Promptfoo config, and published report are hash-sentinelled and unchanged.
-- Six-row explicit sparse bootstrap manifest: IMPLEMENT, VERIFY, REVIEW, CLOSE, RETRO, and E2E.
-- Immutable versioned dataset seam with permanent bootstrap non-qualification.
-- Exact participant/judge/non-target-route settings, resource namespaces, cleanup and redaction fields.
-- Phase-specific deterministic precedence and supplemental judge-pack contracts; CLOSE rejects default judging.
-- Hash-linked human confirmation, rejection, pending, and abstention states; silence is not confirmation.
-- Redacted content-addressed evidence with provenance, retention, retrieval, and unavailable/expired failure behavior.
-- Joined quality/reliability/token/cost/latency/repair/handoff/amplification arithmetic.
-- Injected bootstrap incident policy, narrow service authority, persistent holds, human-only quarantine/resolution, linearizable hold/publication guard, journal recovery, monotonic sequence, and no substitution.
-- Four independent bootstrap qualification/adoption rejection boundaries.
-
-## Model-free evidence
+- One integrated Stage 7-backed sparse runner; 17 frozen Stage 7 sentinels remain unchanged.
+- Six immutable bootstrap rows with independent schema, runner, report, and adoption rejection.
+- Prelaunch-sealed exact prompt/fixture/scorer/tool/route contracts; authoritative participant/outer/judge runtime/session/argv observation and valid-SHA tamper rejection.
+- Connected E2E receivers must emit a parsed `CONSUMED_INBOUND` hash/path bound to exact prior file content; ignored, omitted, stale, fabricated, mismatched-task, and mismatched-repository handoffs fail.
+- Fake and real selection, dispatch, result-use, join, and report publication use a persistent linearizable admission guard.
+- A journaled evidence/admission coordinator retains evidence before publication or incident acknowledgement, fails closed on missing evidence, and reconciles crashes at every prepare/evidence/guard/ack boundary.
+- Authenticated evidence indexes; exact provenance, report/config/manifest, admission and pending-human joins in `audit-real`.
+- Content-addressed cumulative spend ledger with prelaunch reservation, complete participant/outer/judge token/cost/time records, conservative failed/crashed charges, startup reconciliation, and no-lowering invariant.
+- Exact default `npm run verify` passes without host mutation or skipped discovery by using a disposable copy of host `pi-subagents` with the source lockfile's `typebox@1.1.38` peer.
 
 ```text
-npm run eval:models:validate       PASS — 6 items, 6 explicit rows, 17 Stage 7 sentinels
-npm run eval:models:fake-full      PASS — deterministic expected infrastructure report reproduced
-npm run eval:models:audit          PASS — report hash reproduced from clean-clone assets
-npm run eval:dsm-agents:validate   PASS — 10 Stage 7 scenarios and Promptfoo config
-npm run test                       PASS — with the documented host typebox peer available
+npm run eval:models:validate       PASS — 6 items, 6 sparse rows, 17 sentinels
+npm run eval:models:fake-full      PASS
+npm run eval:models:audit          PASS
+focused infrastructure tests       PASS
+npm run eval:dsm-agents:validate   PASS
+npm run verify                      PASS — required host-discovery smoke executed
 ```
 
-Expected model-free bootstrap report hash: `8054bf80cb976f0e15713a550687df0f4abe623a1102465da22fd28ae6c87312`.
+Model-free expected report hash: `3ce9a737890a2b8a79db8f57b246b65c6bf506b7d7ae4e7e2fe90719dac8b76f`.
 
-The model-free suite includes both hold/publication orders at result-use, join, and report boundaries; stale sequence; journal recovery; idempotent retry; hold escalation; service/human authority; changed hashes; quarantine; missing evidence; redaction; judge injection/malformed output; identity collision/mismatch; sparse-manifest mutation/expansion/budget; outcome slots, bounded infrastructure exhaustion, denominators, false rates, CLOSE judge suppression, E2E handoffs, arithmetic, and adoption rejection.
+## Immutable v3 inputs
 
-## Approved immutable I4 configuration
+- Config hash: `921802242890a36746ed6865179cb4a863424e8045aee9a0080ffabeb0a26529`.
+- Manifest hash: `13965b1cf102cde4d4071d2c4c12d5854845262007ce7656703179642e8cf832`.
+- Participant/outer: `openai-codex/gpt-5.6-sol`, low, fresh.
+- Judge: independent `openai-codex/gpt-5.5`, high, fresh; disabled for CLOSE/E2E.
+- Exact rows: IMPLEMENT, VERIFY, two-reviewer REVIEW, CLOSE, RETRO, and connected E2E.
+- Evidence: `/Users/jason/work/projects/model-quality-evidence/ppe-001`, mode `0700`, 90 days.
 
-- Config v2: `bootstrap/real-canary-config.json`, hash `eeceb46dce0921c4fdbbf754c829e31815bd94463bd8ec52f26a25093f69deaa`.
-- Manifest v2: `bootstrap/real-canary-manifest.json`, hash `f976ca58a9fe521fd684395efe91d22d9efca7b900c09bba0e48e02d4c036762`.
-- Participant and outer: `openai-codex/gpt-5.6-sol` at low thinking.
-- Independent supplemental judge: `openai-codex/gpt-5.5` at high thinking.
-- Builtin routes: worker; fresh-verifier; two reviewers; delegate CLOSE; delegate RETRO.
-- Rows: five phase rows and one E2E IMPLEMENT→VERIFY→REVIEW(two reviewers)→CLOSE→RETRO chain.
-- CLOSE and E2E bootstrap judging: disabled.
-- Limits: one infrastructure retry, 15-minute phase, 45-minute E2E, two-hour total, $2 per phase, $8 E2E, $20 total.
-- Credentials: Pi-managed `openai-codex` authentication only; no arbitrary environment credential forwarding.
-- Evidence: mode-`0700` `/Users/jason/work/projects/model-quality-evidence/ppe-001`, 90-day retention.
+## Cost-ceiling blocker
 
-## Real canary evidence
+The pre-v3 conservative cumulative spend was `$15.791287`. The first v3 IMPLEMENT/judge row failed after paid execution because the Pi JSON stream did not emit a `thinking_level_change` event. The repaired adapter now binds thinking to sealed `--thinking` launch argv and binds the effective model to the runtime `model_change` event.
 
-```text
-MODEL_QUALITY_CANARY=1 npm run eval:models:bootstrap:canary  PASS
-npm run eval:models:audit-real                              PASS
-```
+The automatic ledger retains exact observed participant telemetry (`$0.259642`) but, because failed judge telemetry is unobservable, correctly charges the full `$2` reserved row ceiling. Cumulative spend is therefore `$17.791287`, ledger state hash `667cbf77a2c826eb77d15b1460d59e8e801514fff13a291f7e4811ba5258a336`, leaving `$2.208713`. One complete v3 rerun is expected near the last complete run's `$2.65`, so no further paid call is allowed under the approved `$20` ceiling.
 
-- Result: 6/6 PASS, zero candidate failures, zero exhausted infrastructure rows, zero tainted rows, reliability 1.0, and four observed hash-linked handoffs.
-- The E2E row used one disposable task/repository through IMPLEMENT → VERIFY → two REVIEW readers → CLOSE → RETRO; every phase consumed the prior repository artifact by relative path/hash.
-- Successful v2 frozen-manifest execution cost: `$2.651949`; cumulative conservative I4 spend including rejected v1/v2 infrastructure attempts is `$15.791287`, below the approved `$20` total ceiling.
-- Successful execution wall time: `1068005ms`, below all frozen timeouts.
-- Tokens: 273,647 input; 32,405 output; 350,208 cached.
-- Real report: `reports/real-canary-result.json`, hash `06c3fadafcd3a7df595c323255a36cc63fb468975a69198c8c0e76b7cce665b5`.
-- Durable audit at implementation time: 40 content-addressed objects/indexes. Every accepted report reference resolves through exactly one provenance-bound index; the report-hash-linked pending-human record is required. Rejected prior runs remain retained and never count as accepted.
-- Raw transcripts and disposable repositories/Pi homes were deleted. The ignored Stage 7 raw-artifact directory is empty.
-- Judge records are strict tool-less JSON, blinded/order-frozen, independent by exact version/family, and supplemental only. No CLOSE/E2E bootstrap judge was invoked.
-- Human record is `pending` for delivery I5; it cannot reverse deterministic evidence or silently confirm a model-produced blocker.
+Required decision: approve a `$25` cumulative ceiling for one authoritative v3 rerun, or stop with PPE-001 blocked. No increase has been approved in this delivery attempt.
 
-Several pre-acceptance harness integration attempts failed closed while adapting current Pi package loading and the frozen Stage 7 verifier label. Pre-model duplicate-extension failures made no participant call; later repair attempts were retained as redacted infrastructure evidence rather than scored or substituted. The accepted six-slot report contains only the final immutable-manifest execution.
+## Rejected evidence
 
-## I5 gate
+- `reports/rejected-real-canary-v2.json` is retained as explicitly rejected history; it is not accepted I4 evidence.
+- The failed v3 row and every prior rejected attempt remain content-addressed or conservatively imported in the authenticated ledger. Spend is never lowered and rejected attempts are never substituted into a frozen outcome slot.
+- `npm run eval:models:audit-real` fails closed because no accepted v3 report/pending-human/ledger join exists.
 
-Independent VERIFY must reproduce the model-free and durable-evidence audits from the committed candidate, challenge the real report and cleanup evidence, and confirm the exact manifest/config and Stage 7 sentinels. Independent REVIEW must find no blocker. PPE-001 remains ready/claimed until those gates and source CLOSE complete; only then may planctl release/done and the PPE-002 handoff occur.
+## Scope and cleanup
 
-## Known environment prerequisite
-
-The source package declares `typebox` as a peer. This machine's host Pi installation requires the lockfile-installed `typebox@1.1.38` to be resolvable by the user-scoped pi-subagents package. Verification and the real canary used a temporary validation-only link to that exact dependency and removed it afterward. A second operator must provide the host peer normally or reproduce the same temporary, cleanup-verified setup.
+No golden-data governance, model qualification, profile comparison, routing/default, bundled-agent, or PPE-002 implementation changed. Raw transcripts, disposable repositories, Pi homes, and extension shims are absent. Durable evidence contains only authenticated redacted objects/indexes and spend/admission journals.

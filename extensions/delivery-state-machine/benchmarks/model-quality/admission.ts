@@ -53,7 +53,7 @@ export class AdmissionGuard {
 	private readonly stateFile: string;
 	private readonly journalFile: string;
 	private readonly lockFile: string;
-	constructor(readonly root: string, readonly item: { id: string; version: number; itemHash: string; catalogHash: string }, readonly policy: IncidentPolicy, readonly serviceAllowlist: ReadonlySet<string>, readonly humanAuthorizer: HumanAuthorizer = SYNTHETIC_HUMAN_AUTHORIZER) {
+	constructor(readonly root: string, readonly item: { id: string; version: number; itemHash: string; catalogHash: string }, readonly policy: IncidentPolicy, readonly serviceAllowlist: ReadonlySet<string>, readonly humanAuthorizer: HumanAuthorizer = SYNTHETIC_HUMAN_AUTHORIZER, readonly evidenceExists: (contentHash: string) => boolean = () => false) {
 		if (![item.itemHash, item.catalogHash].every(isHash)) throw new Error("admission item hashes must be SHA-256");
 		fs.mkdirSync(root, { recursive: true });
 		this.stateFile = path.join(root, `${item.id}-${item.version}.json`);
@@ -121,6 +121,7 @@ export class AdmissionGuard {
 	}
 	publish(input: { id: string; kind: Publication["kind"]; expectedSequence: number; evidenceHash: string }): Publication {
 		if (!isHash(input.evidenceHash)) throw new Error("publication evidenceHash must be SHA-256");
+		if (!this.evidenceExists(input.evidenceHash)) throw new Error("publication evidence is not durably retained");
 		return this.transaction((state) => {
 			const prior = state.publications.find((entry) => entry.id === input.id);
 			if (prior) return structuredClone(prior);
@@ -133,6 +134,7 @@ export class AdmissionGuard {
 	}
 	applyIncident(report: IncidentReport): { acknowledged: boolean; decision: IncidentPolicyDecision; sequence: number } {
 		if (![report.itemHash, report.catalogHash, report.evidenceHash].every(isHash)) throw new Error("incident hashes must be SHA-256");
+		if (!this.evidenceExists(report.evidenceHash)) throw new Error("incident evidence is not durably retained");
 		if (!this.serviceAllowlist.has(report.actorId)) throw new Error("incident actor is not an allowlisted ingestion service");
 		if (report.itemId !== this.item.id || report.itemVersion !== this.item.version || report.itemHash !== this.item.itemHash || report.catalogHash !== this.item.catalogHash) throw new Error("incident targets a stale or mismatched item/catalog hash");
 		const decision = this.policy.decide(report);

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalJson, sha256 } from "./schema.ts";
 
 export interface EvidenceIndexRecord {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	contentHash: string;
 	mediaType: "application/json" | "text/plain";
 	schemaVersionRef: string;
@@ -14,7 +14,10 @@ export interface EvidenceIndexRecord {
 	retentionUntil: string;
 	redactionState: "passed";
 	retrievalRef: string;
+	indexHash: string;
 }
+
+type IndexContent = Omit<EvidenceIndexRecord, "indexHash">;
 
 const SECRET_PATTERNS = [
 	/(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*["']?[^\s"']{8,}/ig,
@@ -43,6 +46,24 @@ export function assertRedacted(value: unknown, explicitSecrets: string[] = []): 
 	for (const pattern of SECRET_PATTERNS) { pattern.lastIndex = 0; if (pattern.test(text)) throw new Error("redaction failed: credential-like material remains"); }
 }
 
+function contentOf(record: EvidenceIndexRecord | IndexContent): IndexContent {
+	const { indexHash: _, ...content } = record as EvidenceIndexRecord;
+	return content;
+}
+
+function validateIndex(value: unknown): EvidenceIndexRecord {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("evidence index must be an object");
+	const record = value as EvidenceIndexRecord;
+	const expected = ["schemaVersion", "contentHash", "mediaType", "schemaVersionRef", "assetVersions", "participantProvenance", "createdAt", "retentionUntil", "redactionState", "retrievalRef", "indexHash"].sort();
+	if (JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(expected)) throw new Error("evidence index fields are invalid");
+	if (record.schemaVersion !== 2 || !/^[a-f0-9]{64}$/.test(record.contentHash) || !/^[a-f0-9]{64}$/.test(record.indexHash)) throw new Error("evidence index hashes/schema are invalid");
+	if (!Array.isArray(record.assetVersions) || !Array.isArray(record.participantProvenance) || record.assetVersions.some((entry) => typeof entry !== "string" || !entry) || record.participantProvenance.some((entry) => typeof entry !== "string" || !entry)) throw new Error("evidence index provenance is invalid");
+	if (record.retrievalRef !== `sha256:${record.contentHash}` || record.redactionState !== "passed" || !["application/json", "text/plain"].includes(record.mediaType)) throw new Error("evidence index retrieval/redaction/media contract is invalid");
+	if (!Number.isFinite(Date.parse(record.createdAt)) || !Number.isFinite(Date.parse(record.retentionUntil))) throw new Error("evidence index timestamps are invalid");
+	if (sha256(canonicalJson(contentOf(record))) !== record.indexHash) throw new Error("evidence index authentication failed");
+	return record;
+}
+
 export class EvidenceStore {
 	readonly objectRoot: string;
 	readonly indexRoot: string;
@@ -53,7 +74,7 @@ export class EvidenceStore {
 		fs.mkdirSync(this.objectRoot, { recursive: true });
 		fs.mkdirSync(this.indexRoot, { recursive: true });
 	}
-	put(input: { value: unknown; schemaVersionRef: string; assetVersions: string[]; participantProvenance: string[]; retentionUntil: string; explicitSecrets?: string[]; mediaType?: EvidenceIndexRecord["mediaType"] }): EvidenceIndexRecord {
+	put(input: { value: unknown; schemaVersionRef: string; assetVersions: string[]; participantProvenance: string[]; retentionUntil: string; explicitSecrets?: string[]; mediaType?: EvidenceIndexRecord["mediaType"]; indexId?: string }): EvidenceIndexRecord {
 		if (!Number.isFinite(Date.parse(input.retentionUntil)) || Date.parse(input.retentionUntil) <= Date.now()) throw new Error("evidence retention must be a future ISO timestamp");
 		const redacted = redactValue(input.value, input.explicitSecrets);
 		assertRedacted(redacted, input.explicitSecrets);
@@ -62,14 +83,36 @@ export class EvidenceStore {
 		const objectPath = path.join(this.objectRoot, contentHash);
 		if (!fs.existsSync(objectPath)) fs.writeFileSync(objectPath, content, { flag: "wx", mode: 0o600 });
 		else if (sha256(fs.readFileSync(objectPath)) !== contentHash) throw new Error("durable evidence object hash mismatch");
-		const record: EvidenceIndexRecord = { schemaVersion: 1, contentHash, mediaType: input.mediaType ?? "application/json", schemaVersionRef: input.schemaVersionRef, assetVersions: input.assetVersions, participantProvenance: input.participantProvenance, createdAt: new Date().toISOString(), retentionUntil: input.retentionUntil, redactionState: "passed", retrievalRef: `sha256:${contentHash}` };
-		fs.writeFileSync(path.join(this.indexRoot, `${randomUUID()}.json`), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+		const indexName = input.indexId ? `${sha256(input.indexId)}.json` : `${randomUUID()}.json`;
+		const indexPath = path.join(this.indexRoot, indexName);
+		if (fs.existsSync(indexPath)) {
+			const existing = validateIndex(JSON.parse(fs.readFileSync(indexPath, "utf8")));
+			if (existing.contentHash !== contentHash || existing.schemaVersionRef !== input.schemaVersionRef || canonicalJson(existing.assetVersions) !== canonicalJson(input.assetVersions) || canonicalJson(existing.participantProvenance) !== canonicalJson(input.participantProvenance)) throw new Error("evidence idempotency key conflicts with retained record");
+			return existing;
+		}
+		const body: IndexContent = { schemaVersion: 2, contentHash, mediaType: input.mediaType ?? "application/json", schemaVersionRef: input.schemaVersionRef, assetVersions: [...input.assetVersions], participantProvenance: [...input.participantProvenance], createdAt: new Date().toISOString(), retentionUntil: input.retentionUntil, redactionState: "passed", retrievalRef: `sha256:${contentHash}` };
+		const record: EvidenceIndexRecord = { ...body, indexHash: sha256(canonicalJson(body)) };
+		const temporary = `${indexPath}.${randomUUID()}.tmp`;
+		fs.writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+		fs.renameSync(temporary, indexPath);
 		return record;
 	}
+	/** Explicit one-time migration. Audits never silently bless unauthenticated indexes. */
+	sealLegacyIndexes(): number {
+		let sealed = 0;
+		for (const file of fs.readdirSync(this.indexRoot).filter((entry) => entry.endsWith(".json"))) {
+			const target = path.join(this.indexRoot, file); const value = JSON.parse(fs.readFileSync(target, "utf8")) as any;
+			if (value.schemaVersion === 2 && value.indexHash) { validateIndex(value); continue; }
+			if (value.schemaVersion !== 1 || !/^[a-f0-9]{64}$/.test(value.contentHash) || value.retrievalRef !== `sha256:${value.contentHash}`) throw new Error(`legacy evidence index cannot be authenticated: ${file}`);
+			const body: IndexContent = { ...value, schemaVersion: 2 };
+			const record = { ...body, indexHash: sha256(canonicalJson(body)) };
+			fs.writeFileSync(target, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 }); sealed += 1;
+		}
+		return sealed;
+	}
 	get(record: EvidenceIndexRecord): Buffer {
-		if (record.redactionState !== "passed") throw new Error("unredacted evidence is unavailable");
+		validateIndex(record);
 		if (Date.parse(record.retentionUntil) <= Date.now()) throw new Error("evidence retention expired");
-		if (record.retrievalRef !== `sha256:${record.contentHash}`) throw new Error("evidence retrieval reference mismatch");
 		const file = path.join(this.objectRoot, record.contentHash);
 		if (!fs.existsSync(file)) throw new Error("durable evidence is unavailable");
 		const content = fs.readFileSync(file);
@@ -77,7 +120,7 @@ export class EvidenceStore {
 		return content;
 	}
 	indexes(): EvidenceIndexRecord[] {
-		return fs.readdirSync(this.indexRoot).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(fs.readFileSync(path.join(this.indexRoot, file), "utf8")) as EvidenceIndexRecord);
+		return fs.readdirSync(this.indexRoot).filter((file) => file.endsWith(".json")).map((file) => validateIndex(JSON.parse(fs.readFileSync(path.join(this.indexRoot, file), "utf8"))));
 	}
 	getByRef(reference: string, expected?: { schemaVersionRef?: string; assetVersions?: string[]; participantProvenance?: string[] }): { record: EvidenceIndexRecord; content: Buffer } {
 		const matches = this.indexes().filter((record) => record.retrievalRef === reference);
@@ -87,6 +130,10 @@ export class EvidenceStore {
 		for (const asset of expected?.assetVersions ?? []) if (!record.assetVersions.includes(asset)) throw new Error(`evidence asset provenance mismatch: ${asset}`);
 		for (const participant of expected?.participantProvenance ?? []) if (!record.participantProvenance.includes(participant)) throw new Error(`evidence participant provenance mismatch: ${participant}`);
 		return { record, content: this.get(record) };
+	}
+	hasContentHash(hash: string): boolean {
+		if (!/^[a-f0-9]{64}$/.test(hash)) return false;
+		return this.indexes().some((record) => record.contentHash === hash && (() => { try { this.get(record); return true; } catch { return false; } })());
 	}
 	audit(): { objects: number; indexes: number } {
 		const records = this.indexes();

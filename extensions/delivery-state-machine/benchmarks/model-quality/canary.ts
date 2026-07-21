@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,6 +10,11 @@ import { artifactPrompt, executePiRuntime, selectAuthentication, type RuntimeRun
 import { provisionScenario, type ProvisionedRun } from "../agent-quality/provision.ts";
 import { PROMPTFOO_VERSION, SCHEMA_VERSION, type HarnessAttempt, type NormalizedResult, type ScenarioRecord, type UsageRecord } from "../agent-quality/schema.ts";
 import { EvidenceStore } from "./evidence.ts";
+import { EvidenceAdmissionCoordinator, type CoordinatedPublication } from "./admission-coordinator.ts";
+import { SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST } from "./admission.ts";
+import { assertObservedBinding, bindObservedExecution, capturePrelaunchBinding, exactModelId, observedFamily, observedVersion, type ObservedExecutionBinding } from "./binding.ts";
+import { SpendLedger, type SpendUsage } from "./spend.ts";
+import { loadRegistry } from "./manifest.ts";
 import { assertJudgeIndependence, buildJudgePack, parseJudgeResponse } from "./judge.ts";
 import { buildInfrastructureReport, type InfrastructureReport } from "./report.ts";
 import { hashObject, manifestContent, sha256, validateHumanReview, validateManifest, validateSlotResult, type JudgeRecord, type ManifestRow, type ModelIdentity, type NormalizedSlotResult, type SparseManifest } from "./schema.ts";
@@ -23,11 +29,11 @@ const SCENARIO: Record<string, string> = { IMPLEMENT: "IMP-01", VERIFY: "VER-01"
 interface RealCanaryConfig {
 	schemaVersion: 1; id: string; version: number; approvedAt: string; approvedBy: string; configHash: string;
 	participant: ModelIdentity & { thinking: "low"; context: "fresh" };
-	outer: ModelIdentity & { thinking: "low" };
-	judge: ModelIdentity & { thinking: "high" };
+	outer: ModelIdentity & { thinking: "low"; context: "fresh" };
+	judge: ModelIdentity & { thinking: "high"; context: "fresh" };
 	routes: { IMPLEMENT: ["worker"]; VERIFY: ["fresh-verifier"]; REVIEW: ["reviewer", "reviewer"]; CLOSE: ["delegate"]; RETRO: ["delegate"] };
 	credentialPolicy: { providers: ["openai-codex"]; forwardedEnvironment: []; source: "pi-managed-auth-only" };
-	evidence: { root: string; mode: "0700"; retentionDays: 90 };
+	evidence: { root: string; mode: "0700"; retentionDays: 90; priorSpendUsd: number };
 	limits: { totalCostUsd: 20; phaseCostUsd: 2; e2eCostUsd: 8; phaseTimeoutMs: 900000; e2eTimeoutMs: 2700000; totalTimeoutMs: 7200000; infrastructureRetries: 1 };
 	rows: Array<{ slotId: string; phase: string; scenarioIds: string[]; judge: boolean }>;
 }
@@ -37,10 +43,10 @@ function configContent(config: RealCanaryConfig): Omit<RealCanaryConfig, "config
 
 export function loadRealCanary(): { config: RealCanaryConfig; manifest: SparseManifest } {
 	const config = readJson<RealCanaryConfig>(CONFIG_FILE);
-	if (config.schemaVersion !== 1 || config.id !== "PPE-001-REAL-CANARY" || config.version !== 2) throw new Error("real canary config identity is invalid");
+	if (config.schemaVersion !== 1 || config.id !== "PPE-001-REAL-CANARY" || config.version !== 3) throw new Error("real canary config identity is invalid");
 	if (hashObject(configContent(config)) !== config.configHash) throw new Error("real canary config hash mismatch");
 	if (JSON.stringify(config.credentialPolicy) !== JSON.stringify({ providers: ["openai-codex"], forwardedEnvironment: [], source: "pi-managed-auth-only" })) throw new Error("real canary credential policy changed");
-	if (!path.isAbsolute(config.evidence.root) || config.evidence.root !== "/Users/jason/work/projects/model-quality-evidence/ppe-001" || config.evidence.mode !== "0700" || config.evidence.retentionDays !== 90) throw new Error("real canary evidence boundary changed");
+	if (!path.isAbsolute(config.evidence.root) || config.evidence.root !== "/Users/jason/work/projects/model-quality-evidence/ppe-001" || config.evidence.mode !== "0700" || config.evidence.retentionDays !== 90 || config.evidence.priorSpendUsd !== 15.791287) throw new Error("real canary evidence boundary/prior spend changed");
 	if (JSON.stringify(config.limits) !== JSON.stringify({ totalCostUsd: 20, phaseCostUsd: 2, e2eCostUsd: 8, phaseTimeoutMs: 900000, e2eTimeoutMs: 2700000, totalTimeoutMs: 7200000, infrastructureRetries: 1 })) throw new Error("real canary limits changed");
 	if (JSON.stringify(config.routes) !== JSON.stringify({ IMPLEMENT: ["worker"], VERIFY: ["fresh-verifier"], REVIEW: ["reviewer", "reviewer"], CLOSE: ["delegate"], RETRO: ["delegate"] })) throw new Error("real canary routes changed");
 	assertJudgeIndependence([config.judge], [config.participant, config.outer]);
@@ -49,6 +55,7 @@ export function loadRealCanary(): { config: RealCanaryConfig; manifest: SparseMa
 	for (const row of manifest.rows) {
 		if (row.datasetClass !== "bootstrap" || row.qualificationEligible || row.candidate.provider !== config.participant.provider || row.candidate.model !== config.participant.model || row.candidate.version !== config.participant.version || row.candidate.family !== config.participant.family || row.candidate.thinking !== config.participant.thinking || row.candidate.context !== config.participant.context) throw new Error(`real canary participant mismatch: ${row.slotId}`);
 		if (row.maxInfrastructureAttempts !== config.limits.infrastructureRetries + 1 || row.budgetUsd !== (row.phase === "E2E" ? config.limits.e2eCostUsd : config.limits.phaseCostUsd)) throw new Error(`real canary limit mismatch: ${row.slotId}`);
+		const expectedAssets = expectedRowAssetBinding(row, config); if (row.candidate.promptVersion !== expectedAssets.promptVersion || row.candidate.toolsHash !== expectedAssets.toolsHash) throw new Error(`real canary prelaunch prompt/tools contract mismatch: ${row.slotId}`);
 		if ((row.phase === "CLOSE" || row.phase === "E2E") && row.judge) throw new Error(`${row.phase} must not enable a bootstrap judge`);
 		if (!["CLOSE", "E2E"].includes(row.phase) && (!row.judge || row.judge.model !== config.judge.model || row.judge.version !== config.judge.version || row.judge.family !== config.judge.family)) throw new Error(`real canary judge mismatch: ${row.slotId}`);
 	}
@@ -105,7 +112,7 @@ function textFromEvents(entries: any[]): string[] {
 	});
 }
 
-async function judgePhase(config: RealCanaryConfig, row: ManifestRow, candidateArtifact: string, deadline: number): Promise<{ record: JudgeRecord; usage: UsageRecord; packHash: string; effective: ManifestRow["judge"] }> {
+async function judgePhase(config: RealCanaryConfig, row: ManifestRow, candidateArtifact: string, deadline: number): Promise<{ record: JudgeRecord; usage: UsageRecord; wallTimeMs: number; packHash: string; launchSeal: string; effective: ManifestRow["judge"]; observed: { provider: string; model: string; version: string; family: string; thinking: string; context: "fresh" } }> {
 	if (["CLOSE", "E2E"].includes(row.phase)) throw new Error(`${row.phase} judge invocation is forbidden`);
 	const pack = buildJudgePack({ phase: row.phase, acceptedContract: `PPE-001 bootstrap ${row.phase} contract: evaluate clarity and evidence only; deterministic gates remain authoritative.`, eligibleOutputA: candidateArtifact, eligibleOutputB: `Reference eligible ${row.phase} response with concise evidence and limitations.`, eligibilitySummary: "deterministic Stage 7 controls passed and output is eligible for supplemental infrastructure judging", rubric: `${row.phase} supplemental evidence quality, clarity, actionability, and supported limitations`, nonce: hashObject(`${row.slotId}:${config.configHash}`).slice(0, 32), swap: Number(row.slotId.slice(-1)) % 2 === 0 });
 	const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ppe-001-judge-"));
@@ -120,19 +127,26 @@ async function judgePhase(config: RealCanaryConfig, row: ManifestRow, candidateA
 		const remaining = Math.min(config.limits.phaseTimeoutMs, deadline - Date.now());
 		if (remaining < 1000) throw new Error("judge deadline exhausted before launch");
 		const env: NodeJS.ProcessEnv = { HOME: temp, PI_CODING_AGENT_DIR: agentDir, PATH: process.env.PATH ?? "/usr/bin:/bin", TMPDIR: temp, LANG: "C.UTF-8" };
-		const execution = await spawnCapture(process.env.PI_BIN ?? "pi", ["--print", "--mode", "json", "--no-tools", "--model", `${config.judge.provider}/${config.judge.model}`, "--thinking", config.judge.thinking, prompt], { cwd: temp, env, timeoutMs: remaining });
+		const judgeArgs = ["--print", "--mode", "json", "--no-tools", "--model", `${config.judge.provider}/${config.judge.model}`, "--thinking", config.judge.thinking, prompt];
+		const judgeLaunchSeal = hashObject({ args: judgeArgs.slice(0, -1), promptHash: hashObject(prompt), cwd: "<FRESH_PRIVATE_HOME>", context: config.judge.context });
+		const judgeStarted = Date.now();
+		const execution = await spawnCapture(process.env.PI_BIN ?? "pi", judgeArgs, { cwd: temp, env, timeoutMs: remaining });
+		const judgeWallTimeMs = Date.now() - judgeStarted;
 		if (execution.timedOut || execution.code !== 0) throw new Error(`judge infrastructure failure: ${execution.timedOut ? "timeout" : `exit ${execution.code}`}: ${execution.stderr.slice(0, 500)}`);
 		const entries = jsonLines(execution.stdout); const candidates = textFromEvents(entries);
 		let record: JudgeRecord | undefined;
 		for (const text of candidates.reverse()) { try { record = parseJudgeResponse(text.trim()); break; } catch {} }
 		if (!record) throw new Error("judge returned no strict JSON record");
 		if (Date.now() > deadline) throw new Error("judge exceeded the frozen row deadline");
-		const modelEvents = entries.filter((entry) => entry?.type === "model_change" || entry?.type === "model" || entry?.message?.role === "assistant");
-		const observed = modelEvents.map((entry) => `${entry?.provider ?? entry?.model?.provider ?? entry?.message?.provider ?? ""}/${entry?.modelId ?? entry?.model?.id ?? entry?.message?.model ?? entry?.model ?? ""}`).find((entry) => entry === `${config.judge.provider}/${config.judge.model}`);
-		if (!observed) throw new Error("effective judge identity is unobservable");
-		const effective = { provider: config.judge.provider, model: config.judge.model, version: config.judge.version, family: config.judge.family, rubricVersion: row.judge!.rubricVersion };
+		const modelEvent = entries.find((entry) => entry?.type === "model_change");
+		if (!modelEvent?.provider || !modelEvent?.modelId || !/^[a-f0-9]{64}$/.test(judgeLaunchSeal)) throw new Error("effective judge identity/launch settings are unobservable");
+		const thinkingIndex = judgeArgs.indexOf("--thinking"), modelIndex = judgeArgs.indexOf("--model"); if (thinkingIndex < 0 || modelIndex < 0 || judgeArgs[thinkingIndex + 1] !== config.judge.thinking || judgeArgs[modelIndex + 1] !== `${config.judge.provider}/${config.judge.model}`) throw new Error("sealed judge launch argv mismatch");
+		const observed = { provider: String(modelEvent.provider), model: String(modelEvent.modelId), version: observedVersion(String(modelEvent.modelId)), family: observedFamily(String(modelEvent.modelId)), thinking: judgeArgs[thinkingIndex + 1], context: "fresh" as const };
+		const expectedObserved = { provider: config.judge.provider, model: config.judge.model, version: config.judge.version, family: config.judge.family, thinking: config.judge.thinking, context: config.judge.context };
+		if (JSON.stringify(observed) !== JSON.stringify(expectedObserved)) throw new Error("effective judge identity/settings mismatch");
+		const effective = { provider: observed.provider, model: observed.model, version: observed.version, family: observed.family, rubricVersion: row.judge!.rubricVersion };
 		if (hashObject({ effective, packHash: pack.packHash, rubric: row.judge!.rubricVersion }) !== hashObject({ effective: row.judge, packHash: pack.packHash, rubric: row.judge!.rubricVersion })) throw new Error("effective judge/rubric identity mismatch");
-		return { record, usage: usageFromEvents(entries), packHash: pack.packHash, effective };
+		return { record, usage: usageFromEvents(entries), wallTimeMs: judgeWallTimeMs, packHash: pack.packHash, launchSeal: judgeLaunchSeal, effective, observed };
 	} finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
 
@@ -144,6 +158,29 @@ function controlledScenario(phase: string, config: RealCanaryConfig, timeoutMs: 
 	const source = scenarioById(SCENARIO[phase]);
 	return { ...structuredClone(source), candidates: [legacyCandidate] as any, launch: { ...source.launch, model: `${config.participant.provider}/${config.participant.model}`, thinking: config.participant.thinking, context: config.participant.context, timeoutMs, repetitions: 1 }, environment: { inherit: false, allow: ["NODE_PATH"] } } as ScenarioRecord;
 }
+function connectedScenario(base: ScenarioRecord, phase: string, config: RealCanaryConfig, candidate: string, taskId: string, prior?: { phase: string; hash: string; relativePath: string }): ScenarioRecord {
+	const scenario = controlledScenario(phase, config, config.limits.e2eTimeoutMs, candidate);
+	const inbound = prior ? `Inbound handoff from ${prior.phase}: read ${prior.relativePath}, verify exact content sha256:${prior.hash}, and emit exactly this machine-readable line in your artifact: CONSUMED_INBOUND: sha256:${prior.hash} path:${prior.relativePath}` : "No inbound handoff: this is the journey origin; do not emit CONSUMED_INBOUND.";
+	scenario.fixture = structuredClone(base.fixture); scenario.task = `${base.task}\n\nConnected delivery task ${taskId}. Operate on the same repository. ${inbound}`;
+	scenario.artifact = { ...scenario.artifact, verdicts: ["PASS"] }; scenario.invariants = [...base.invariants, "Preserve the connected delivery task and cite the inbound handoff hash when present."];
+	scenario.mutation = phase === "IMPLEMENT" ? structuredClone(base.mutation) : { allowedPaths: phase === "CLOSE" ? ["**"] : [], allowedGitOperations: phase === "CLOSE" ? ["stage", "commit", "push", "create-pr-stub"] : ["none"] };
+	return scenario;
+}
+export function expectedRowAssetBinding(row: ManifestRow, config: RealCanaryConfig): { promptVersion: string; toolsHash: string } {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppe-001-binding-preflight-"));
+	try {
+		const phases = row.phase === "E2E" ? ["IMPLEMENT", "VERIFY", "REVIEW", "REVIEW", "CLOSE", "RETRO"] : row.phase === "REVIEW" ? ["REVIEW", "REVIEW"] : [row.phase];
+		const base = controlledScenario("IMPLEMENT", config, 1000, "worker"); const contracts: string[] = [], tools: string[][] = []; let prior: { phase: string; hash: string; relativePath: string } | undefined;
+		for (let index = 0; index < phases.length; index++) {
+			const phase = phases[index], candidate = phase === "VERIFY" ? "reviewer" : ROUTE_AGENT[phase]; const scenario = row.phase === "E2E" ? connectedScenario(base, phase, config, candidate, "PPE-001-E2E-CONNECTED-v3", prior) : controlledScenario(phase, config, 1000, candidate);
+			const artifactPath = path.join(root, `.delivery-evidence/${index + 1}-${phase.toLowerCase()}.md`); const fakeRun = { root, workspace: path.join(root, "workspace"), agentHome: path.join(root, "home"), artifactPath, rawEvidence: path.join(root, "raw"), env: { TMPDIR: path.join(root, "tmp") } } as unknown as ProvisionedRun;
+			contracts.push(capturePrelaunchBinding(scenario, fakeRun, config.routes, config.outer).promptContractHash); tools.push([...scenario.launch.tools]); prior = { phase, hash: HASH_PLACEHOLDER, relativePath: `.delivery-evidence/${index + 1}-${phase.toLowerCase()}.md` };
+			if (phase === "REVIEW" && phases[index - 1] === "REVIEW") prior = { phase: "REVIEW", hash: HASH_PLACEHOLDER, relativePath: ".delivery-evidence/review-joined.md" };
+		}
+		return { promptVersion: `sha256:${hashObject(contracts)}`, toolsHash: hashObject(tools) };
+	} finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+const HASH_PLACEHOLDER = "0".repeat(64);
 function assertRuntimeIdentity(result: NormalizedResult, phase: string, config: RealCanaryConfig): void {
 	if (!result.child) throw new Error(`${phase} effective child identity is unavailable`);
 	const expectedModel = `${config.participant.provider}/${config.participant.model}`;
@@ -157,7 +194,9 @@ async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: num
 	// and retained metadata must prove the actual fresh-verifier launch.
 	const legacyCandidate = phase === "VERIFY" ? "reviewer" : actualAgent;
 	const scenario = controlledScenario(phase, config, timeoutMs, legacyCandidate);
+	let observedBinding: ObservedExecutionBinding | undefined;
 	const result = await runPromptfooTrial({ scenario, candidate: legacyCandidate, repetition: 0, comparisonMode: "canary", retain: true, executor: async (candidateScenario, _candidate, run) => {
+		const prelaunch = capturePrelaunchBinding(candidateScenario, run, config.routes, config.outer);
 		if (actualAgent === "fresh-verifier") {
 			const source = path.resolve(ROOT, "../../agents/fresh-verifier.md"); const target = path.join(run.env.PI_CODING_AGENT_DIR, "agents", "fresh-verifier.md");
 			let contents = fs.readFileSync(source, "utf8")
@@ -174,19 +213,32 @@ async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: num
 		fs.symlinkSync(path.join(installed, "src"), path.join(shim, "src"), "dir");
 		fs.writeFileSync(path.join(shim, "package.json"), `${JSON.stringify({ name: "ppe-001-explicit-subagents-shim", private: true, type: "module", pi: { extensions: [] } }, null, 2)}\n`);
 		const prior = process.env.PI_SUBAGENTS_ROOT; process.env.PI_SUBAGENTS_ROOT = shim;
-		try { return await executePiRuntime(candidateScenario, actualAgent, run); }
-		finally { if (prior === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = prior; fs.rmSync(shim, { recursive: true, force: true }); }
+		try {
+			const runtime = await executePiRuntime(candidateScenario, actualAgent, run);
+			const provisional = { outer: runtime.outer, child: runtime.child } as NormalizedResult;
+			observedBinding = bindObservedExecution(prelaunch, provisional);
+			return runtime;
+		} finally { if (prior === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = prior; fs.rmSync(shim, { recursive: true, force: true }); }
 	} }, maxAttempts);
 	assertRuntimeIdentity(result, phase, config);
-	(result as any).executionBinding = { promptHash: promptAssetHash(phase, false), fixtureHash: result.fixtureHash, scorerHash: hashObject(scenario.scorers), nonTargetRoutes: config.routes };
+	if (!observedBinding) throw new Error(`${phase} prelaunch/runtime binding was not retained`);
+	(result as any).executionBinding = observedBinding;
 	return result;
 }
 
-export interface HandoffRecord { from: string; to: string; sequence: number; outboundHash: string; inboundHash: string; taskId: string; repositoryId: string }
+export interface HandoffRecord { from: string; to: string; sequence: number; outboundHash: string; outboundRef: string; inboundHash: string; consumedInboundHash: string; consumedInboundRef: string; consumptionEvidenceHash: string; taskId: string; repositoryId: string }
+export function parseConsumedInbound(artifact: string, expected: { hash: string; relativePath: string; content: string }): { hash: string; ref: string; evidenceHash: string } {
+	if (sha256(expected.content) !== expected.hash) throw new Error("inbound file/content hash changed before consumption validation");
+	const matches = [...artifact.matchAll(/^CONSUMED_INBOUND:\s+sha256:([a-f0-9]{64})\s+path:(\S+)\s*$/gm)];
+	if (matches.length !== 1) throw new Error("receiving artifact must emit exactly one machine-readable CONSUMED_INBOUND record");
+	const hash = matches[0][1], ref = matches[0][2];
+	if (hash !== expected.hash || ref !== expected.relativePath) throw new Error("receiving artifact consumed a stale, fabricated, or mismatched inbound reference");
+	return { hash, ref, evidenceHash: sha256(matches[0][0]) };
+}
 export function validateConnectedHandoffs(handoffs: HandoffRecord[]): string[] {
 	const expected = ["IMPLEMENT->VERIFY", "VERIFY->REVIEW", "REVIEW->CLOSE", "CLOSE->RETRO"];
 	const observed = handoffs.map((entry) => `${entry.from}->${entry.to}`);
-	if (JSON.stringify(observed) !== JSON.stringify(expected) || handoffs.some((entry, index) => entry.sequence !== index + 1 || entry.inboundHash !== entry.outboundHash || !entry.taskId || !entry.repositoryId) || new Set(handoffs.map((entry) => entry.taskId)).size !== 1 || new Set(handoffs.map((entry) => entry.repositoryId)).size !== 1) throw new Error("connected E2E handoff chain is incomplete, disconnected, or mismatched");
+	if (JSON.stringify(observed) !== JSON.stringify(expected) || handoffs.some((entry, index) => entry.sequence !== index + 1 || entry.inboundHash !== entry.outboundHash || entry.consumedInboundHash !== entry.outboundHash || entry.consumedInboundRef !== entry.outboundRef || !/^[a-f0-9]{64}$/.test(entry.consumptionEvidenceHash) || !entry.taskId || !entry.repositoryId) || new Set(handoffs.map((entry) => entry.taskId)).size !== 1 || new Set(handoffs.map((entry) => entry.repositoryId)).size !== 1) throw new Error("connected E2E handoff chain is incomplete, disconnected, unconsumed, or mismatched");
 	return observed;
 }
 interface ConnectedJourney { results: NormalizedResult[]; artifacts: string[]; handoffs: HandoffRecord[]; cleanup: () => void }
@@ -207,7 +259,7 @@ async function executeConnectedRuntime(scenario: ScenarioRecord, agent: string, 
 }
 
 async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise<ConnectedJourney> {
-	const taskId = "PPE-001-E2E-CONNECTED-v2"; const base = controlledScenario("IMPLEMENT", config, Math.max(1000, deadline - Date.now()), "worker");
+	const taskId = "PPE-001-E2E-CONNECTED-v3"; const base = controlledScenario("IMPLEMENT", config, Math.max(1000, deadline - Date.now()), "worker");
 	const shared = provisionScenario(base); const repositoryId = sha256(`${taskId}:${shared.gitBefore}:${base.fixture.sha256}`);
 	const remote = path.join(shared.root, "connected-remote.git"); Bun.spawnSync(["git", "init", "--bare", remote]); Bun.spawnSync(["git", "remote", "add", "origin", remote], { cwd: shared.workspace });
 	fs.appendFileSync(path.join(shared.workspace, ".git", "info", "exclude"), "\n.delivery-evidence/\n");
@@ -218,26 +270,24 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 		for (let index = 0; index < phases.length; index++) {
 			const phase = phases[index]; if (Date.now() >= deadline) throw new Error("connected E2E deadline exhausted");
 			const source = scenarioById(SCENARIO[phase]); const actualAgent = ROUTE_AGENT[phase]; const candidate = phase === "VERIFY" ? "reviewer" : actualAgent;
-			const inbound = priorOutbound ? `Inbound handoff from ${priorOutbound.phase}: read ${priorOutbound.relativePath} and verify sha256:${priorOutbound.hash}.` : "No inbound handoff: this is the journey origin.";
-			const scenario = controlledScenario(phase, config, Math.max(1000, deadline - Date.now()), candidate);
-			scenario.fixture = structuredClone(base.fixture); scenario.task = `${base.task}\n\nConnected delivery task ${taskId}. Operate on the same repository. ${inbound}`;
-			scenario.artifact = { ...scenario.artifact, verdicts: ["PASS"] };
-			scenario.invariants = [...base.invariants, "Preserve the connected delivery task and cite the inbound handoff hash when present."];
-			scenario.mutation = phase === "IMPLEMENT" ? structuredClone(base.mutation) : { allowedPaths: phase === "CLOSE" ? ["**"] : [], allowedGitOperations: phase === "CLOSE" ? ["stage", "commit", "push", "create-pr-stub"] : ["none"] };
+			const scenario = connectedScenario(base, phase, config, candidate, taskId, priorOutbound); scenario.launch.timeoutMs = Math.max(1000, deadline - Date.now());
 			const artifactPath = path.join(shared.workspace, ".delivery-evidence", `${index + 1}-${phase.toLowerCase()}.md`); fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
 			const rawEvidence = path.join(shared.root, "connected-raw", `${index + 1}-${phase.toLowerCase()}`); fs.mkdirSync(rawEvidence, { recursive: true });
 			const phaseHome = path.join(shared.root, "connected-agent-homes", `${index + 1}-${phase.toLowerCase()}`); const phaseAgentDir = path.join(phaseHome, ".pi", "agent"); const phaseTmp = path.join(phaseHome, "tmp"); fs.mkdirSync(phaseAgentDir, { recursive: true }); fs.mkdirSync(phaseTmp, { recursive: true });
 			const phaseRun: ProvisionedRun = { ...shared, agentHome: phaseHome, artifactPath, rawEvidence, localRemote: remote, env: { ...shared.env, HOME: phaseHome, PI_CODING_AGENT_DIR: phaseAgentDir, TMPDIR: phaseTmp, PWD: shared.workspace } };
+			const prelaunch = capturePrelaunchBinding(scenario, phaseRun, config.routes, config.outer);
 			const startedAt = new Date().toISOString(); const runtime = await executeConnectedRuntime(scenario, actualAgent, phaseRun); const finishedAt = new Date().toISOString();
 			if (!runtime.evidence.completed || runtime.evidence.timedOut || !runtime.child || !fs.existsSync(artifactPath)) throw new Error(`connected ${phase} runtime did not complete with an artifact: ${JSON.stringify({ evidence: runtime.evidence, childUsage: runtime.child?.usage, outerUsage: runtime.outer.usage })}`);
 			const content = fs.readFileSync(artifactPath, "utf8"); const outboundHash = sha256(content);
+			let consumption: ReturnType<typeof parseConsumedInbound> | undefined;
+			if (priorOutbound) consumption = parseConsumedInbound(content, { hash: priorOutbound.hash, relativePath: priorOutbound.relativePath, content: priorOutbound.content });
 			if (priorOutbound) {
 				const from = priorOutbound.phase === "REVIEW" && phase === "REVIEW" ? undefined : priorOutbound.phase;
-				if (from) handoffs.push({ from, to: phase, sequence: ++sequence, outboundHash: priorOutbound.hash, inboundHash: priorOutbound.hash, taskId, repositoryId });
+				if (from) handoffs.push({ from, to: phase, sequence: ++sequence, outboundHash: priorOutbound.hash, outboundRef: priorOutbound.relativePath, inboundHash: priorOutbound.hash, consumedInboundHash: consumption!.hash, consumedInboundRef: consumption!.ref, consumptionEvidenceHash: consumption!.evidenceHash, taskId, repositoryId });
 			}
 			const result: NormalizedResult = { schemaVersion: SCHEMA_VERSION, promptfooVersion: PROMPTFOO_VERSION, candidateCommit: Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: path.resolve(ROOT, "../../../..") }).stdout.toString().trim(), fixtureHash: base.fixture.sha256, scenarioId: source.id, role: phase as any, candidate, comparisonMode: "canary", repetition: index, outer: runtime.outer, child: runtime.child, startedAt, finishedAt, timedOut: false, completion: "completed", artifactPath, scorers: [{ name: "runtime", passed: true, critical: true, detail: "connected runtime and authoritative identity observed" }, { name: "artifact", passed: true, critical: true, detail: "hash-linked connected artifact observed" }], status: "PASS", diagnostics: [], redactionPassed: true, rawEvidencePath: rawEvidence };
 			result.harness = { classification: "scored", maxAttempts: 1, finalAttempt: 1, attempts: [{ attempt: 1, status: "PASS", completion: "completed", diagnostics: [], rawEvidencePath: rawEvidence, artifactPath, outer: runtime.outer, child: runtime.child, scorers: result.scorers, redactionPassed: true }] };
-			(result as any).executionBinding = { promptHash: promptAssetHash(phase, true), fixtureHash: base.fixture.sha256, scorerHash: hashObject(scenario.scorers), nonTargetRoutes: config.routes, taskId, repositoryId, inboundHash: priorOutbound?.hash ?? null, outboundHash };
+			(result as any).executionBinding = { ...bindObservedExecution(prelaunch, result), taskId, repositoryId, inboundHash: consumption?.hash ?? null, inboundRef: consumption?.ref ?? null, consumptionEvidenceHash: consumption?.evidenceHash ?? null, outboundHash };
 			results.push(result); artifacts.push(content);
 			const relativePath = path.relative(shared.workspace, artifactPath);
 			if (phase === "REVIEW" && phases[index + 1] === "REVIEW") priorOutbound = { phase: "REVIEW", hash: outboundHash, content, relativePath };
@@ -254,42 +304,43 @@ function observedRoutes(row: ManifestRow, config: RealCanaryConfig): Record<stri
 	if (hashObject(routes) !== hashObject(row.nonTargetRoutes)) throw new Error(`observed non-target route binding mismatch: ${row.slotId}`);
 	return routes;
 }
-export function assertObservedExecutionBinding(result: NormalizedResult, config: Pick<RealCanaryConfig, "participant" | "outer" | "routes">): void {
+export function assertObservedExecutionBinding(result: NormalizedResult, config: Pick<RealCanaryConfig, "participant" | "outer" | "routes">, row: ManifestRow): void {
 	if (!result.child || !(result as any).executionBinding) throw new Error("authoritative runtime/provision binding is unavailable");
-	const binding = (result as any).executionBinding;
-	if (result.child.provider !== config.participant.provider || result.child.model !== `${config.participant.provider}/${config.participant.model}` || result.child.thinking !== config.participant.thinking || result.child.context !== config.participant.context) throw new Error("participant runtime binding mismatch");
-	if (result.outer.provider !== config.outer.provider || result.outer.model !== `${config.outer.provider}/${config.outer.model}`) throw new Error("outer runtime binding mismatch");
-	if (binding.fixtureHash !== result.fixtureHash || binding.scorerHash !== hashObject(scenarioById(result.scenarioId).scorers) || hashObject(binding.nonTargetRoutes) !== hashObject(config.routes) || !/^[a-f0-9]{64}$/.test(binding.promptHash) || hashObject(result.child.tools).length !== 64) throw new Error("prompt/tools/fixture/scorer/route binding mismatch");
+	const binding = (result as any).executionBinding as ObservedExecutionBinding;
+	assertObservedBinding(binding, row, { outer: config.outer, routes: config.routes });
+	if (binding.fixtureHash !== result.fixtureHash || binding.scorerHash !== hashObject(scenarioById(result.scenarioId).scorers)) throw new Error("fixture/scorer observed binding mismatch");
 }
-function observedCandidate(row: ManifestRow, results: NormalizedResult[], config: RealCanaryConfig): ManifestRow["candidate"] {
-	if (!results.length || results.some((result) => !result.child)) throw new Error("effective participant identity is unobservable");
-	for (const result of results) assertObservedExecutionBinding(result, config);
-	const expectedModel = `${config.participant.provider}/${config.participant.model}`;
-	for (const result of results) if (result.child!.provider !== config.participant.provider || result.child!.model !== expectedModel || result.child!.thinking !== config.participant.thinking || result.child!.context !== config.participant.context) throw new Error("observed participant identity/settings mismatch");
-	const toolsHash = hashObject(results.map((result) => result.child!.tools));
-	if (results.some((result) => !(result as any).executionBinding)) throw new Error("effective prompt/fixture/scorer binding is unobservable");
-	const promptVersion = `sha256:${hashObject(results.map((result) => (result as any).executionBinding.promptHash))}`;
-	const agent = row.phase === "E2E" ? "delivery-state-machine" : results[0].child!.agent;
-	const effective = { provider: results[0].child!.provider, model: config.participant.model, version: config.participant.version, family: config.participant.family, agent, promptVersion, toolsHash, thinking: results[0].child!.thinking, context: results[0].child!.context };
+export function observedCandidate(row: ManifestRow, results: NormalizedResult[], config: RealCanaryConfig): ManifestRow["candidate"] {
+	if (!results.length || results.some((result) => !result.child || !(result as any).executionBinding)) throw new Error("effective participant identity/assets are unobservable");
+	for (const result of results) assertObservedExecutionBinding(result, config, row);
+	const bindings = results.map((result) => (result as any).executionBinding as ObservedExecutionBinding);
+	const first = bindings[0].child;
+	if (bindings.some((binding) => binding.child.provider !== first.provider || binding.child.model !== first.model || binding.child.version !== first.version || binding.child.family !== first.family || binding.child.thinking !== first.thinking || binding.child.context !== first.context)) throw new Error("participant observations differ within one frozen row");
+	const toolsHash = hashObject(bindings.map((binding) => binding.child.tools));
+	const promptVersion = `sha256:${hashObject(bindings.map((binding) => binding.promptContractHash))}`;
+	const agent = row.phase === "E2E" ? "delivery-state-machine" : first.agent;
+	const effective = { provider: first.provider, model: first.model, version: first.version, family: first.family, agent, promptVersion, toolsHash, thinking: first.thinking, context: first.context };
 	if (hashObject(effective) !== hashObject(row.candidate)) throw new Error(`observed effective identity/assets mismatch: ${row.slotId}`);
 	return effective;
 }
 
-function slotFromResults(row: ManifestRow, results: NormalizedResult[], evidenceRef: string, config: RealCanaryConfig, handoffs: string[] = [], judgeCost = 0, effectiveJudge?: ManifestRow["judge"]): NormalizedSlotResult {
-	const telemetry = results.map(aggregateResultUsage); const cost = telemetry.reduce((sum, entry) => sum + entry.childCost + entry.outerCost, 0) + judgeCost;
+function slotFromResults(row: ManifestRow, results: NormalizedResult[], evidenceRef: string, config: RealCanaryConfig, admission: NormalizedSlotResult["admission"], handoffs: string[] = [], judge?: { usage: UsageRecord; wallTimeMs: number; effective: ManifestRow["judge"] }): NormalizedSlotResult {
+	const telemetry = results.map(aggregateResultUsage);
+	const judgeUsage = { inputTokens: Number(judge?.usage.inputTokens ?? 0), outputTokens: Number(judge?.usage.outputTokens ?? 0), cachedTokens: Number(judge?.usage.cacheReadTokens ?? 0) + Number(judge?.usage.cacheWriteTokens ?? 0), costUsd: Number(judge?.usage.costUsd ?? 0), wallTimeMs: Number(judge?.wallTimeMs ?? 0) };
+	const cost = telemetry.reduce((sum, entry) => sum + entry.childCost + entry.outerCost, 0) + judgeUsage.costUsd;
 	const status = results.every((result) => result.status === "PASS") ? "PASS" : results.some((result) => result.status === "CANDIDATE_FAILURE") ? "CANDIDATE_FAILURE" : "INFRASTRUCTURE_FAILURE";
 	const attempts = results.reduce((sum, result) => sum + (result.harness?.finalAttempt ?? 1), 0);
 	const infrastructureAttempts = results.reduce((sum, result) => sum + (result.harness?.attempts.filter((attempt) => attempt.status === "INFRASTRUCTURE_FAILURE").length ?? 0), 0);
-	const wallTimeMs = results.reduce((sum, result) => sum + Math.max(0, Date.parse(result.finishedAt) - Date.parse(result.startedAt)), 0);
+	const wallTimeMs = results.reduce((sum, result) => sum + Math.max(0, Date.parse(result.finishedAt) - Date.parse(result.startedAt)), 0) + judgeUsage.wallTimeMs;
 	const value: NormalizedSlotResult = {
 		slotId: row.slotId, itemId: row.itemId, itemVersion: row.itemVersion, phase: row.phase, datasetClass: "bootstrap", qualificationEligible: false,
-		requested: structuredClone(row.candidate), effective: observedCandidate(row, results, config), nonTargetRoutes: observedRoutes(row, config), ...(row.judge ? { judgeIdentity: structuredClone(effectiveJudge) } : {}),
+		requested: structuredClone(row.candidate), effective: observedCandidate(row, results, config), nonTargetRoutes: observedRoutes(row, config), ...(row.judge ? { judgeIdentity: structuredClone(judge?.effective) } : {}), judgeUsage, admission,
 		isolation: { repository: `disposed://repository/${row.slotId}`, piHome: `disposed://pi-home/${row.slotId}`, artifactRoot: `disposed://raw/${row.slotId}`, resultNamespace: `ppe-001:${row.slotId}`, processGroup: `bounded:${row.slotId}`, credentialBoundary: "allowlisted-ephemeral", remotePolicy: row.phase === "CLOSE" || row.phase === "E2E" ? "local-stub" : "none" },
 		cleanupPassed: results.every((result) => !fs.existsSync(result.rawEvidencePath)), redactionPassed: results.every((result) => result.redactionPassed), status,
 		slotState: status === "PASS" ? (row.judge ? "JUDGED" : "NOT_ELIGIBLE_CANDIDATE") : status === "CANDIDATE_FAILURE" ? "NOT_ELIGIBLE_CANDIDATE" : "INFRASTRUCTURE_EXHAUSTED",
 		deterministicPassed: status === "PASS", qualitativeEligible: Boolean(row.judge && status === "PASS"), attempts, infrastructureAttempts,
-		inputTokens: telemetry.reduce((sum, entry) => sum + entry.input, 0), outputTokens: telemetry.reduce((sum, entry) => sum + entry.output, 0), cachedTokens: telemetry.reduce((sum, entry) => sum + entry.cached, 0),
-		childCostUsd: telemetry.reduce((sum, entry) => sum + entry.childCost, 0), outerCostUsd: telemetry.reduce((sum, entry) => sum + entry.outerCost, 0) + judgeCost, wallTimeMs,
+		inputTokens: telemetry.reduce((sum, entry) => sum + entry.input, 0) + judgeUsage.inputTokens, outputTokens: telemetry.reduce((sum, entry) => sum + entry.output, 0) + judgeUsage.outputTokens, cachedTokens: telemetry.reduce((sum, entry) => sum + entry.cached, 0) + judgeUsage.cachedTokens,
+		childCostUsd: telemetry.reduce((sum, entry) => sum + entry.childCost, 0), outerCostUsd: telemetry.reduce((sum, entry) => sum + entry.outerCost, 0) + judgeUsage.costUsd, wallTimeMs,
 		firstPlannedPassCostUsd: cost, defaultFirstPlannedPassWallTimeMs: wallTimeMs, minimumPlannedAttempts: row.minimumPlannedAttempts,
 		handoffs, evidenceRefs: [evidenceRef],
 	};
@@ -311,16 +362,24 @@ export function auditRealCanary(): { reportHash: string; evidenceObjects: number
 	if (reproduced.reportHash !== report.reportHash || JSON.stringify(reproduced) !== JSON.stringify(report)) throw new Error("real canary report hash/content does not reproduce");
 	if ((fs.statSync(config.evidence.root).mode & 0o777) !== 0o700) throw new Error("durable evidence root permissions changed");
 	const store = new EvidenceStore(config.evidence.root); const evidence = store.audit();
-	const expectedRefs = new Set(report.evidenceRefs);
-	if (expectedRefs.size !== report.evidenceRefs.length) throw new Error("real canary evidence references must be unique");
-	for (const reference of report.evidenceRefs) {
-		if (!/^sha256:[a-f0-9]{64}$/.test(reference)) throw new Error("real canary evidence reference is invalid");
-		store.getByRef(reference, { schemaVersionRef: "model-quality-real-canary-v2", assetVersions: [`manifest:${manifest.manifestHash}`, `config:${config.configHash}`] });
+	const registry = new Map(loadRegistry().items.map((item) => [`${item.id}@${item.version}`, item]));
+	const expectedRefs = new Set(report.evidenceRefs); if (expectedRefs.size !== report.evidenceRefs.length) throw new Error("real canary evidence references must be unique");
+	for (const row of manifest.rows) {
+		const slot = report.slots.find((entry) => entry.slotId === row.slotId)!; const item = registry.get(`${row.itemId}@${row.itemVersion}`); if (!item) throw new Error("audit registry item unavailable");
+		const expectedProvenance = [`${config.participant.provider}/${config.participant.model}@${config.participant.version}`, `${config.outer.provider}/${config.outer.model}@${config.outer.version}`, ...(row.judge ? [`${config.judge.provider}/${config.judge.model}@${config.judge.version}`] : [])];
+		for (const reference of slot.evidenceRefs) store.getByRef(reference, { schemaVersionRef: "model-quality-real-canary-v3", assetVersions: [`${row.itemId}@${row.itemVersion}`, `manifest:${manifest.manifestHash}`, `config:${config.configHash}`], participantProvenance: expectedProvenance });
+		const coordinator = new EvidenceAdmissionCoordinator(path.join(config.evidence.root, "admission-v3", row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const snapshot: any = coordinator.snapshot();
+		for (const publication of slot.admission.publications) {
+			const retained = snapshot.publications.find((entry: any) => entry.id === publication.id); if (!retained || retained.eligibility !== "eligible" || retained.evidenceHash !== publication.evidenceHash) throw new Error(`admission publication is unavailable/tainted: ${publication.id}`);
+			store.getByRef(publication.evidenceRef, { assetVersions: [`manifest:${manifest.manifestHash}`, `config:${config.configHash}`], participantProvenance: expectedProvenance });
+		}
 	}
-	const reportRecords = store.indexes().filter((record) => record.schemaVersionRef === "model-quality-real-canary-report-v2" && record.assetVersions.includes(`manifest:${manifest.manifestHash}`) && record.assetVersions.includes(`config:${config.configHash}`));
-	if (reportRecords.length !== 1) throw new Error("real canary requires exactly one report/human evidence index");
+	const ledger = new SpendLedger(config.evidence.root, store, config.limits.totalCostUsd, ["PPE-001-I4-SPEND"]); const ledgerAudit = ledger.audit(config.evidence.priorSpendUsd);
+	const reportRecords = store.indexes().filter((record) => record.schemaVersionRef === "model-quality-real-canary-report-v3" && record.assetVersions.includes(`manifest:${manifest.manifestHash}`) && record.assetVersions.includes(`config:${config.configHash}`) && record.assetVersions.includes(`ledger:${ledgerAudit.stateHash}`));
+	if (reportRecords.length !== 1) throw new Error("real canary requires exactly one report/human/ledger evidence index");
 	const retainedReport = JSON.parse(store.get(reportRecords[0]).toString("utf8"));
-	if (retainedReport?.report?.reportHash !== report.reportHash || retainedReport?.humanReview?.recordId !== "PPE-001-I4-INDEPENDENT-REVIEW-PENDING" || retainedReport?.humanReview?.decision !== "pending" || retainedReport?.humanReview?.resultHash !== report.reportHash) throw new Error("pending human/report evidence is unavailable or mismatched");
+	if (retainedReport?.report?.reportHash !== report.reportHash || retainedReport?.humanReview?.recordId !== "PPE-001-I4-INDEPENDENT-REVIEW-PENDING" || retainedReport?.humanReview?.decision !== "pending" || retainedReport?.humanReview?.resultHash !== report.reportHash || retainedReport?.configHash !== config.configHash || retainedReport?.manifestHash !== manifest.manifestHash || retainedReport?.spendLedgerRef !== ledgerAudit.retrievalRef || retainedReport?.spendLedgerHash !== ledgerAudit.stateHash || retainedReport?.cumulativeSpendUsd !== ledgerAudit.totalUsd) throw new Error("pending human/report/provenance/spend evidence is unavailable or mismatched");
 	const rawRoot = path.resolve(ROOT, "../agent-quality/artifacts/raw");
 	if (fs.existsSync(rawRoot) && fs.readdirSync(rawRoot).length > 0) throw new Error("raw canary artifacts were not cleaned");
 	const repository = path.resolve(ROOT, "../../../..");
@@ -328,56 +387,78 @@ export function auditRealCanary(): { reportHash: string; evidenceObjects: number
 	return { reportHash: report.reportHash, evidenceObjects: evidence.objects, evidenceIndexes: evidence.indexes, gitClean: status === "" };
 }
 
+function spendUsageForResult(result: NormalizedResult, participant: string): SpendUsage {
+	const usage = aggregateResultUsage(result);
+	return { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached, costUsd: usage.childCost + usage.outerCost, wallTimeMs: Math.max(0, Date.parse(result.finishedAt) - Date.parse(result.startedAt)), participant };
+}
+
 export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<InfrastructureReport> {
 	if (process.env.MODEL_QUALITY_CANARY !== "1") throw new Error("real canary is fail-closed: MODEL_QUALITY_CANARY=1 is required");
 	const { config, manifest } = loadRealCanary();
 	if (process.env.MODEL_QUALITY_EVIDENCE_ROOT && process.env.MODEL_QUALITY_EVIDENCE_ROOT !== config.evidence.root) throw new Error("evidence root differs from the approved immutable config");
 	fs.mkdirSync(config.evidence.root, { recursive: true, mode: 0o700 }); fs.chmodSync(config.evidence.root, 0o700);
-	const store = new EvidenceStore(config.evidence.root); const started = Date.now(); const deadline = started + config.limits.totalTimeoutMs; const slots: NormalizedSlotResult[] = [];
-	const spendLedgerFile = path.join(config.evidence.root, "spend-ledger.json");
-	const ledgerSpend = fs.existsSync(spendLedgerFile) ? Number(readJson<{ rejectedSpendUsd: number }>(spendLedgerFile).rejectedSpendUsd) : 0;
-	const previousRejectedSpend = (fs.existsSync(REPORT_FILE) ? readJson<InfrastructureReport>(REPORT_FILE).metrics.totalCostUsd : 0) + ledgerSpend;
-	if (!Number.isFinite(previousRejectedSpend) || previousRejectedSpend >= config.limits.totalCostUsd) throw new Error("approved cumulative canary budget is exhausted before launch");
-	let totalCost = previousRejectedSpend; const rows = mode === "e2e" ? manifest.rows.filter((row) => row.phase === "E2E") : manifest.rows;
+	const store = new EvidenceStore(config.evidence.root); const participantProvenance = [`${config.participant.provider}/${config.participant.model}@${config.participant.version}`, `${config.outer.provider}/${config.outer.model}@${config.outer.version}`];
+	const ledger = new SpendLedger(config.evidence.root, store, config.limits.totalCostUsd, ["PPE-001-I4-SPEND"]);
+	if (ledger.read().importedSpendUsd === 0 && ledger.read().entries.length === 0) {
+		const legacy = fs.existsSync(path.join(config.evidence.root, "spend-ledger.json")) ? readJson<any>(path.join(config.evidence.root, "spend-ledger.json")) : { entries: [] };
+		ledger.migrateLegacy(config.evidence.priorSpendUsd, [{ source: "retained-v1/v2 reports and rejected-attempt ledger", minimumUsd: config.evidence.priorSpendUsd, legacyEntries: legacy.entries ?? [] }]);
+	}
+	const started = Date.now(); const deadline = started + config.limits.totalTimeoutMs; const slots: NormalizedSlotResult[] = [];
+	const registry = new Map(loadRegistry().items.map((item) => [`${item.id}@${item.version}`, item]));
+	const rows = mode === "e2e" ? manifest.rows.filter((row) => row.phase === "E2E") : manifest.rows;
 	for (const row of rows) {
 		if (Date.now() >= deadline) throw new Error("approved total canary timeout exhausted");
+		const item = registry.get(`${row.itemId}@${row.itemVersion}`); if (!item) throw new Error(`registry item unavailable: ${row.itemId}@${row.itemVersion}`);
+		const runId = `${config.id}-v${config.version}-${row.slotId}-${Date.now()}-${randomUUID()}`;
+		ledger.begin(runId, row.slotId, row.budgetUsd);
+		const coordinator = new EvidenceAdmissionCoordinator(path.join(config.evidence.root, "admission-v3", row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const selection = coordinator.authorize("selection"), dispatch = coordinator.authorize("dispatch");
 		const phases = row.phase === "REVIEW" ? ["REVIEW", "REVIEW"] : [row.phase];
 		const rowDeadline = Math.min(deadline, Date.now() + (row.phase === "E2E" ? config.limits.e2eTimeoutMs : config.limits.phaseTimeoutMs));
-		let results: NormalizedResult[] = []; let artifacts: string[] = []; let observedHandoffs: HandoffRecord[] = []; let journeyCleanup: (() => void) | undefined;
+		let results: NormalizedResult[] = []; let artifacts: string[] = []; let observedHandoffs: HandoffRecord[] = []; let journeyCleanup: (() => void) | undefined; let spendFinished = false;
 		try {
-			if (row.phase === "E2E") {
-				const journey = await connectedE2E(config, rowDeadline); results = journey.results; artifacts = journey.artifacts; observedHandoffs = journey.handoffs; journeyCleanup = journey.cleanup;
-			} else {
+			if (row.phase === "E2E") { const journey = await connectedE2E(config, rowDeadline); results = journey.results; artifacts = journey.artifacts; observedHandoffs = journey.handoffs; journeyCleanup = journey.cleanup; }
+			else {
 				let retriesRemaining = config.limits.infrastructureRetries;
 				for (const phase of phases) {
 					if (Date.now() >= rowDeadline) throw new Error(`${row.slotId} timeout exhausted`);
 					const result = await stage7Run(phase, config, Math.max(1000, Math.min(config.limits.phaseTimeoutMs, rowDeadline - Date.now())), retriesRemaining + 1);
 					const consumed = result.harness?.attempts.filter((attempt) => attempt.status === "INFRASTRUCTURE_FAILURE").length ?? 0; retriesRemaining -= consumed;
 					if (retriesRemaining < 0) throw new Error(`${row.slotId} exceeded row-wide infrastructure retry budget`);
-					results.push(result); artifacts.push(artifact(result));
-					if (Date.now() > rowDeadline) throw new Error(`${row.slotId} exceeded the frozen row deadline`);
-					if (result.status !== "PASS") break;
+					results.push(result); artifacts.push(artifact(result)); if (result.status !== "PASS") break;
 				}
 			}
-			let judge: { record: JudgeRecord; usage: UsageRecord; packHash: string; effective: ManifestRow["judge"] } | undefined;
-			if (row.judge && results.every((result) => result.status === "PASS")) judge = await judgePhase(config, row, artifacts.join("\n\n---\n\n"), rowDeadline);
+			for (const result of results) ledger.record(runId, spendUsageForResult(result, `${config.participant.provider}/${config.participant.model}+${config.outer.provider}/${config.outer.model}`));
+			let judge: Awaited<ReturnType<typeof judgePhase>> | undefined;
+			if (row.judge && results.every((result) => result.status === "PASS")) {
+				judge = await judgePhase(config, row, artifacts.join("\n\n---\n\n"), rowDeadline);
+				ledger.record(runId, { inputTokens: Number(judge.usage.inputTokens ?? 0), outputTokens: Number(judge.usage.outputTokens ?? 0), cachedTokens: Number(judge.usage.cacheReadTokens ?? 0) + Number(judge.usage.cacheWriteTokens ?? 0), costUsd: Number(judge.usage.costUsd ?? 0), wallTimeMs: judge.wallTimeMs, participant: `${judge.observed.provider}/${judge.observed.model}` });
+			}
 			if (Date.now() > rowDeadline) throw new Error(`${row.slotId} exceeded the frozen row deadline`);
-			const handoffs = observedHandoffs.map((entry) => `${entry.from}->${entry.to}`);
-			const transient = { row: row.slotId, phase: row.phase, results: results.map((result) => ({ scenarioId: result.scenarioId, status: result.status, completion: result.completion, scorers: result.scorers, requested: row.candidate, effective: result.child ? { agent: result.child.agent, provider: result.child.provider, model: result.child.model, thinking: result.child.thinking, context: result.child.context, tools: result.child.tools } : null, outer: { provider: result.outer.provider, model: result.outer.model }, executionBinding: (result as any).executionBinding, artifact: artifact(result), diagnostics: result.diagnostics })), handoffs: observedHandoffs, judge: judge ? { record: judge.record, packHash: judge.packHash, effective: judge.effective } : undefined, priorRejectedSpendUsd: previousRejectedSpend, rawTranscript: "not retained" };
-			const record = store.put({ value: transient, schemaVersionRef: "model-quality-real-canary-v2", assetVersions: [`${row.itemId}@${row.itemVersion}`, `manifest:${manifest.manifestHash}`, `config:${config.configHash}`], participantProvenance: [`${config.participant.provider}/${config.participant.model}@${config.participant.version}`, `${config.outer.provider}/${config.outer.model}@${config.outer.version}`, ...(judge ? [`${config.judge.provider}/${config.judge.model}@${config.judge.version}`] : [])], retentionUntil: new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString() });
-			const judgeCost = Number(judge?.usage.costUsd ?? 0); const slot = slotFromResults(row, results, record.retrievalRef, config, handoffs, judgeCost, judge?.effective); const rowCost = slot.childCostUsd + slot.outerCostUsd;
+			const handoffs = row.phase === "E2E" ? validateConnectedHandoffs(observedHandoffs) : [];
+			const transient = { row: row.slotId, phase: row.phase, results: results.map((result) => ({ scenarioId: result.scenarioId, status: result.status, completion: result.completion, scorers: result.scorers, executionBinding: (result as any).executionBinding, artifact: artifact(result), diagnostics: result.diagnostics })), handoffs: observedHandoffs, judge: judge ? { record: judge.record, usage: judge.usage, wallTimeMs: judge.wallTimeMs, packHash: judge.packHash, launchSeal: judge.launchSeal, effective: judge.effective, observed: judge.observed } : undefined, rawTranscript: "not retained" };
+			const assets = [`${row.itemId}@${row.itemVersion}`, `manifest:${manifest.manifestHash}`, `config:${config.configHash}`]; const provenance = [...participantProvenance, ...(judge ? [`${judge.observed.provider}/${judge.observed.model}@${judge.observed.version}`] : [])]; const retentionUntil = new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString();
+			const publications: CoordinatedPublication[] = [];
+			for (const [index, handoff] of observedHandoffs.entries()) publications.push(coordinator.publish({ id: `${runId}:join:${index + 1}`, publicationKind: "join", expectedSequence: dispatch.sequence, value: handoff, schemaVersionRef: "model-quality-real-canary-handoff-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }));
+			const resultUse = coordinator.publish({ id: `${runId}:result-use`, publicationKind: "result-use", expectedSequence: dispatch.sequence, value: transient, schemaVersionRef: "model-quality-real-canary-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }); publications.push(resultUse);
+			const reportPublication = coordinator.publish({ id: `${runId}:report`, publicationKind: "report", expectedSequence: dispatch.sequence, value: { row: row.slotId, transientRef: resultUse.evidenceRef, handoffs }, schemaVersionRef: "model-quality-real-canary-row-report-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }); publications.push(reportPublication);
+			const admission: NormalizedSlotResult["admission"] = { itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, selectionSequence: selection.sequence, dispatchSequence: dispatch.sequence, publications };
+			const slot = slotFromResults(row, results, resultUse.evidenceRef, config, admission, handoffs, judge); const rowCost = slot.childCostUsd + slot.outerCostUsd;
 			for (const result of results) disposeRaw(result); journeyCleanup?.(); journeyCleanup = undefined;
 			if (rowCost > row.budgetUsd + Number.EPSILON) throw new Error(`${row.slotId} exceeded approved cost ceiling: ${rowCost} > ${row.budgetUsd}`);
-			totalCost += rowCost; if (totalCost > config.limits.totalCostUsd + Number.EPSILON) throw new Error(`total canary exceeded approved cost ceiling: ${totalCost}`);
-			slots.push(slot);
-			if (slot.status !== "PASS") throw new Error(`${row.slotId} did not pass: ${slot.status}`);
-		} catch (error) { for (const result of results) disposeRaw(result); journeyCleanup?.(); throw error; }
+			ledger.finish(runId, "settled", "accepted row completed with exact participant/outer/judge telemetry"); spendFinished = true;
+			slots.push(slot); if (slot.status !== "PASS") throw new Error(`${row.slotId} did not pass: ${slot.status}`);
+		} catch (error) {
+			for (const result of results) disposeRaw(result); journeyCleanup?.();
+			if (!spendFinished) { try { ledger.finish(runId, "failed", error instanceof Error ? error.message : String(error)); } catch (ledgerError) { throw new AggregateError([error, ledgerError], "canary and spend-ledger failure"); } }
+			throw error;
+		}
 	}
 	const report = buildInfrastructureReport({ manifestHash: manifest.manifestHash, slots });
 	const human = validateHumanReview({ recordId: "PPE-001-I4-INDEPENDENT-REVIEW-PENDING", itemId: "BOOT-E2E", itemVersion: 1, resultHash: report.reportHash, decision: "pending", reason: "independent VERIFY/REVIEW follows IMPLEMENT", timestamp: report.generatedAt });
-	store.put({ value: { report, humanReview: human, configHash: config.configHash, cumulativeSpendUsd: totalCost, previousRejectedSpendUsd: previousRejectedSpend }, schemaVersionRef: "model-quality-real-canary-report-v2", assetVersions: [`manifest:${manifest.manifestHash}`, `config:${config.configHash}`], participantProvenance: ["PPE-001-I4"], retentionUntil: new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString() });
-	store.audit(); fs.writeFileSync(REPORT_FILE, `${JSON.stringify(report, null, 2)}\n`);
-	return report;
+	const ledgerAudit = ledger.audit(config.evidence.priorSpendUsd);
+	store.put({ value: { report, humanReview: human, configHash: config.configHash, manifestHash: manifest.manifestHash, cumulativeSpendUsd: ledgerAudit.totalUsd, spendLedgerRef: ledgerAudit.retrievalRef, spendLedgerHash: ledgerAudit.stateHash }, schemaVersionRef: "model-quality-real-canary-report-v3", assetVersions: [`manifest:${manifest.manifestHash}`, `config:${config.configHash}`, `ledger:${ledgerAudit.stateHash}`], participantProvenance: ["PPE-001-I4", ...participantProvenance], retentionUntil: new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString(), indexId: `accepted-report:${report.reportHash}` });
+	store.audit(); fs.writeFileSync(REPORT_FILE, `${JSON.stringify(report, null, 2)}\n`); return report;
 }
 
 if (import.meta.main) {

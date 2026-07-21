@@ -115,6 +115,11 @@ export interface NormalizedSlotResult {
 	effective: ManifestRow["candidate"];
 	nonTargetRoutes: Record<string, string>;
 	judgeIdentity?: ManifestRow["judge"];
+	judgeUsage: { inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; wallTimeMs: number };
+	admission: {
+		itemHash: string; catalogHash: string; selectionSequence: number; dispatchSequence: number;
+		publications: Array<{ id: string; kind: "result-use" | "join" | "report"; sequence: number; eligibility: "eligible" | "TAINTED_OR_INVALIDATED"; evidenceHash: string; evidenceRef: string }>;
+	};
 	isolation: { repository: string; piHome: string; artifactRoot: string; resultNamespace: string; processGroup: string; credentialBoundary: "allowlisted-ephemeral"; remotePolicy: "none" | "local-stub" };
 	cleanupPassed: boolean;
 	redactionPassed: boolean;
@@ -306,6 +311,10 @@ export function validateSlotResult(value: NormalizedSlotResult, row: ManifestRow
 	if (canonicalJson(value.requested) !== canonicalJson(row.candidate) || canonicalJson(value.effective) !== canonicalJson(row.candidate)) throw new Error("requested/effective runtime identity or settings mismatch");
 	if (canonicalJson(value.nonTargetRoutes) !== canonicalJson(row.nonTargetRoutes)) throw new Error("non-target route identity mismatch");
 	if (canonicalJson(value.judgeIdentity) !== canonicalJson(row.judge)) throw new Error("judge identity mismatch");
+	for (const [field, metric] of Object.entries(value.judgeUsage)) if (typeof metric !== "number" || !Number.isFinite(metric) || metric < 0) throw new Error(`judgeUsage.${field} is invalid`);
+	if (![value.admission.itemHash, value.admission.catalogHash].every((entry) => SHA256.test(entry)) || !Number.isInteger(value.admission.selectionSequence) || !Number.isInteger(value.admission.dispatchSequence) || value.admission.selectionSequence < 0 || value.admission.dispatchSequence < value.admission.selectionSequence) throw new Error("admission identity/authorization is invalid");
+	if (value.admission.publications.length < 2 || !value.admission.publications.some((entry) => entry.kind === "result-use") || !value.admission.publications.some((entry) => entry.kind === "report") || value.admission.publications.some((entry) => entry.eligibility !== "eligible" || !SHA256.test(entry.evidenceHash) || entry.evidenceRef !== `sha256:${entry.evidenceHash}`)) throw new Error("admission publication linkage is incomplete or tainted");
+	if (value.phase === "E2E" && value.admission.publications.filter((entry) => entry.kind === "join").length !== 4) throw new Error("E2E admission join publications are incomplete");
 	if (value.attempts < row.minimumPlannedAttempts) throw new Error("attempt denominator is below the mandatory route count");
 	if (value.infrastructureAttempts > row.maxInfrastructureAttempts - 1 || value.attempts > row.minimumPlannedAttempts + row.maxInfrastructureAttempts - 1) throw new Error("row-wide infrastructure retry bound exceeded");
 	for (const [key, nested] of Object.entries(value.isolation)) string(nested, `isolation.${key}`);

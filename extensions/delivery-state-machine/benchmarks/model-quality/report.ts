@@ -66,7 +66,11 @@ export function joinedMetrics(slots: NormalizedSlotResult[]): JoinedMetrics {
 }
 
 export function buildInfrastructureReport(input: { manifestHash: string; slots: NormalizedSlotResult[]; generatedAt?: string }): InfrastructureReport {
-	for (const slot of input.slots) assertBootstrapNonQualification(slot, "report");
+	for (const slot of input.slots) {
+		assertBootstrapNonQualification(slot, "report");
+		if (slot.admission.catalogHash !== input.manifestHash || !slot.admission.publications.some((entry) => entry.kind === "result-use") || !slot.admission.publications.some((entry) => entry.kind === "report") || slot.admission.publications.some((entry) => entry.eligibility !== "eligible")) throw new Error("report publication is not authorized by the linearizable admission guard");
+		if (slot.phase === "E2E" && slot.admission.publications.filter((entry) => entry.kind === "join").length !== 4) throw new Error("report E2E join publications are not admission-authorized");
+	}
 	const report: Omit<InfrastructureReport, "reportHash"> = { schemaVersion: 1, classification: INFRASTRUCTURE_BANNER, datasetClass: "bootstrap", qualificationEligible: false, manifestHash: input.manifestHash, generatedAt: input.generatedAt ?? new Date().toISOString(), metrics: joinedMetrics(input.slots), slots: input.slots, evidenceRefs: [...new Set(input.slots.flatMap((slot) => slot.evidenceRefs))] };
 	return { ...report, reportHash: hashObject(report) };
 }

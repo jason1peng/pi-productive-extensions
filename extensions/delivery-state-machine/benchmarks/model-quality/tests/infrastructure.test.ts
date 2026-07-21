@@ -6,16 +6,18 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scenarioById } from "../../agent-quality/catalog.ts";
 import { AdmissionGuard, signSyntheticHumanResolution, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST, type IncidentReport } from "../admission.ts";
-import { aggregateResultUsage, assertObservedExecutionBinding, loadRealCanary, validateConnectedHandoffs, type HandoffRecord } from "../canary.ts";
+import { EvidenceAdmissionCoordinator } from "../admission-coordinator.ts";
+import { SpendLedger } from "../spend.ts";
+import { aggregateResultUsage, assertObservedExecutionBinding, loadRealCanary, observedCandidate, parseConsumedInbound, validateConnectedHandoffs, type HandoffRecord } from "../canary.ts";
 import { EvidenceStore, assertRedacted, redactValue } from "../evidence.ts";
 import { assertExactSparseSelection, loadBootstrapAssets, loadManifest, loadRegistry, resolveRows } from "../manifest.ts";
 import { lifecycleRecord, validateLifecycleTransition } from "../lifecycle.ts";
 import { adoptionDecision, buildInfrastructureReport, joinedMetrics } from "../report.ts";
 import { boundedOutcome, qualitativeDenominator } from "../outcome.ts";
 import { classifyInfrastructure, falseRates, scorePhaseEvidence } from "../scorers/index.ts";
-import { assertBootstrapNonQualification, canModelBlockDeterministicPass, hashObject, manifestContent, validateDatasetItem, validateHumanReview, validateManifest, validateSlotResult, type NormalizedSlotResult, type PhaseEvidence } from "../schema.ts";
+import { assertBootstrapNonQualification, canModelBlockDeterministicPass, hashObject, sha256, manifestContent, validateDatasetItem, validateHumanReview, validateManifest, validateSlotResult, type NormalizedSlotResult, type PhaseEvidence } from "../schema.ts";
 import { assertJudgeIndependence, blockerConfirmed, buildJudgePack, parseJudgeResponse } from "../judge.ts";
-import { auditCleanClone, fakeFull, validateInfrastructure } from "../run.ts";
+import { admissionRunnerProbe, auditCleanClone, fakeFull, validateInfrastructure } from "../run.ts";
 import { validateStage7Sentinels } from "../stage7.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,10 +36,14 @@ assert.equal(assertExactSparseSelection(manifest, ["BOOT-SLOT-01", "BOOT-SLOT-06
 assert.throws(() => assertExactSparseSelection(manifest, ["BOOT-SLOT-01", "BOOT-SLOT-01"]), /duplicate/);
 assert.throws(() => assertExactSparseSelection(manifest, ["MISSING"]), /exactly/);
 assert.equal(validateStage7Sentinels().stage7Commit, "08cfb3d802cbb7cff4993f92105e97616663094c");
-const connectedHandoffs: HandoffRecord[] = ["IMPLEMENT->VERIFY", "VERIFY->REVIEW", "REVIEW->CLOSE", "CLOSE->RETRO"].map((edge, index) => { const [from, to] = edge.split("->"); return { from, to, sequence: index + 1, outboundHash: HASH_A, inboundHash: HASH_A, taskId: "TASK-1", repositoryId: "REPO-1" }; });
+const connectedHandoffs: HandoffRecord[] = ["IMPLEMENT->VERIFY", "VERIFY->REVIEW", "REVIEW->CLOSE", "CLOSE->RETRO"].map((edge, index) => { const [from, to] = edge.split("->"); return { from, to, sequence: index + 1, outboundHash: HASH_A, outboundRef: ".delivery-evidence/prior.md", inboundHash: HASH_A, consumedInboundHash: HASH_A, consumedInboundRef: ".delivery-evidence/prior.md", consumptionEvidenceHash: HASH_C, taskId: "TASK-1", repositoryId: "REPO-1" }; });
 assert.deepEqual(validateConnectedHandoffs(connectedHandoffs), ["IMPLEMENT->VERIFY", "VERIFY->REVIEW", "REVIEW->CLOSE", "CLOSE->RETRO"]);
 assert.throws(() => validateConnectedHandoffs(connectedHandoffs.slice(0, 3)), /incomplete/);
 assert.throws(() => validateConnectedHandoffs(connectedHandoffs.map((entry, index) => index === 1 ? { ...entry, inboundHash: HASH_B } : entry)), /mismatched/);
+const inboundContent = "prior artifact"; const inboundHash = sha256(inboundContent); const inboundRef = ".delivery-evidence/prior.md";
+assert.deepEqual(parseConsumedInbound(`RESULT: PASS\nCONSUMED_INBOUND: sha256:${inboundHash} path:${inboundRef}\n`, { hash: inboundHash, relativePath: inboundRef, content: inboundContent }).hash, inboundHash);
+for (const artifact of ["RESULT: PASS", `CONSUMED_INBOUND: sha256:${HASH_B} path:${inboundRef}`, `CONSUMED_INBOUND: sha256:${inboundHash} path:wrong.md`, `CONSUMED_INBOUND: sha256:${inboundHash} path:${inboundRef}\nCONSUMED_INBOUND: sha256:${inboundHash} path:${inboundRef}`]) assert.throws(() => parseConsumedInbound(artifact, { hash: inboundHash, relativePath: inboundRef, content: inboundContent }), /exactly one|stale|fabricated|mismatched/);
+assert.throws(() => parseConsumedInbound(`CONSUMED_INBOUND: sha256:${inboundHash} path:${inboundRef}`, { hash: inboundHash, relativePath: inboundRef, content: "changed" }), /content hash/);
 assert.throws(() => validateConnectedHandoffs(connectedHandoffs.map((entry, index) => index === 2 ? { ...entry, repositoryId: "REPO-2" } : entry)), /disconnected/);
 
 const realCanary = loadRealCanary();
@@ -48,18 +54,30 @@ assert.deepEqual(realCanary.config.credentialPolicy.forwardedEnvironment, []);
 assert.deepEqual(realCanary.config.rows.find((row) => row.phase === "REVIEW")?.scenarioIds, ["REV-01", "REV-01"]);
 assert.equal(realCanary.manifest.rows.find((row) => row.phase === "CLOSE")?.judge, undefined);
 assert.equal(realCanary.manifest.rows.find((row) => row.phase === "E2E")?.judge, undefined);
-const observedRuntime: any = { scenarioId: "IMP-01", fixtureHash: "fixture-v1", child: { agent: "worker", provider: "openai-codex", model: "openai-codex/gpt-5.6-sol", thinking: "low", context: "fresh", tools: ["read", "grep", "find", "ls", "bash"], usage: {} }, outer: { provider: "openai-codex", model: "openai-codex/gpt-5.6-sol", usage: {} }, executionBinding: { promptHash: HASH_A, fixtureHash: "fixture-v1", scorerHash: hashObject(scenarioById("IMP-01").scorers), nonTargetRoutes: structuredClone(realCanary.config.routes) } };
-assert.doesNotThrow(() => assertObservedExecutionBinding(observedRuntime, realCanary.config));
-for (const [field, mutate] of [
-	["model", (value: any) => { value.child.model = "openai-codex/wrong"; }],
-	["thinking", (value: any) => { value.child.thinking = "high"; }],
-	["context", (value: any) => { value.child.context = "fork"; }],
-	["outer", (value: any) => { value.outer.model = "openai-codex/wrong"; }],
-	["prompt", (value: any) => { value.executionBinding.promptHash = "wrong"; }],
-	["fixture", (value: any) => { value.executionBinding.fixtureHash = "wrong"; }],
-	["scorer", (value: any) => { value.executionBinding.scorerHash = HASH_B; }],
-	["routes", (value: any) => { value.executionBinding.nonTargetRoutes.IMPLEMENT = ["wrong"]; }],
-] as const) { const value = structuredClone(observedRuntime); mutate(value); assert.throws(() => assertObservedExecutionBinding(value, realCanary.config), /mismatch|unavailable/, `tampered ${field} must fail`); }
+const observedTools = ["read", "grep", "find", "ls", "bash"];
+const prelaunchBody: any = { phase: "IMPLEMENT", renderedPromptHash: HASH_A, promptContractHash: HASH_B, expectedToolsHash: hashObject(observedTools), fixtureHash: "fixture-v1", scorerHash: hashObject(scenarioById("IMP-01").scorers), routesHash: hashObject(realCanary.config.routes), outerRequested: { provider: "openai-codex", model: "gpt-5.6-sol", version: "gpt-5.6-sol", family: "gpt-5.6", thinking: "low", context: "fresh" } };
+const binding: any = { ...prelaunchBody, sealHash: hashObject(prelaunchBody), child: { agent: "worker", provider: "openai-codex", model: "gpt-5.6-sol", version: "gpt-5.6-sol", family: "gpt-5.6", thinking: "low", context: "fresh", tools: observedTools, toolsHash: hashObject(observedTools) }, outer: structuredClone(prelaunchBody.outerRequested) };
+const syntheticObservedRow: any = structuredClone(realCanary.manifest.rows[0]); syntheticObservedRow.candidate.promptVersion = `sha256:${hashObject([binding.promptContractHash])}`; syntheticObservedRow.candidate.toolsHash = hashObject([observedTools]);
+const observedRuntime: any = { scenarioId: "IMP-01", fixtureHash: "fixture-v1", child: { agent: "worker", provider: "openai-codex", model: "openai-codex/gpt-5.6-sol", thinking: "low", context: "fresh", tools: observedTools, usage: {} }, outer: { provider: "openai-codex", model: "openai-codex/gpt-5.6-sol", usage: {} }, executionBinding: binding };
+assert.doesNotThrow(() => assertObservedExecutionBinding(observedRuntime, realCanary.config, syntheticObservedRow));
+assert.deepEqual(observedCandidate(syntheticObservedRow, [observedRuntime], realCanary.config), syntheticObservedRow.candidate);
+for (const [field, mutate, aggregate] of [
+	["participant-version", (value: any) => { value.executionBinding.child.version = "gpt-5.6-other"; }, false],
+	["participant-family", (value: any) => { value.executionBinding.child.family = "gpt-5.7"; }, false],
+	["thinking", (value: any) => { value.executionBinding.child.thinking = "high"; }, false],
+	["context", (value: any) => { value.executionBinding.child.context = "fork"; }, false],
+	["outer-version", (value: any) => { value.executionBinding.outer.version = "other"; }, false],
+	["outer-family", (value: any) => { value.executionBinding.outer.family = "gpt-5.5"; }, false],
+	["outer-thinking", (value: any) => { value.executionBinding.outer.thinking = "high"; }, false],
+	["prompt-valid-sha", (value: any) => { value.executionBinding.promptContractHash = HASH_C; const { sealHash: _, child: _c, outer: _o, ...body } = value.executionBinding; value.executionBinding.sealHash = hashObject(body); }, true],
+	["tools-valid-sha", (value: any) => { value.executionBinding.child.toolsHash = HASH_C; }, false],
+	["fixture", (value: any) => { value.executionBinding.fixtureHash = HASH_C; const { sealHash: _, child: _c, outer: _o, ...body } = value.executionBinding; value.executionBinding.sealHash = hashObject(body); }, false],
+	["scorer", (value: any) => { value.executionBinding.scorerHash = HASH_C; const { sealHash: _, child: _c, outer: _o, ...body } = value.executionBinding; value.executionBinding.sealHash = hashObject(body); }, false],
+	["routes", (value: any) => { value.executionBinding.routesHash = HASH_C; const { sealHash: _, child: _c, outer: _o, ...body } = value.executionBinding; value.executionBinding.sealHash = hashObject(body); }, false],
+] as const) {
+	const value = structuredClone(observedRuntime); mutate(value);
+	assert.throws(() => aggregate ? observedCandidate(syntheticObservedRow, [value], realCanary.config) : assertObservedExecutionBinding(value, realCanary.config, syntheticObservedRow), /mismatch|unavailable|binding/, `tampered ${field} must fail`);
+}
 
 function rehash(value: any): any { value.manifestHash = hashObject(manifestContent(value)); return value; }
 function invalidManifest(mutator: (value: any) => void, pattern?: RegExp): void {
@@ -129,6 +147,17 @@ for (const decision of ["rejected", "abstained"] as const) assert.equal(validate
 
 const attemptTelemetry = aggregateResultUsage({ child: { usage: { inputTokens: 3, costUsd: 0.2 } }, outer: { usage: { outputTokens: 4, costUsd: 0.3 } }, harness: { attempts: [{ child: { usage: { inputTokens: 10, costUsd: 0.7 } }, outer: { usage: { outputTokens: 11, costUsd: 0.8 } }, status: "INFRASTRUCTURE_FAILURE" }, { child: { usage: { inputTokens: 20, costUsd: 0.9 } }, outer: { usage: { outputTokens: 21, costUsd: 1 } }, status: "PASS" }] } } as any);
 assert.deepEqual(attemptTelemetry, { input: 30, output: 32, cached: 0, childCost: 1.6, outerCost: 1.8 }, "all billable retry attempts must count");
+const spendRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-test-"));
+try {
+	const spendStore = new EvidenceStore(spendRoot); let ledger = new SpendLedger(spendRoot, spendStore, 20, ["PPE-001-I4-SPEND"]);
+	ledger.migrateLegacy(10, [{ source: "retained conservative evidence" }]);
+	ledger.begin("run-pass", "ROW-1", 2); ledger.record("run-pass", { inputTokens: 10, outputTokens: 2, cachedTokens: 3, costUsd: 0.5, wallTimeMs: 100, participant: "participant" }); ledger.record("run-pass", { inputTokens: 4, outputTokens: 1, cachedTokens: 0, costUsd: 0.1, wallTimeMs: 30, participant: "judge" }); ledger.finish("run-pass", "settled");
+	assert.equal(ledger.total(), 10.6); assert.equal(ledger.read().entries[0].attempts.length, 2);
+	ledger.begin("run-crash", "ROW-2", 2); ledger.record("run-crash", { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.25, wallTimeMs: 10, participant: "participant" });
+	ledger = new SpendLedger(spendRoot, spendStore, 20, ["PPE-001-I4-SPEND"]); assert.equal(ledger.read().entries.find((entry) => entry.runId === "run-crash")!.state, "failed"); assert.equal(ledger.total(), 12.6);
+	ledger.begin("consume-remaining-reservation", "ROW-3", 20); assert.throws(() => ledger.begin("too-large", "ROW-4", 1), /exhausted|ceiling/);
+	const pointer = JSON.parse(fs.readFileSync(path.join(spendRoot, "spend-ledger-v2.json"), "utf8")); fs.writeFileSync(path.join(spendRoot, "spend-ledger-v2.json"), JSON.stringify({ ...pointer, stateHash: HASH_A })); assert.throws(() => ledger.read(), /authentication|mismatch/);
+} finally { fs.rmSync(spendRoot, { recursive: true, force: true }); }
 
 const retryThenPass = boundedOutcome("FROZEN-SLOT", 2, (attempt) => ({ classification: attempt === 1 ? "INFRASTRUCTURE_FAILURE" : "PASS", evidenceRef: `sha256:${attempt}` }));
 assert.equal(retryThenPass.attempts.length, 2);
@@ -165,18 +194,19 @@ try {
 	assert.match(retained, /REDACTED|OMITTED/);
 	assert.deepEqual(store.audit(), { objects: 1, indexes: 1 });
 	assert.equal(store.getByRef(record.retrievalRef, { schemaVersionRef: "v1", assetVersions: ["asset-v1"], participantProvenance: ["fake/model@v1"] }).record.contentHash, record.contentHash);
-	const originalIndex = fs.readdirSync(store.indexRoot)[0]; fs.copyFileSync(path.join(store.indexRoot, originalIndex), path.join(store.indexRoot, "duplicate.json"));
+	const originalIndex = fs.readdirSync(store.indexRoot)[0]; const originalIndexPath = path.join(store.indexRoot, originalIndex); const originalIndexText = fs.readFileSync(originalIndexPath, "utf8"); const tamperedIndex = JSON.parse(originalIndexText); tamperedIndex.participantProvenance = ["attacker/model@v9"]; fs.writeFileSync(originalIndexPath, JSON.stringify(tamperedIndex)); assert.throws(() => store.indexes(), /authentication/); fs.writeFileSync(originalIndexPath, originalIndexText);
+	fs.copyFileSync(originalIndexPath, path.join(store.indexRoot, "duplicate.json"));
 	assert.throws(() => store.getByRef(record.retrievalRef), /exactly one/); fs.rmSync(path.join(store.indexRoot, "duplicate.json"));
 	fs.writeFileSync(path.join(store.objectRoot, HASH_B), "orphan", { mode: 0o600 }); assert.throws(() => store.audit(), /orphan/); fs.rmSync(path.join(store.objectRoot, HASH_B));
 	fs.rmSync(path.join(store.objectRoot, record.contentHash));
 	assert.throws(() => store.get(record), /unavailable/);
-	assert.throws(() => store.get({ ...record, retentionUntil: "2000-01-01T00:00:00.000Z" }), /expired/);
+	const expired: any = { ...record, retentionUntil: "2000-01-01T00:00:00.000Z" }; const { indexHash: _expiredHash, ...expiredBody } = expired; expired.indexHash = sha256(JSON.stringify(Object.fromEntries(Object.entries(expiredBody).sort(([a], [b]) => a.localeCompare(b))))); assert.throws(() => store.get(expired), /expired|authentication/);
 	assert.throws(() => new EvidenceStore("relative/path"), /absolute/);
 	assertRedacted(redactValue({ token: secret }, [secret]), [secret]);
 } finally { fs.rmSync(evidenceRoot, { recursive: true, force: true }); }
 
 function makeGuard(root: string): AdmissionGuard {
-	return new AdmissionGuard(root, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	return new AdmissionGuard(root, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST, undefined, (hash) => [HASH_A, HASH_B, HASH_C].includes(hash));
 }
 function report(key: string, reportClass = "credible-bootstrap-leakage", actorId = "bootstrap-incident-service"): IncidentReport {
 	return { idempotencyKey: key, itemId: "BOOT-VERIFY", itemVersion: 1, itemHash: HASH_A, catalogHash: HASH_B, evidenceHash: HASH_C, reportClass, actorId };
@@ -199,6 +229,7 @@ try {
 	assert.throws(() => guard.applyIncident(report("incident-3")), /downgrade/);
 	assert.throws(() => guard.applyIncident(report("incident-unauthorized", "credible-bootstrap-leakage", "evaluated-model")), /allowlisted/);
 	assert.throws(() => guard.applyIncident({ ...report("incident-stale"), itemHash: HASH_C }), /stale|mismatched/);
+	assert.throws(() => guard.applyIncident({ ...report("incident-missing-evidence"), evidenceHash: hashObject("not-retained") }), /not durably retained/);
 	const incidentSequence = guard.snapshot().sequence;
 	assert.throws(() => guard.resolve({ action: "dismiss", actorId: "service", actorRole: "authorized-human", signedIntent: "", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["incident-1"], expectedSequence: incidentSequence, reason: "none" }), /signed/);
 	assert.throws(() => guard.resolve({ action: "dismiss", actorId: "human-1", actorRole: "authorized-human", signedIntent: "forged", itemHash: HASH_A, catalogHash: HASH_B, incidentKeys: ["incident-1"], expectedSequence: incidentSequence, reason: "synthetic false positive" }), /verified/);
@@ -216,6 +247,7 @@ try {
 
 for (const kind of ["result-use", "join", "report"] as const) {
 	for (const order of ["publication-first", "hold-first"] as const) {
+		assert.throws(() => admissionRunnerProbe(order, kind), /admission publication|incomplete or tainted/, `actual runner/report ${order} ${kind} must fail closed`);
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-linearization-${kind}-${order}-`));
 		try {
 			const guard = makeGuard(root); const authorization = guard.authorize("dispatch");
@@ -254,21 +286,24 @@ try {
 	assert.equal(makeGuard(recoveryRoot).snapshot().holdState, "pending", "restart must reclaim a demonstrably dead lock owner");
 } finally { fs.rmSync(recoveryRoot, { recursive: true, force: true }); }
 
-const crossStoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-cross-store-test-"));
-try {
-	const store = new EvidenceStore(path.join(crossStoreRoot, "evidence"));
-	const guard = makeGuard(path.join(crossStoreRoot, "admission")); const authorization = guard.authorize("dispatch");
-	const record = store.put({ value: { boundary: "report", state: "prepared" }, schemaVersionRef: "cross-store-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/service"], retentionUntil: "2099-01-01T00:00:00.000Z" });
-	assert.equal(guard.publish({ id: "cross-store-report", kind: "report", expectedSequence: authorization.sequence, evidenceHash: record.contentHash }).eligibility, "eligible");
-	guard.applyIncident(report("cross-store-incident"));
-	assert.equal(guard.snapshot().publications[0].eligibility, "TAINTED_OR_INVALIDATED");
-	assert.equal(store.getByRef(record.retrievalRef, { schemaVersionRef: "cross-store-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/service"] }).record.contentHash, record.contentHash);
-	fs.rmSync(path.join(store.objectRoot, record.contentHash));
-	assert.throws(() => store.getByRef(record.retrievalRef), /unavailable/);
-} finally { fs.rmSync(crossStoreRoot, { recursive: true, force: true }); }
+for (const fault of ["after-prepare", "after-evidence", "after-guard"] as const) {
+	const crossStoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-cross-store-${fault}-`));
+	try {
+		const store = new EvidenceStore(path.join(crossStoreRoot, "evidence"));
+		let coordinator = new EvidenceAdmissionCoordinator(path.join(crossStoreRoot, "admission"), store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const authorization = coordinator.authorize("dispatch"); const retentionUntil = "2099-01-01T00:00:00.000Z";
+		assert.throws(() => coordinator.publish({ id: `publication-${fault}`, publicationKind: "report", expectedSequence: authorization.sequence, value: { boundary: "report", fault }, schemaVersionRef: "cross-store-v2", assetVersions: ["asset-v2"], participantProvenance: ["bootstrap/service"], retentionUntil }, fault), /simulated/);
+		coordinator = new EvidenceAdmissionCoordinator(path.join(crossStoreRoot, "admission"), store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		assert.equal(coordinator.snapshot().publications[0].eligibility, "eligible", `publication ${fault} must reconcile idempotently`);
+		assert.throws(() => coordinator.incident({ report: { ...report(`incident-${fault}`), evidenceHash: undefined } as any, value: { incident: fault }, schemaVersionRef: "cross-store-incident-v2", assetVersions: ["asset-v2"], participantProvenance: ["bootstrap/service"], retentionUntil }, fault), /simulated/);
+		coordinator = new EvidenceAdmissionCoordinator(path.join(crossStoreRoot, "admission"), store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const snapshot: any = coordinator.snapshot(); assert.equal(snapshot.holdState, "pending"); assert.equal(snapshot.publications[0].eligibility, "TAINTED_OR_INVALIDATED"); assert.throws(() => coordinator.authorize("selection"), /not effectively admitted/);
+		assert.deepEqual(store.audit().objects, store.audit().indexes);
+	} finally { fs.rmSync(crossStoreRoot, { recursive: true, force: true }); }
+}
 
 const baseRow = manifest.rows[0];
-const slot = (overrides: Partial<NormalizedSlotResult> = {}): NormalizedSlotResult => ({ slotId: "S", itemId: "BOOT-X", itemVersion: 1, phase: "IMPLEMENT", datasetClass: "bootstrap", qualificationEligible: false, requested: structuredClone(baseRow.candidate), effective: structuredClone(baseRow.candidate), nonTargetRoutes: structuredClone(baseRow.nonTargetRoutes), judgeIdentity: structuredClone(baseRow.judge), isolation: { repository: "disposable://repo", piHome: "disposable://home", artifactRoot: "disposable://artifact", resultNamespace: "slot:S", processGroup: "isolated:S", credentialBoundary: "allowlisted-ephemeral", remotePolicy: "none" }, cleanupPassed: true, redactionPassed: true, status: "PASS", slotState: "JUDGED", deterministicPassed: true, qualitativeEligible: true, attempts: 2, infrastructureAttempts: 1, inputTokens: 10, outputTokens: 5, cachedTokens: 2, childCostUsd: 2, outerCostUsd: 1, wallTimeMs: 200, firstPlannedPassCostUsd: 2, defaultFirstPlannedPassWallTimeMs: 100, minimumPlannedAttempts: 1, handoffs: ["a->b"], evidenceRefs: ["sha256:x"], ...overrides });
+const slot = (overrides: Partial<NormalizedSlotResult> = {}): NormalizedSlotResult => ({ slotId: "S", itemId: "BOOT-X", itemVersion: 1, phase: "IMPLEMENT", datasetClass: "bootstrap", qualificationEligible: false, requested: structuredClone(baseRow.candidate), effective: structuredClone(baseRow.candidate), nonTargetRoutes: structuredClone(baseRow.nonTargetRoutes), judgeIdentity: structuredClone(baseRow.judge), judgeUsage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.1, wallTimeMs: 10 }, admission: { itemHash: HASH_A, catalogHash: manifest.manifestHash, selectionSequence: 0, dispatchSequence: 0, publications: [{ id: "result", kind: "result-use", sequence: 0, eligibility: "eligible", evidenceHash: HASH_A, evidenceRef: `sha256:${HASH_A}` }, { id: "report", kind: "report", sequence: 0, eligibility: "eligible", evidenceHash: HASH_B, evidenceRef: `sha256:${HASH_B}` }] }, isolation: { repository: "disposable://repo", piHome: "disposable://home", artifactRoot: "disposable://artifact", resultNamespace: "slot:S", processGroup: "isolated:S", credentialBoundary: "allowlisted-ephemeral", remotePolicy: "none" }, cleanupPassed: true, redactionPassed: true, status: "PASS", slotState: "JUDGED", deterministicPassed: true, qualitativeEligible: true, attempts: 2, infrastructureAttempts: 1, inputTokens: 10, outputTokens: 5, cachedTokens: 2, childCostUsd: 2, outerCostUsd: 1, wallTimeMs: 200, firstPlannedPassCostUsd: 2, defaultFirstPlannedPassWallTimeMs: 100, minimumPlannedAttempts: 1, handoffs: ["a->b"], evidenceRefs: ["sha256:x"], ...overrides });
 const matchingSlot = { ...slot(), slotId: baseRow.slotId, itemId: baseRow.itemId, phase: baseRow.phase, handoffs: [] };
 assert.doesNotThrow(() => validateSlotResult(matchingSlot, baseRow));
 assert.throws(() => validateSlotResult({ ...matchingSlot, effective: { ...matchingSlot.effective, model: "wrong" } }, baseRow), /identity/);

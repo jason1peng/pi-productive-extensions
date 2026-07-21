@@ -67,6 +67,39 @@
         "family": "synthetic-judge",
         "rubricVersion": "implement-supplemental-v1"
       },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "bd3f2dde136dd81d0714ade56ef13715a439ed838fb9ca96adcdcfdf39921a5b",
+        "catalogHash": "29a0237da526eef7c25ad1a460d3517d0dc38d76c804cc00ba5363ed9e719090",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "BOOT-SLOT-01:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "892d6df73735fcb803b04cfd6c6b3fd6997cf415be8ee87059339c4f79268c50",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:892d6df73735fcb803b04cfd6c6b3fd6997cf415be8ee87059339c4f79268c50"
+          },
+          {
+            "id": "BOOT-SLOT-01:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "1e841ad649ed241f5091f32b09de1d67ec0d719cc1c62dc769661cd018fca687",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:1e841ad649ed241f5091f32b09de1d67ec0d719cc1c62dc769661cd018fca687"
+          }
+        ]
+      },
       "isolation": {
         "repository": "disposable://repository/BOOT-SLOT-01",
         "piHome": "disposable://pi-home/BOOT-SLOT-01",
@@ -139,6 +172,39 @@
         "version": "v1",
         "family": "synthetic-judge",
         "rubricVersion": "verify-supplemental-v1"
+      },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "8a097ecb593f59f3517b33f1226fcb4e62c4f551cd5181f3a0cb7ad1e45ab361",
+        "catalogHash": "29a0237da526eef7c25ad1a460d3517d0dc38d76c804cc00ba5363ed9e719090",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "BOOT-SLOT-02:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "eaecda35d8d206d7d923ebeede5fcbfcde1479500caebef6e1176751788dd802",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:eaecda35d8d206d7d923ebeede5fcbfcde1479500caebef6e1176751788dd802"
+          },
+          {
+            "id": "BOOT-SLOT-02:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "a19df83c1a65c25edb161502459182d285f2a1d13349475df95ab42942c1326a",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:a19df83c1a65c25edb161502459182d285f2a1d13349475df95ab42942c1326a"
+          }
+        ]
       },
       "isolation": {
         "repository": "disposable://repository/BOOT-SLOT-02",
@@ -213,6 +279,39 @@
         "family": "synthetic-judge",
         "rubricVersion": "review-supplemental-v1"
       },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "bedf830dd3547ae64c4a018f97514a6581330f6b3641157f196e6c66ae91362f",
+        "catalogHash": "29a0237da526eef7c25ad1a460d3517d0dc38d76c804cc00ba5363ed9e719090",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "BOOT-SLOT-03:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "09032d62bccc5d1b6a7561dbe2856b08ca83c675d2a6d5697ccd96b455643c29",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:09032d62bccc5d1b6a7561dbe2856b08ca83c675d2a6d5697ccd96b455643c29"
+          },
+          {
+            "id": "BOOT-SLOT-03:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "569e13bd3c2dd69bbbf888e6ad4b3168fa120830bf36a2325a36285d44964e32",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:569e13bd3c2dd69bbbf888e6ad4b3168fa120830bf36a2325a36285d44964e32"
+          }
+        ]
+      },
       "isolation": {
         "repository": "disposable://repository/BOOT-SLOT-03",
         "piHome": "disposable://pi-home/BOOT-SLOT-03",
@@ -278,6 +377,39 @@
         "VERIFY": "fake/verify-route-v1",
         "REVIEW": "fake/review-route-v1",
         "RETRO": "fake/retro-route-v1"
+      },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "ef0b07cf83a39faa27e866861ea5608123c61e7bcc2025314163c4250724b20f",
+        "catalogHash": "29a0237da526eef7c25ad1a460d3517d0dc38d76c804cc00ba5363ed9e719090",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "BOOT-SLOT-04:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "236bc22959138d7d21caf07d1fd9313b47d35d32603d367dfc169bc5bf7a98c7",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:236bc22959138d7d21caf07d1fd9313b47d35d32603d367dfc169bc5bf7a98c7"
+          },
+          {
+            "id": "BOOT-SLOT-04:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "fdc7319b669fcb195c2955329a2f641490539ce536bf5a77d21793d1886ae5a3",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:fdc7319b669fcb195c2955329a2f641490539ce536bf5a77d21793d1886ae5a3"
+          }
+        ]
       },
       "isolation": {
         "repository": "disposable://repository/BOOT-SLOT-04",
@@ -352,6 +484,39 @@
         "family": "synthetic-judge",
         "rubricVersion": "retro-supplemental-v1"
       },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "d6ce0d7ba1ff068ea5c6bead193b06fc3186531a1673add1055c806683df07d1",
+        "catalogHash": "29a0237da526eef7c25ad1a460d3517d0dc38d76c804cc00ba5363ed9e719090",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "BOOT-SLOT-05:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "a9bb2bebf1e8522648d41b201dd3847ea12f1bbca630aacfb0d0d05c46d2cdff",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:a9bb2bebf1e8522648d41b201dd3847ea12f1bbca630aacfb0d0d05c46d2cdff"
+          },
+          {
+            "id": "BOOT-SLOT-05:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "ee93bf7d61ea5c32b11cc60baa7a02c7d69e1e7ccc81e750178b336b341bc09c",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:ee93bf7d61ea5c32b11cc60baa7a02c7d69e1e7ccc81e750178b336b341bc09c"
+          }
+        ]
+      },
       "isolation": {
         "repository": "disposable://repository/BOOT-SLOT-05",
         "piHome": "disposable://pi-home/BOOT-SLOT-05",
@@ -419,6 +584,75 @@
         "CLOSE": "fake/close-route-v1",
         "RETRO": "fake/retro-route-v1"
       },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "690e84cff38141f4ead8ce4e838a894ccf5ff99a0ae9f286235a39b6b1b05472",
+        "catalogHash": "29a0237da526eef7c25ad1a460d3517d0dc38d76c804cc00ba5363ed9e719090",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "BOOT-SLOT-06:join:1",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "f30b6ceaacec4444169bc2cb881dc1815edb5642015240b534238570ca3f755e",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:f30b6ceaacec4444169bc2cb881dc1815edb5642015240b534238570ca3f755e"
+          },
+          {
+            "id": "BOOT-SLOT-06:join:2",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "34f827e24f67722ff6d329defb436189f2da97d8af051bcff58b52bf7ad0d856",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:34f827e24f67722ff6d329defb436189f2da97d8af051bcff58b52bf7ad0d856"
+          },
+          {
+            "id": "BOOT-SLOT-06:join:3",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "03db74093c37afd8e2067ebde8bec1cabbb11831b1e89852e27a3f772ad69a01",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:03db74093c37afd8e2067ebde8bec1cabbb11831b1e89852e27a3f772ad69a01"
+          },
+          {
+            "id": "BOOT-SLOT-06:join:4",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "f79ff560a63869f91164c551e64232230990afb7c9e79dd3536163ea45552795",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:f79ff560a63869f91164c551e64232230990afb7c9e79dd3536163ea45552795"
+          },
+          {
+            "id": "BOOT-SLOT-06:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "d29dadc6e74f4f83ef69241063d8143a16e6736bb6c99decf3b2f5bb48b9d51c",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:d29dadc6e74f4f83ef69241063d8143a16e6736bb6c99decf3b2f5bb48b9d51c"
+          },
+          {
+            "id": "BOOT-SLOT-06:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "542f4cb5c01eed97b193e9b9f0ba1a50f1fd43cdadec558761a3fd255268ee18",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:542f4cb5c01eed97b193e9b9f0ba1a50f1fd43cdadec558761a3fd255268ee18"
+          }
+        ]
+      },
       "isolation": {
         "repository": "disposable://repository/BOOT-SLOT-06",
         "piHome": "disposable://pi-home/BOOT-SLOT-06",
@@ -459,5 +693,5 @@
   "evidenceRefs": [
     "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
   ],
-  "reportHash": "8054bf80cb976f0e15713a550687df0f4abe623a1102465da22fd28ae6c87312"
+  "reportHash": "3ce9a737890a2b8a79db8f57b246b65c6bf506b7d7ae4e7e2fe90719dac8b76f"
 }

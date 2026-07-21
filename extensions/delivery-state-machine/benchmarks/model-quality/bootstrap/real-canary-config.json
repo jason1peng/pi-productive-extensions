@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "PPE-001-REAL-CANARY",
-  "version": 2,
+  "version": 3,
   "approvedAt": "2026-07-21T12:00:00.000Z",
   "approvedBy": "user-explicit-approval-2026-07-21",
   "participant": {
@@ -17,14 +17,16 @@
     "model": "gpt-5.6-sol",
     "version": "gpt-5.6-sol",
     "family": "gpt-5.6",
-    "thinking": "low"
+    "thinking": "low",
+    "context": "fresh"
   },
   "judge": {
     "provider": "openai-codex",
     "model": "gpt-5.5",
     "version": "gpt-5.5",
     "family": "gpt-5.5",
-    "thinking": "high"
+    "thinking": "high",
+    "context": "fresh"
   },
   "routes": {
     "IMPLEMENT": [
@@ -54,7 +56,8 @@
   "evidence": {
     "root": "/Users/jason/work/projects/model-quality-evidence/ppe-001",
     "mode": "0700",
-    "retentionDays": 90
+    "retentionDays": 90,
+    "priorSpendUsd": 15.791287
   },
   "limits": {
     "totalCostUsd": 20,
@@ -121,5 +124,5 @@
       "judge": false
     }
   ],
-  "configHash": "eeceb46dce0921c4fdbbf754c829e31815bd94463bd8ec52f26a25093f69deaa"
+  "configHash": "921802242890a36746ed6865179cb4a863424e8045aee9a0080ffabeb0a26529"
 }

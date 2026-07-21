@@ -98,6 +98,10 @@ if (import.meta.main) {
 			const { runRealCanary } = await import("./canary.ts");
 			console.log(JSON.stringify(await runRealCanary(command === "bootstrap-e2e" ? "e2e" : "all"), null, 2));
 		}
+		else if (command === "audit-real") {
+			const { auditRealCanary } = await import("./canary.ts");
+			console.log(JSON.stringify(auditRealCanary(), null, 2));
+		}
 		else throw new Error(`unknown model-quality command: ${command}`);
 	} catch (error) {
 		console.error(error instanceof Error ? error.message : String(error));

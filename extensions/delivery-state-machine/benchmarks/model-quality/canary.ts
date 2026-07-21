@@ -191,6 +191,29 @@ function slotFromResults(row: ManifestRow, results: NormalizedResult[], evidence
 	return validateSlotResult(value, row);
 }
 
+export function auditRealCanary(): { reportHash: string; evidenceObjects: number; evidenceIndexes: number; gitClean: boolean } {
+	const { config, manifest } = loadRealCanary();
+	if (!fs.existsSync(REPORT_FILE)) throw new Error("real canary report is unavailable");
+	const report = readJson<InfrastructureReport>(REPORT_FILE);
+	if (report.manifestHash !== manifest.manifestHash || report.slots.length !== manifest.rows.length || report.datasetClass !== "bootstrap" || report.qualificationEligible) throw new Error("real canary report identity/eligibility mismatch");
+	for (const row of manifest.rows) {
+		const slot = report.slots.find((entry) => entry.slotId === row.slotId);
+		if (!slot) throw new Error(`real canary slot is missing: ${row.slotId}`);
+		validateSlotResult(slot, row);
+		if (slot.status !== "PASS") throw new Error(`real canary slot did not pass: ${row.slotId}`);
+	}
+	const reproduced = buildInfrastructureReport({ manifestHash: manifest.manifestHash, slots: report.slots, generatedAt: report.generatedAt });
+	if (reproduced.reportHash !== report.reportHash || JSON.stringify(reproduced) !== JSON.stringify(report)) throw new Error("real canary report hash/content does not reproduce");
+	if ((fs.statSync(config.evidence.root).mode & 0o777) !== 0o700) throw new Error("durable evidence root permissions changed");
+	const evidence = new EvidenceStore(config.evidence.root).audit();
+	for (const reference of report.evidenceRefs) if (!/^sha256:[a-f0-9]{64}$/.test(reference)) throw new Error("real canary evidence reference is invalid");
+	const rawRoot = path.resolve(ROOT, "../agent-quality/artifacts/raw");
+	if (fs.existsSync(rawRoot) && fs.readdirSync(rawRoot).length > 0) throw new Error("raw canary artifacts were not cleaned");
+	const repository = path.resolve(ROOT, "../../../..");
+	const status = Bun.spawnSync(["git", "status", "--porcelain=v1", "--untracked-files=no"], { cwd: repository }).stdout.toString().trim();
+	return { reportHash: report.reportHash, evidenceObjects: evidence.objects, evidenceIndexes: evidence.indexes, gitClean: status === "" };
+}
+
 export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<InfrastructureReport> {
 	if (process.env.MODEL_QUALITY_CANARY !== "1") throw new Error("real canary is fail-closed: MODEL_QUALITY_CANARY=1 is required");
 	const { config, manifest } = loadRealCanary();

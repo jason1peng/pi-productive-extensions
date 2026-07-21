@@ -25,6 +25,7 @@
     "eval:models:validate": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts validate",
     "eval:models:fake-full": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts fake-full",
     "eval:models:audit": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts audit",
+    "eval:models:audit-real": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts audit-real",
     "eval:models:bootstrap:canary": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts bootstrap-canary",
     "eval:models:bootstrap:e2e": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts bootstrap-e2e",
     "eval:dsm-agents:validate": "bun extensions/delivery-state-machine/benchmarks/agent-quality/run.ts validate && promptfoo validate -c extensions/delivery-state-machine/benchmarks/agent-quality/promptfooconfig.yaml",

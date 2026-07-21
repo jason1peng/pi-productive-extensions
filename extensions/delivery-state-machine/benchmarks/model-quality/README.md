@@ -54,6 +54,7 @@ The approved immutable I4 configuration is frozen in `bootstrap/real-canary-conf
 ```bash
 MODEL_QUALITY_CANARY=1 npm run eval:models:bootstrap:canary
 MODEL_QUALITY_CANARY=1 npm run eval:models:bootstrap:e2e # isolated E2E-only diagnostic
+npm run eval:models:audit-real # no model calls; verifies report, evidence, cleanup and hashes
 ```
 
 The serial manifest allows one retry only for infrastructure failure, with 15-minute phase, 45-minute E2E, two-hour total, $2 phase, $8 E2E, and $20 total ceilings. Only Pi-managed `openai-codex` authentication is copied into disposable homes; arbitrary environment credentials are not forwarded. Redacted content-addressed evidence is retained for 90 days under the mode-`0700` private root `/Users/jason/work/projects/model-quality-evidence/ppe-001`. Raw transcripts and disposable workspaces are deleted after the selected artifact, strict judge record, deterministic evidence, telemetry, and provenance are redacted and stored.

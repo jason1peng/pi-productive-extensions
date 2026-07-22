@@ -112,6 +112,15 @@ function textFromEvents(entries: any[]): string[] {
 	});
 }
 
+export function observeJudgeLaunch(judgeArgs: string[], modelEvent?: { provider?: string; modelId?: string }): { provider: string; model: string; version: string; family: string; thinking: string; context: "fresh" } {
+	const thinkingIndex = judgeArgs.indexOf("--thinking"), modelIndex = judgeArgs.indexOf("--model");
+	if (thinkingIndex < 0 || modelIndex < 0) throw new Error("sealed judge launch argv is incomplete");
+	const [provider, ...modelParts] = judgeArgs[modelIndex + 1].split("/"); const model = modelParts.join("/"); const thinking = judgeArgs[thinkingIndex + 1];
+	if (!provider || !model || !thinking) throw new Error("sealed judge launch argv is incomplete");
+	if (modelEvent && (modelEvent.provider !== provider || exactModelId(String(modelEvent.modelId)) !== model)) throw new Error("effective judge model event conflicts with sealed launch argv");
+	return { provider, model, version: observedVersion(model), family: observedFamily(model), thinking, context: "fresh" };
+}
+
 async function judgePhase(config: RealCanaryConfig, row: ManifestRow, candidateArtifact: string, deadline: number): Promise<{ record: JudgeRecord; usage: UsageRecord; wallTimeMs: number; packHash: string; launchSeal: string; effective: ManifestRow["judge"]; observed: { provider: string; model: string; version: string; family: string; thinking: string; context: "fresh" } }> {
 	if (["CLOSE", "E2E"].includes(row.phase)) throw new Error(`${row.phase} judge invocation is forbidden`);
 	const pack = buildJudgePack({ phase: row.phase, acceptedContract: `PPE-001 bootstrap ${row.phase} contract: evaluate clarity and evidence only; deterministic gates remain authoritative.`, eligibleOutputA: candidateArtifact, eligibleOutputB: `Reference eligible ${row.phase} response with concise evidence and limitations.`, eligibilitySummary: "deterministic Stage 7 controls passed and output is eligible for supplemental infrastructure judging", rubric: `${row.phase} supplemental evidence quality, clarity, actionability, and supported limitations`, nonce: hashObject(`${row.slotId}:${config.configHash}`).slice(0, 32), swap: Number(row.slotId.slice(-1)) % 2 === 0 });
@@ -139,9 +148,9 @@ async function judgePhase(config: RealCanaryConfig, row: ManifestRow, candidateA
 		if (!record) throw new Error("judge returned no strict JSON record");
 		if (Date.now() > deadline) throw new Error("judge exceeded the frozen row deadline");
 		const modelEvent = entries.find((entry) => entry?.type === "model_change");
-		if (!modelEvent?.provider || !modelEvent?.modelId || !/^[a-f0-9]{64}$/.test(judgeLaunchSeal)) throw new Error("effective judge identity/launch settings are unobservable");
+		if (!/^[a-f0-9]{64}$/.test(judgeLaunchSeal)) throw new Error("effective judge launch settings are unobservable");
 		const thinkingIndex = judgeArgs.indexOf("--thinking"), modelIndex = judgeArgs.indexOf("--model"); if (thinkingIndex < 0 || modelIndex < 0 || judgeArgs[thinkingIndex + 1] !== config.judge.thinking || judgeArgs[modelIndex + 1] !== `${config.judge.provider}/${config.judge.model}`) throw new Error("sealed judge launch argv mismatch");
-		const observed = { provider: String(modelEvent.provider), model: String(modelEvent.modelId), version: observedVersion(String(modelEvent.modelId)), family: observedFamily(String(modelEvent.modelId)), thinking: judgeArgs[thinkingIndex + 1], context: "fresh" as const };
+		const observed = observeJudgeLaunch(judgeArgs, modelEvent);
 		const expectedObserved = { provider: config.judge.provider, model: config.judge.model, version: config.judge.version, family: config.judge.family, thinking: config.judge.thinking, context: config.judge.context };
 		if (JSON.stringify(observed) !== JSON.stringify(expectedObserved)) throw new Error("effective judge identity/settings mismatch");
 		const effective = { provider: observed.provider, model: observed.model, version: observed.version, family: observed.family, rubricVersion: row.judge!.rubricVersion };

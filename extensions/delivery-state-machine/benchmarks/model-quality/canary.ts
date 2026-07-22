@@ -9,7 +9,8 @@ import { runPromptfooTrial } from "../agent-quality/run.ts";
 import { artifactPrompt, executePiRuntime, selectAuthentication, type RuntimeRun } from "../agent-quality/runtime.ts";
 import { provisionScenario, type ProvisionedRun } from "../agent-quality/provision.ts";
 import { PROMPTFOO_VERSION, SCHEMA_VERSION, type HarnessAttempt, type NormalizedResult, type ScenarioRecord, type UsageRecord } from "../agent-quality/schema.ts";
-import { EvidenceStore } from "./evidence.ts";
+import { redactAndCheck } from "../agent-quality/scorers/index.ts";
+import { EvidenceStore, assertRedacted, redactValue } from "./evidence.ts";
 import { EvidenceAdmissionCoordinator, type CoordinatedPublication } from "./admission-coordinator.ts";
 import { SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST } from "./admission.ts";
 import { assertObservedBinding, bindObservedExecution, capturePrelaunchBinding, exactModelId, observedFamily, observedVersion, type ObservedExecutionBinding } from "./binding.ts";
@@ -40,6 +41,24 @@ interface RealCanaryConfig {
 
 function readJson<T>(file: string): T { return JSON.parse(fs.readFileSync(file, "utf8")) as T; }
 function configContent(config: RealCanaryConfig): Omit<RealCanaryConfig, "configHash"> { const { configHash: _, ...content } = config; return content; }
+
+export function assertFrozenCanaryEnvironment(config: Pick<RealCanaryConfig, "outer" | "participant" | "credentialPolicy">): void {
+	const expectedOuter = `${config.outer.provider}/${config.outer.model}`;
+	const override = process.env.DSM_AGENT_EVAL_OUTER_MODEL;
+	if (override !== undefined && override !== expectedOuter) throw new Error("outer-model override conflicts with frozen canary identity before launch");
+	const defaultAuth = path.join(os.homedir(), ".pi", "agent", "auth.json");
+	if (process.env.PI_AGENT_AUTH_FILE !== undefined && path.resolve(process.env.PI_AGENT_AUTH_FILE) !== path.resolve(defaultAuth)) throw new Error("credential-file override conflicts with Pi-managed frozen canary policy before launch");
+	if (config.outer.provider !== "openai-codex" || config.participant.provider !== "openai-codex" || JSON.stringify(config.credentialPolicy.providers) !== JSON.stringify(["openai-codex"])) throw new Error("frozen canary credential provider is invalid");
+}
+
+export function sanitizeConnectedPayload<T>(value: T, explicitSecrets: string[]): T {
+	const meaningful = [...new Set(explicitSecrets.filter((secret) => secret.length >= 8))];
+	const original = JSON.stringify(value);
+	const sanitized = redactValue(value, meaningful) as T;
+	assertRedacted(sanitized, meaningful);
+	if (meaningful.some((secret) => original.includes(secret))) throw new Error("connected evidence contained explicit credential material and is ineligible");
+	return sanitized;
+}
 
 export function loadRealCanary(): { config: RealCanaryConfig; manifest: SparseManifest } {
 	const config = readJson<RealCanaryConfig>(CONFIG_FILE);
@@ -259,7 +278,7 @@ export function validateConnectedHandoffs(handoffs: HandoffRecord[]): string[] {
 	if (JSON.stringify(observed) !== JSON.stringify(expected) || handoffs.some((entry, index) => entry.sequence !== index + 1 || entry.inboundHash !== entry.outboundHash || entry.consumedInboundHash !== entry.outboundHash || entry.consumedInboundRef !== entry.outboundRef || !/^[a-f0-9]{64}$/.test(entry.consumptionEvidenceHash) || !entry.taskId || !entry.repositoryId) || new Set(handoffs.map((entry) => entry.taskId)).size !== 1 || new Set(handoffs.map((entry) => entry.repositoryId)).size !== 1) throw new Error("connected E2E handoff chain is incomplete, disconnected, unconsumed, or mismatched");
 	return observed;
 }
-interface ConnectedJourney { results: NormalizedResult[]; artifacts: string[]; handoffs: HandoffRecord[]; cleanup: () => void }
+interface ConnectedJourney { results: NormalizedResult[]; artifacts: string[]; handoffs: HandoffRecord[]; secretValues: string[]; cleanup: () => void }
 
 async function executeConnectedRuntime(scenario: ScenarioRecord, agent: string, run: ProvisionedRun): Promise<RuntimeRun> {
 	if (agent === "fresh-verifier") {
@@ -283,7 +302,7 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 	const shared = provisionScenario(base); const repositoryId = sha256(`${taskId}:${shared.gitBefore}:${base.fixture.sha256}`);
 	const remote = path.join(shared.root, "connected-remote.git"); Bun.spawnSync(["git", "init", "--bare", remote]); Bun.spawnSync(["git", "remote", "add", "origin", remote], { cwd: shared.workspace });
 	fs.appendFileSync(path.join(shared.workspace, ".git", "info", "exclude"), "\n.delivery-evidence/\n");
-	const results: NormalizedResult[] = [], artifacts: string[] = [], handoffs: HandoffRecord[] = [];
+	const results: NormalizedResult[] = [], artifacts: string[] = [], handoffs: HandoffRecord[] = []; const journeySecrets: string[] = [];
 	let priorOutbound: { phase: string; hash: string; content: string; relativePath: string } | undefined; let sequence = 0; let retriesRemaining = config.limits.infrastructureRetries;
 	const phases = ["IMPLEMENT", "VERIFY", "REVIEW", "REVIEW", "CLOSE", "RETRO"];
 	try {
@@ -299,13 +318,17 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 				phaseRun = { ...shared, agentHome: phaseHome, artifactPath, rawEvidence, localRemote: remote, env: { ...shared.env, HOME: phaseHome, PI_CODING_AGENT_DIR: phaseAgentDir, TMPDIR: phaseTmp, PWD: shared.workspace } };
 				prelaunch = capturePrelaunchBinding(scenario, phaseRun, config.routes, config.outer);
 				startedAt = new Date().toISOString(); runtime = await executeConnectedRuntime(scenario, actualAgent, phaseRun); finishedAt = new Date().toISOString();
+				const attemptSecrets = [...new Set([...phaseRun.secretValues, ...(runtime.secretValues ?? [])].filter(Boolean))]; journeySecrets.push(...attemptSecrets);
+				const rawRedaction = redactAndCheck(rawEvidence, attemptSecrets);
+				if (!rawRedaction.passed) throw new Error(`connected ${phase} credential material required redaction in raw evidence: ${rawRedaction.matches.join(", ")}`);
 				if (runtime.evidence.completed && !runtime.evidence.timedOut && runtime.child && fs.existsSync(artifactPath)) break;
-				const diagnostics = [`connected ${phase} runtime did not complete: ${JSON.stringify(runtime.evidence.infrastructureErrors)}`];
-				failedAttempts.push({ attempt: phaseAttempt, status: "INFRASTRUCTURE_FAILURE", completion: runtime.evidence.timedOut ? "timed_out" : "launch_failed", diagnostics, rawEvidencePath: rawEvidence, outer: runtime.outer, child: runtime.child, scorers: [], redactionPassed: true });
+				const diagnostics = sanitizeConnectedPayload([`connected ${phase} runtime did not complete: ${JSON.stringify(runtime.evidence.infrastructureErrors)}`], attemptSecrets);
+				failedAttempts.push({ attempt: phaseAttempt, status: "INFRASTRUCTURE_FAILURE", completion: runtime.evidence.timedOut ? "timed_out" : "launch_failed", diagnostics, rawEvidencePath: rawEvidence, outer: sanitizeConnectedPayload(runtime.outer, attemptSecrets), child: sanitizeConnectedPayload(runtime.child, attemptSecrets), scorers: [], redactionPassed: true });
 				if (!mayRetryConnectedInfrastructure(runtime.evidence, retriesRemaining)) throw new Error(`connected ${phase} runtime did not complete with an artifact: ${JSON.stringify({ evidence: runtime.evidence, childUsage: runtime.child?.usage, outerUsage: runtime.outer.usage })}`);
 				retriesRemaining -= 1; fs.rmSync(rawEvidence, { recursive: true, force: true }); fs.rmSync(phaseHome, { recursive: true, force: true }); fs.rmSync(artifactPath, { force: true });
 			}
-			const content = fs.readFileSync(artifactPath, "utf8"); const outboundHash = sha256(content);
+			const phaseSecrets = [...new Set([...phaseRun.secretValues, ...(runtime.secretValues ?? [])].filter(Boolean))];
+			const content = sanitizeConnectedPayload(fs.readFileSync(artifactPath, "utf8"), phaseSecrets); const outboundHash = sha256(content);
 			let consumption: ReturnType<typeof parseConsumedInbound> | undefined;
 			if (priorOutbound) consumption = parseConsumedInbound(content, { hash: priorOutbound.hash, relativePath: priorOutbound.relativePath, content: priorOutbound.content });
 			if (priorOutbound) {
@@ -322,7 +345,7 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 			else priorOutbound = { phase, hash: outboundHash, content, relativePath };
 		}
 		validateConnectedHandoffs(handoffs);
-		return { results, artifacts, handoffs, cleanup: shared.cleanup };
+		return { results, artifacts, handoffs, secretValues: [...new Set(journeySecrets)], cleanup: shared.cleanup };
 	} catch (error) { if (process.env.MODEL_QUALITY_DEBUG_KEEP !== "1") shared.cleanup(); else console.error(`connected debug root retained: ${shared.root}`); throw error; }
 }
 
@@ -390,6 +413,10 @@ export function auditRealCanary(): { reportHash: string; evidenceObjects: number
 	if (reproduced.reportHash !== report.reportHash || JSON.stringify(reproduced) !== JSON.stringify(report)) throw new Error("real canary report hash/content does not reproduce");
 	if ((fs.statSync(config.evidence.root).mode & 0o777) !== 0o700) throw new Error("durable evidence root permissions changed");
 	const store = new EvidenceStore(config.evidence.root); const evidence = store.audit();
+	const authSource = path.join(os.homedir(), ".pi", "agent", "auth.json");
+	const availableSecrets = selectAuthentication(authSource, [`${config.participant.provider}/${config.participant.model}`, `${config.outer.provider}/${config.outer.model}`, `${config.judge.provider}/${config.judge.model}`]).secretValues;
+	assertRedacted(report, availableSecrets);
+	for (const index of store.indexes()) assertRedacted(store.get(index).toString("utf8"), availableSecrets);
 	const registry = new Map(loadRegistry().items.map((item) => [`${item.id}@${item.version}`, item]));
 	const expectedRefs = new Set(report.evidenceRefs); if (expectedRefs.size !== report.evidenceRefs.length) throw new Error("real canary evidence references must be unique");
 	for (const row of manifest.rows) {
@@ -432,6 +459,7 @@ function emitCostVisibility(ledger: SpendLedger, currentRunIds: readonly string[
 export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<InfrastructureReport> {
 	if (process.env.MODEL_QUALITY_CANARY !== "1") throw new Error("real canary is fail-closed: MODEL_QUALITY_CANARY=1 is required");
 	const { config, manifest } = loadRealCanary();
+	assertFrozenCanaryEnvironment(config);
 	if (process.env.MODEL_QUALITY_EVIDENCE_ROOT && process.env.MODEL_QUALITY_EVIDENCE_ROOT !== config.evidence.root) throw new Error("evidence root differs from the approved immutable config");
 	fs.mkdirSync(config.evidence.root, { recursive: true, mode: 0o700 }); fs.chmodSync(config.evidence.root, 0o700);
 	const store = new EvidenceStore(config.evidence.root); const participantProvenance = [`${config.participant.provider}/${config.participant.model}@${config.participant.version}`, `${config.outer.provider}/${config.outer.model}@${config.outer.version}`];
@@ -452,9 +480,9 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 		const selection = coordinator.authorize("selection"), dispatch = coordinator.authorize("dispatch");
 		const phases = row.phase === "REVIEW" ? ["REVIEW", "REVIEW"] : [row.phase];
 		const rowDeadline = Math.min(deadline, Date.now() + (row.phase === "E2E" ? config.limits.e2eTimeoutMs : config.limits.phaseTimeoutMs));
-		let results: NormalizedResult[] = []; let artifacts: string[] = []; let observedHandoffs: HandoffRecord[] = []; let journeyCleanup: (() => void) | undefined; let spendFinished = false;
+		let results: NormalizedResult[] = []; let artifacts: string[] = []; let observedHandoffs: HandoffRecord[] = []; let explicitSecrets: string[] = []; let journeyCleanup: (() => void) | undefined; let spendFinished = false;
 		try {
-			if (row.phase === "E2E") { const journey = await connectedE2E(config, rowDeadline); results = journey.results; artifacts = journey.artifacts; observedHandoffs = journey.handoffs; journeyCleanup = journey.cleanup; }
+			if (row.phase === "E2E") { const journey = await connectedE2E(config, rowDeadline); results = journey.results; artifacts = journey.artifacts; observedHandoffs = journey.handoffs; explicitSecrets = journey.secretValues; journeyCleanup = journey.cleanup; }
 			else {
 				let retriesRemaining = config.limits.infrastructureRetries;
 				for (const phase of phases) {
@@ -473,12 +501,12 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 			}
 			if (Date.now() > rowDeadline) throw new Error(`${row.slotId} exceeded the frozen row deadline`);
 			const handoffs = row.phase === "E2E" ? validateConnectedHandoffs(observedHandoffs) : [];
-			const transient = { row: row.slotId, phase: row.phase, results: results.map((result) => ({ scenarioId: result.scenarioId, status: result.status, completion: result.completion, scorers: result.scorers, executionBinding: (result as any).executionBinding, artifact: artifact(result), diagnostics: result.diagnostics })), handoffs: observedHandoffs, judge: judge ? { record: judge.record, usage: judge.usage, wallTimeMs: judge.wallTimeMs, packHash: judge.packHash, launchSeal: judge.launchSeal, effective: judge.effective, observed: judge.observed } : undefined, rawTranscript: "not retained" };
+			const transient = sanitizeConnectedPayload({ row: row.slotId, phase: row.phase, results: results.map((result) => ({ scenarioId: result.scenarioId, status: result.status, completion: result.completion, scorers: result.scorers, executionBinding: (result as any).executionBinding, artifact: artifact(result), diagnostics: result.diagnostics })), handoffs: observedHandoffs, judge: judge ? { record: judge.record, usage: judge.usage, wallTimeMs: judge.wallTimeMs, packHash: judge.packHash, launchSeal: judge.launchSeal, effective: judge.effective, observed: judge.observed } : undefined, rawTranscript: "not retained" }, explicitSecrets);
 			const assets = [`${row.itemId}@${row.itemVersion}`, `manifest:${manifest.manifestHash}`, `config:${config.configHash}`]; const provenance = [...participantProvenance, ...(judge ? [`${judge.observed.provider}/${judge.observed.model}@${judge.observed.version}`] : [])]; const retentionUntil = new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString();
 			const publications: CoordinatedPublication[] = [];
-			for (const [index, handoff] of observedHandoffs.entries()) publications.push(coordinator.publish({ id: `${runId}:join:${index + 1}`, publicationKind: "join", expectedSequence: dispatch.sequence, value: handoff, schemaVersionRef: "model-quality-real-canary-handoff-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }));
-			const resultUse = coordinator.publish({ id: `${runId}:result-use`, publicationKind: "result-use", expectedSequence: dispatch.sequence, value: transient, schemaVersionRef: "model-quality-real-canary-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }); publications.push(resultUse);
-			const reportPublication = coordinator.publish({ id: `${runId}:report`, publicationKind: "report", expectedSequence: dispatch.sequence, value: { row: row.slotId, transientRef: resultUse.evidenceRef, handoffs }, schemaVersionRef: "model-quality-real-canary-row-report-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }); publications.push(reportPublication);
+			for (const [index, handoff] of observedHandoffs.entries()) publications.push(coordinator.publish({ id: `${runId}:join:${index + 1}`, publicationKind: "join", expectedSequence: dispatch.sequence, value: sanitizeConnectedPayload(handoff, explicitSecrets), schemaVersionRef: "model-quality-real-canary-handoff-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }, undefined, explicitSecrets));
+			const resultUse = coordinator.publish({ id: `${runId}:result-use`, publicationKind: "result-use", expectedSequence: dispatch.sequence, value: transient, schemaVersionRef: "model-quality-real-canary-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }, undefined, explicitSecrets); publications.push(resultUse);
+			const reportPublication = coordinator.publish({ id: `${runId}:report`, publicationKind: "report", expectedSequence: dispatch.sequence, value: sanitizeConnectedPayload({ row: row.slotId, transientRef: resultUse.evidenceRef, handoffs }, explicitSecrets), schemaVersionRef: "model-quality-real-canary-row-report-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }, undefined, explicitSecrets); publications.push(reportPublication);
 			const admission: NormalizedSlotResult["admission"] = { itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, selectionSequence: selection.sequence, dispatchSequence: dispatch.sequence, publications };
 			for (const result of results) disposeRaw(result); journeyCleanup?.(); journeyCleanup = undefined;
 			const slot = slotFromResults(row, results, resultUse.evidenceRef, config, admission, handoffs, judge); const rowCost = slot.childCostUsd + slot.outerCostUsd;

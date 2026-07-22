@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EvidenceStore } from "./evidence.ts";
 import { canonicalJson, hashObject } from "./schema.ts";
@@ -21,6 +22,21 @@ export interface SpendSummary {
 	attempts: Array<{ runId: string; rowId: string; state: SpendEntry["state"]; participant: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; wallTimeMs: number }>;
 }
 interface Pointer { schemaVersion: 1; stateHash: string; retrievalRef: string; pointerHash: string }
+export interface SpendLockRecord { schemaVersion: 1; pid: number; processStart: string; nonce: string; createdAt: string; lockHash: string }
+export type SpendCrashPoint = "after-lock" | "after-read" | "after-persist";
+
+function lockContent(lock: SpendLockRecord): Omit<SpendLockRecord, "lockHash"> { const { lockHash: _, ...content } = lock; return content; }
+export function spendProcessStart(pid = process.pid): string | null {
+	try { const value = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); return value || null; }
+	catch { return null; }
+}
+function processAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (error: any) { return error?.code !== "ESRCH"; } }
+function validateLock(value: unknown): SpendLockRecord {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("spend ledger lock ownership is malformed");
+	const lock = value as SpendLockRecord;
+	if (lock.schemaVersion !== 1 || !Number.isSafeInteger(lock.pid) || lock.pid <= 0 || !lock.processStart || !lock.nonce || !Number.isFinite(Date.parse(lock.createdAt)) || lock.lockHash !== hashObject(lockContent(lock))) throw new Error("spend ledger lock ownership is malformed");
+	return lock;
+}
 
 function stateContent(state: SpendState): Omit<SpendState, "stateHash"> { const { stateHash: _, ...content } = state; return content; }
 function pointerContent(pointer: Pointer): Omit<Pointer, "pointerHash"> { const { pointerHash: _, ...content } = pointer; return content; }
@@ -31,9 +47,10 @@ function charged(state: SpendState): number { return state.importedSpendUsd + st
 export class SpendLedger {
 	readonly pointerFile: string;
 	readonly lockFile: string;
-	constructor(readonly root: string, readonly store: EvidenceStore, readonly ceilingUsd: number, readonly provenance: string[]) {
+	constructor(readonly root: string, readonly store: EvidenceStore, readonly ceilingUsd: number, readonly provenance: string[], readonly testCrashPoint?: SpendCrashPoint) {
 		this.pointerFile = path.join(root, "spend-ledger-v2.json"); this.lockFile = `${this.pointerFile}.lock`;
 		fs.mkdirSync(root, { recursive: true });
+		if (fs.existsSync(this.lockFile)) { const startupLock = this.acquireLock(); this.releaseLock(startupLock); }
 		if (!fs.existsSync(this.pointerFile)) this.persist({ schemaVersion: 2, ceilingUsd, importedSpendUsd: 0, importedEvidence: [], ceilingHistory: [], sequence: 0, entries: [], stateHash: "" });
 		else this.raiseCeilingIfApproved();
 		this.reconcileIncomplete(); this.enforceConservativeFailures();
@@ -78,10 +95,58 @@ export class SpendLedger {
 		const body = { schemaVersion: 1 as const, stateHash: state.stateHash, retrievalRef: retained.retrievalRef }; const pointer: Pointer = { ...body, pointerHash: hashObject(body) };
 		atomicJson(this.pointerFile, pointer); return state;
 	}
+	private createLockRecord(): SpendLockRecord {
+		const processStart = spendProcessStart();
+		if (!processStart) throw new Error("spend ledger cannot establish process-start ownership");
+		const body = { schemaVersion: 1 as const, pid: process.pid, processStart, nonce: randomUUID(), createdAt: new Date().toISOString() };
+		return { ...body, lockHash: hashObject(body) };
+	}
+	private lockOwnerIsLive(lock: SpendLockRecord): boolean {
+		if (!processAlive(lock.pid)) return false;
+		const observed = spendProcessStart(lock.pid);
+		if (!observed) throw new Error("spend ledger cannot validate live lock owner");
+		return observed === lock.processStart;
+	}
+	private acquireLock(): SpendLockRecord {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const record = this.createLockRecord();
+			const temporary = `${this.lockFile}.${record.nonce}.tmp`;
+			fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600, flag: "wx" });
+			try {
+				fs.linkSync(temporary, this.lockFile);
+				fs.rmSync(temporary, { force: true });
+				return record;
+			} catch (error: any) {
+				fs.rmSync(temporary, { force: true });
+				if (error?.code !== "EEXIST") throw error;
+				let text: string; let stat: fs.Stats;
+				try { text = fs.readFileSync(this.lockFile, "utf8"); stat = fs.statSync(this.lockFile); }
+				catch { continue; }
+				const owner = validateLock(JSON.parse(text));
+				if (this.lockOwnerIsLive(owner)) throw new Error(`spend ledger is locked by live owner ${owner.pid}`);
+				const currentText = fs.readFileSync(this.lockFile, "utf8"); const currentStat = fs.statSync(this.lockFile);
+				if (currentText !== text || currentStat.ino !== stat.ino) continue;
+				const stale = `${this.lockFile}.reclaimed-${record.nonce}`;
+				fs.renameSync(this.lockFile, stale); fs.rmSync(stale, { force: true });
+			}
+		}
+		throw new Error("spend ledger lock could not be acquired safely");
+	}
+	private releaseLock(lock: SpendLockRecord): void {
+		if (!fs.existsSync(this.lockFile)) return;
+		const retained = validateLock(JSON.parse(fs.readFileSync(this.lockFile, "utf8")));
+		if (retained.nonce !== lock.nonce || retained.pid !== lock.pid || retained.processStart !== lock.processStart) throw new Error("spend ledger lock ownership changed before release");
+		fs.rmSync(this.lockFile);
+	}
+	private maybeCrash(point: SpendCrashPoint): void { if (this.testCrashPoint === point) process.kill(process.pid, "SIGKILL"); }
 	private transaction<T>(fn: (state: SpendState) => T): T {
-		let fd: number | undefined;
-		try { fd = fs.openSync(this.lockFile, "wx", 0o600); const state = this.read(); const output = fn(state); state.sequence += 1; this.persist(state); return output; }
-		finally { if (fd !== undefined) fs.closeSync(fd); fs.rmSync(this.lockFile, { force: true }); }
+		const lock = this.acquireLock();
+		try {
+			this.maybeCrash("after-lock");
+			const state = this.read(); this.maybeCrash("after-read");
+			const output = fn(state); state.sequence += 1; this.persist(state); this.maybeCrash("after-persist");
+			return output;
+		} finally { this.releaseLock(lock); }
 	}
 	migrateLegacy(importedSpendUsd: number, importedEvidence: unknown[]): SpendState {
 		if (!Number.isFinite(importedSpendUsd) || importedSpendUsd < 0 || importedSpendUsd > this.ceilingUsd) throw new Error("legacy spend import is invalid");
@@ -94,9 +159,10 @@ export class SpendLedger {
 	begin(runId: string, rowId: string, requestedReserveUsd: number): SpendEntry {
 		return this.transaction((state) => {
 			if (state.entries.some((entry) => entry.runId === runId)) throw new Error("duplicate spend run id");
-			const remaining = state.ceilingUsd - charged(state); const reserve = Math.min(requestedReserveUsd, remaining);
-			if (!(reserve > 0)) throw new Error("approved cumulative canary budget is exhausted before launch");
-			const entry: SpendEntry = { runId, rowId, state: "active", reservedUsd: reserve, chargedUsd: 0, startedAt: new Date().toISOString(), attempts: [] };
+			if (!Number.isFinite(requestedReserveUsd) || requestedReserveUsd <= 0) throw new Error("frozen row reservation must be finite and positive");
+			const remaining = state.ceilingUsd - charged(state);
+			if (requestedReserveUsd > remaining + Number.EPSILON) throw new Error("full frozen row reservation exceeds remaining approved cumulative ceiling before launch");
+			const entry: SpendEntry = { runId, rowId, state: "active", reservedUsd: requestedReserveUsd, chargedUsd: 0, startedAt: new Date().toISOString(), attempts: [] };
 			state.entries.push(entry); return structuredClone(entry);
 		});
 	}

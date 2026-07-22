@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import { scenarioById } from "../../agent-quality/catalog.ts";
 import { AdmissionGuard, signSyntheticHumanResolution, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST, type IncidentReport } from "../admission.ts";
 import { EvidenceAdmissionCoordinator } from "../admission-coordinator.ts";
-import { SpendLedger } from "../spend.ts";
-import { aggregateResultUsage, assertObservedExecutionBinding, loadRealCanary, mayRetryConnectedInfrastructure, observedCandidate, observeJudgeLaunch, parseConsumedInbound, validateConnectedHandoffs, type HandoffRecord } from "../canary.ts";
+import { SpendLedger, spendProcessStart, type SpendLockRecord } from "../spend.ts";
+import { aggregateResultUsage, assertFrozenCanaryEnvironment, assertObservedExecutionBinding, loadRealCanary, mayRetryConnectedInfrastructure, observedCandidate, observeJudgeLaunch, parseConsumedInbound, sanitizeConnectedPayload, validateConnectedHandoffs, type HandoffRecord } from "../canary.ts";
 import { EvidenceStore, assertRedacted, redactValue } from "../evidence.ts";
 import { assertExactSparseSelection, loadBootstrapAssets, loadManifest, loadRegistry, resolveRows } from "../manifest.ts";
 import { lifecycleRecord, validateLifecycleTransition } from "../lifecycle.ts";
@@ -53,6 +53,20 @@ assert.equal(realCanary.config.limits.totalCostUsd, 100);
 assert.equal(realCanary.config.evidence.priorSpendUsd, 17.791287);
 assert.deepEqual(realCanary.config.credentialPolicy.forwardedEnvironment, []);
 assert.deepEqual(realCanary.config.rows.find((row) => row.phase === "REVIEW")?.scenarioIds, ["REV-01", "REV-01"]);
+const opaqueConnectedSecret = "OpaqueCredentialValue987654321";
+assert.deepEqual(sanitizeConnectedPayload({ artifact: "safe connected artifact" }, [opaqueConnectedSecret]), { artifact: "safe connected artifact" });
+assert.throws(() => sanitizeConnectedPayload({ artifact: opaqueConnectedSecret }, [opaqueConnectedSecret]), /credential material|ineligible/);
+const priorOuterOverride = process.env.DSM_AGENT_EVAL_OUTER_MODEL; const priorAuthOverride = process.env.PI_AGENT_AUTH_FILE;
+try {
+	process.env.DSM_AGENT_EVAL_OUTER_MODEL = "anthropic/claude-test";
+	assert.throws(() => assertFrozenCanaryEnvironment(realCanary.config), /before launch|conflicts/);
+	delete process.env.DSM_AGENT_EVAL_OUTER_MODEL; process.env.PI_AGENT_AUTH_FILE = path.join(os.tmpdir(), "unapproved-auth.json");
+	assert.throws(() => assertFrozenCanaryEnvironment(realCanary.config), /credential-file override.*before launch/);
+} finally {
+	if (priorOuterOverride === undefined) delete process.env.DSM_AGENT_EVAL_OUTER_MODEL; else process.env.DSM_AGENT_EVAL_OUTER_MODEL = priorOuterOverride;
+	if (priorAuthOverride === undefined) delete process.env.PI_AGENT_AUTH_FILE; else process.env.PI_AGENT_AUTH_FILE = priorAuthOverride;
+}
+assert.doesNotThrow(() => assertFrozenCanaryEnvironment(realCanary.config));
 const sealedJudgeArgs = ["--model", "openai-codex/gpt-5.5", "--thinking", "high"];
 assert.deepEqual(observeJudgeLaunch(sealedJudgeArgs), { provider: "openai-codex", model: "gpt-5.5", version: "gpt-5.5", family: "gpt-5.5", thinking: "high", context: "fresh" });
 assert.doesNotThrow(() => observeJudgeLaunch(sealedJudgeArgs, { provider: "openai-codex", modelId: "gpt-5.5" }));
@@ -165,7 +179,7 @@ try {
 	const summary = ledger.summary(["run-pass"], [5, 10, 15]); assert.equal(summary.currentRunUsd, 0.6); assert.deepEqual(summary.triggeredWarningsUsd, [5, 10]); assert.equal(summary.nextWarningUsd, 15); assert.equal(summary.attempts.length, 2);
 	ledger.begin("run-crash", "ROW-2", 2); ledger.record("run-crash", { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.25, wallTimeMs: 10, participant: "participant" });
 	ledger = new SpendLedger(spendRoot, spendStore, 20, ["PPE-001-I4-SPEND"]); assert.equal(ledger.read().entries.find((entry) => entry.runId === "run-crash")!.state, "failed"); assert.equal(ledger.total(), 12.6);
-	ledger.begin("consume-remaining-reservation", "ROW-3", 20); assert.throws(() => ledger.begin("too-large", "ROW-4", 1), /exhausted|ceiling/);
+	assert.throws(() => ledger.begin("partial-reservation-forbidden", "ROW-3", 20), /full frozen row reservation|ceiling/); assert.equal(ledger.total(), 12.6);
 	const pointer = JSON.parse(fs.readFileSync(path.join(spendRoot, "spend-ledger-v2.json"), "utf8")); fs.writeFileSync(path.join(spendRoot, "spend-ledger-v2.json"), JSON.stringify({ ...pointer, stateHash: HASH_A })); assert.throws(() => ledger.read(), /authentication|mismatch/);
 } finally { fs.rmSync(spendRoot, { recursive: true, force: true }); }
 
@@ -176,6 +190,48 @@ try {
 	raisedLedger = new SpendLedger(raisedSpendRoot, raisedStore, 100, ["PPE-001-I4-SPEND"]);
 	assert.equal(raisedLedger.total(), 17.791287); assert.equal(raisedLedger.read().ceilingUsd, 100); assert.deepEqual(raisedLedger.read().ceilingHistory?.map(({ fromUsd, toUsd }) => ({ fromUsd, toUsd })), [{ fromUsd: 20, toUsd: 100 }]);
 } finally { fs.rmSync(raisedSpendRoot, { recursive: true, force: true }); }
+
+const nearCeilingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-near-ceiling-"));
+try {
+	const store = new EvidenceStore(nearCeilingRoot); const ledger = new SpendLedger(nearCeilingRoot, store, 20, ["PPE-001-I4-SPEND"]);
+	ledger.migrateLegacy(19.5, [{ source: "near-ceiling-test" }]);
+	assert.throws(() => ledger.begin("must-not-launch", "ROW", 2), /full frozen row reservation.*before launch/);
+	assert.equal(ledger.total(), 19.5, "failed reservation must preserve the authenticated total");
+} finally { fs.rmSync(nearCeilingRoot, { recursive: true, force: true }); }
+
+function writeSpendLock(root: string, pid: number, processStart: string, nonce: string): void {
+	const body = { schemaVersion: 1 as const, pid, processStart, nonce, createdAt: new Date().toISOString() };
+	const lock: SpendLockRecord = { ...body, lockHash: hashObject(body) };
+	fs.writeFileSync(path.join(root, "spend-ledger-v2.json.lock"), `${JSON.stringify(lock)}\n`, { mode: 0o600 });
+}
+const lockRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-lock-"));
+try {
+	const store = new EvidenceStore(lockRoot); const ledger = new SpendLedger(lockRoot, store, 20, ["PPE-001-I4-SPEND"]);
+	const currentStart = spendProcessStart(); assert.ok(currentStart);
+	writeSpendLock(lockRoot, process.pid, currentStart!, "live-owner");
+	assert.throws(() => ledger.begin("blocked-live", "ROW", 1), /live owner/); fs.rmSync(path.join(lockRoot, "spend-ledger-v2.json.lock"));
+	writeSpendLock(lockRoot, process.pid, `${currentStart}-pid-reused`, "pid-reuse");
+	ledger.begin("reclaimed-reused-pid", "ROW", 1); ledger.finish("reclaimed-reused-pid", "settled");
+	writeSpendLock(lockRoot, 2147483647, "dead-process-start", "dead-owner");
+	ledger.begin("reclaimed-dead", "ROW", 1); ledger.finish("reclaimed-dead", "settled");
+	fs.writeFileSync(path.join(lockRoot, "spend-ledger-v2.json.lock"), "{malformed", { mode: 0o600 });
+	assert.throws(() => ledger.begin("malformed-must-not-steal", "ROW", 1), /JSON|malformed|Unexpected/);
+} finally { fs.rmSync(lockRoot, { recursive: true, force: true }); }
+
+for (const crashPoint of ["after-lock", "after-read", "after-persist"] as const) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-spend-killed-${crashPoint}-`));
+	try {
+		const store = new EvidenceStore(root); new SpendLedger(root, store, 20, ["PPE-001-I4-SPEND"]);
+		const spendModule = path.resolve(ROOT, "spend.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts");
+		const script = `import { SpendLedger } from ${JSON.stringify(spendModule)}; import { EvidenceStore } from ${JSON.stringify(evidenceModule)}; const root=${JSON.stringify(root)}; const store=new EvidenceStore(root); const ledger=new SpendLedger(root,store,20,["PPE-001-I4-SPEND"],${JSON.stringify(crashPoint)}); ledger.begin("killed-${crashPoint}","ROW",2);`;
+		const child = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+		assert.notEqual(child.status, 0, `${crashPoint} child must be killed at the transaction boundary`);
+		let restarted = new SpendLedger(root, new EvidenceStore(root), 20, ["PPE-001-I4-SPEND"]);
+		if (crashPoint !== "after-persist") { restarted.begin(`restarted-${crashPoint}`, "ROW", 1); restarted.finish(`restarted-${crashPoint}`, "settled"); }
+		else assert.equal(restarted.read().entries.find((entry) => entry.runId === `killed-${crashPoint}`)?.state, "failed");
+		assert.equal(fs.existsSync(path.join(root, "spend-ledger-v2.json.lock")), false, "first restart must reclaim only the dead owner lock");
+	} finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
 
 const retryThenPass = boundedOutcome("FROZEN-SLOT", 2, (attempt) => ({ classification: attempt === 1 ? "INFRASTRUCTURE_FAILURE" : "PASS", evidenceRef: `sha256:${attempt}` }));
 assert.equal(retryThenPass.attempts.length, 2);

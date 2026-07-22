@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AdmissionGuard, SYNTHETIC_HUMAN_AUTHORIZER, type HumanAuthorizer, type IncidentPolicy, type IncidentReport } from "./admission.ts";
-import { EvidenceStore, type EvidenceIndexRecord } from "./evidence.ts";
+import { EvidenceStore, assertRedacted, redactValue, type EvidenceIndexRecord } from "./evidence.ts";
 import { hashObject } from "./schema.ts";
 
 export type PublicationKind = "result-use" | "join" | "report";
@@ -48,9 +48,9 @@ export class EvidenceAdmissionCoordinator {
 	private journalFile(operationId: string): string { return path.join(this.journalRoot, `${hashObject(operationId)}.json`); }
 	private write(journal: Journal): void { atomicJson(this.journalFile(journal.operationId), journal); }
 	private maybeFault(fault: CoordinatorFault | undefined, point: CoordinatorFault): void { if (fault === point) throw new Error(`simulated coordinator crash ${point}`); }
-	private evidenceFor(journal: Journal): EvidenceIndexRecord {
+	private evidenceFor(journal: Journal, explicitSecrets: string[] = []): EvidenceIndexRecord {
 		if (journal.evidence) return this.store.getByRef(journal.evidence.retrievalRef, { schemaVersionRef: journal.input.schemaVersionRef, assetVersions: journal.input.assetVersions, participantProvenance: journal.input.participantProvenance }).record;
-		const record = this.store.put({ value: journal.input.value, schemaVersionRef: journal.input.schemaVersionRef, assetVersions: journal.input.assetVersions, participantProvenance: journal.input.participantProvenance, retentionUntil: journal.input.retentionUntil, indexId: `coordinator:${journal.operationId}` });
+		const record = this.store.put({ value: journal.input.value, schemaVersionRef: journal.input.schemaVersionRef, assetVersions: journal.input.assetVersions, participantProvenance: journal.input.participantProvenance, retentionUntil: journal.input.retentionUntil, explicitSecrets, indexId: `coordinator:${journal.operationId}` });
 		journal.evidence = record; journal.state = "evidence-retained"; this.write(journal);
 		return record;
 	}
@@ -76,12 +76,17 @@ export class EvidenceAdmissionCoordinator {
 		fs.rmSync(this.journalFile(journal.operationId), { force: true });
 		return { ...journal.ack, evidenceRef: evidence.retrievalRef };
 	}
-	publish(input: PublicationJournal["input"], faultAfter?: CoordinatorFault): CoordinatedPublication {
-		const operationId = `publication:${input.id}`; const file = this.journalFile(operationId);
-		const journal: PublicationJournal = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { schemaVersion: 1, operationId, kind: "publication", state: "prepared", input };
+	publish(input: PublicationJournal["input"], faultAfter?: CoordinatorFault, explicitSecrets: string[] = []): CoordinatedPublication {
+		const meaningful = [...new Set(explicitSecrets.filter((value) => value.length >= 8))];
+		const original = JSON.stringify(input.value);
+		if (meaningful.some((secret) => original.includes(secret))) throw new Error("credential material required redaction before evidence publication");
+		const safeValue = redactValue(input.value, meaningful); assertRedacted(safeValue, meaningful);
+		const safeInput: PublicationJournal["input"] = { ...input, value: safeValue };
+		const operationId = `publication:${safeInput.id}`; const file = this.journalFile(operationId);
+		const journal: PublicationJournal = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { schemaVersion: 1, operationId, kind: "publication", state: "prepared", input: safeInput };
 		if (!fs.existsSync(file)) this.write(journal);
 		this.maybeFault(faultAfter, "after-prepare");
-		this.evidenceFor(journal); this.maybeFault(faultAfter, "after-evidence");
+		this.evidenceFor(journal, meaningful); this.maybeFault(faultAfter, "after-evidence");
 		const publication = this.finishPublicationWithoutDelete(journal); this.maybeFault(faultAfter, "after-guard");
 		fs.rmSync(file, { force: true }); return publication;
 	}

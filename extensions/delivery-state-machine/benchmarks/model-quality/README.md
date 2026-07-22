@@ -63,7 +63,7 @@ The opt-in flag, exact config/manifest hashes, identities, family independence, 
 
 `SpendLedger` content-addresses every cumulative state. It reserves budget before a paid row, records participant/outer/judge tokens, cost and wall time, conservatively charges incomplete/failed attempts, reconciles crashes at startup, and can never lower imported spend. Evidence indexes are themselves authenticated; `audit-real` joins exact participant provenance, admission state, report/config/manifest hashes, the pending-human record, and the content-addressed spend ledger.
 
-**Current v3 execution boundary:** model-free repairs and the exact default/clean-clone verification path pass. The pre-rerun conservative cumulative spend is `$17.791287`; the user approved raising the cumulative hard ceiling from `$20` to `$100` without changing row, timeout, retry, model, credential, or evidence limits. `reports/rejected-real-canary-v2.json` remains explicitly rejected historical evidence and can never substitute for a v3 result.
+**Current v3 status:** the authoritative serial run passed all six rows. Accepted current-run estimated cost is `$2.802016` (`$1.503493` participant, `$1.156283` outer, `$0.142240` judge). The authenticated conservative cumulative ledger is `$47.503104/$100`, including `$15.791287` imported history, `$5.711817` settled v3 entries, and `$26` failed reservations. The `$25` warning is active and `$50` is next. See `reports/2026-07-21-ppe-001-infrastructure-status.md` and the committed report for per-row/per-attempt details. `reports/rejected-real-canary-v2.json` remains explicitly rejected historical evidence and can never substitute for v3.
 
 ## PPE-002 boundary
 

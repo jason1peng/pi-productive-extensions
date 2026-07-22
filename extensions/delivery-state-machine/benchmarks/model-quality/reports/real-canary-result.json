@@ -1,0 +1,1613 @@
+{
+  "schemaVersion": 1,
+  "classification": "INFRASTRUCTURE_ONLY — NOT QUALIFICATION EVIDENCE",
+  "datasetClass": "bootstrap",
+  "qualificationEligible": false,
+  "manifestHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a",
+  "generatedAt": "2026-07-22T17:22:11.853Z",
+  "metrics": {
+    "slots": 6,
+    "passed": 6,
+    "candidateFailures": 0,
+    "infrastructureExhausted": 0,
+    "tainted": 0,
+    "inputTokens": 310598,
+    "outputTokens": 35695,
+    "cachedTokens": 356352,
+    "childCostUsd": 1.503493,
+    "outerCostUsd": 1.2985229999999999,
+    "totalCostUsd": 2.802016,
+    "wallTimeMs": 1149811,
+    "repairAmplification": 1,
+    "costAmplification": 1,
+    "latencyAmplification": 1,
+    "reliability": 1,
+    "handoffCount": 4
+  },
+  "cost": {
+    "ceilingUsd": 100,
+    "warningThresholdsUsd": [
+      25,
+      50,
+      75
+    ],
+    "triggeredWarningsUsd": [
+      25
+    ],
+    "nextWarningUsd": 50,
+    "importedUsd": 15.791287,
+    "acceptedUsd": 5.711817000000001,
+    "rejectedUsd": 26,
+    "activeReservedUsd": 0,
+    "currentRunUsd": 2.802016,
+    "cumulativeUsd": 47.50310400000001,
+    "attempts": [
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784618198941-d87a908c-bf6e-4e70-a9ad-75c1011b5f01",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 33530,
+        "outputTokens": 2836,
+        "cachedTokens": 13824,
+        "costUsd": 0.25964200000000004,
+        "wallTimeMs": 82069,
+        "participant": "openai-codex/gpt-5.6-sol+openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784736821679-22af1e5e-eecd-4d61-b8fe-7af4eba5e220",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 12038,
+        "outputTokens": 2055,
+        "cachedTokens": 7680,
+        "costUsd": 0.12568000000000001,
+        "wallTimeMs": 92636,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784736821679-22af1e5e-eecd-4d61-b8fe-7af4eba5e220",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 11254,
+        "outputTokens": 827,
+        "cachedTokens": 16384,
+        "costUsd": 0.089272,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737010641-66bc531b-6b32-4554-b7bb-82eabe74dcc3",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 8259,
+        "outputTokens": 1940,
+        "cachedTokens": 11264,
+        "costUsd": 0.10512700000000001,
+        "wallTimeMs": 73958,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737010641-66bc531b-6b32-4554-b7bb-82eabe74dcc3",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 11221,
+        "outputTokens": 779,
+        "cachedTokens": 16384,
+        "costUsd": 0.087667,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737010641-66bc531b-6b32-4554-b7bb-82eabe74dcc3",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 3308,
+        "outputTokens": 574,
+        "cachedTokens": 0,
+        "costUsd": 0.03376,
+        "wallTimeMs": 25800,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737170997-f481c5ea-0695-45fc-96a4-d814d9e141de",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 12774,
+        "outputTokens": 2162,
+        "cachedTokens": 11264,
+        "costUsd": 0.134362,
+        "wallTimeMs": 84713,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737170997-f481c5ea-0695-45fc-96a4-d814d9e141de",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 11202,
+        "outputTokens": 724,
+        "cachedTokens": 16384,
+        "costUsd": 0.08592200000000001,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737170997-f481c5ea-0695-45fc-96a4-d814d9e141de",
+        "rowId": "BOOT-REAL-01",
+        "state": "failed",
+        "inputTokens": 3332,
+        "outputTokens": 506,
+        "cachedTokens": 0,
+        "costUsd": 0.03184,
+        "wallTimeMs": 24532,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737304597-3d6d2e9a-2472-4626-877a-f4a404213ff7",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 14769,
+        "outputTokens": 2076,
+        "cachedTokens": 5120,
+        "costUsd": 0.138685,
+        "wallTimeMs": 79421,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737304597-3d6d2e9a-2472-4626-877a-f4a404213ff7",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 11196,
+        "outputTokens": 726,
+        "cachedTokens": 16384,
+        "costUsd": 0.08595199999999999,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784737304597-3d6d2e9a-2472-4626-877a-f4a404213ff7",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 3230,
+        "outputTokens": 478,
+        "cachedTokens": 0,
+        "costUsd": 0.030490000000000003,
+        "wallTimeMs": 9322,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784737393459-477a6d27-8cf9-4e2e-ad01-e0332927c7aa",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 11915,
+        "outputTokens": 2287,
+        "cachedTokens": 8704,
+        "costUsd": 0.13253700000000002,
+        "wallTimeMs": 81409,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784737393459-477a6d27-8cf9-4e2e-ad01-e0332927c7aa",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 19061,
+        "outputTokens": 835,
+        "cachedTokens": 8704,
+        "costUsd": 0.124707,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784737393459-477a6d27-8cf9-4e2e-ad01-e0332927c7aa",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 4058,
+        "outputTokens": 550,
+        "cachedTokens": 0,
+        "costUsd": 0.03679,
+        "wallTimeMs": 15113,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784737490080-543964f9-eb46-4b36-b90e-01a4f326c7fc",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 15163,
+        "outputTokens": 1778,
+        "cachedTokens": 13312,
+        "costUsd": 0.13581100000000002,
+        "wallTimeMs": 72514,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784737490080-543964f9-eb46-4b36-b90e-01a4f326c7fc",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 11866,
+        "outputTokens": 801,
+        "cachedTokens": 16384,
+        "costUsd": 0.09155200000000001,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784737490080-543964f9-eb46-4b36-b90e-01a4f326c7fc",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 15253,
+        "outputTokens": 1831,
+        "cachedTokens": 13312,
+        "costUsd": 0.137851,
+        "wallTimeMs": 87277,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784737490080-543964f9-eb46-4b36-b90e-01a4f326c7fc",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 12052,
+        "outputTokens": 891,
+        "cachedTokens": 16384,
+        "costUsd": 0.095182,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784737490080-543964f9-eb46-4b36-b90e-01a4f326c7fc",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 6064,
+        "outputTokens": 554,
+        "cachedTokens": 0,
+        "costUsd": 0.04694,
+        "wallTimeMs": 11392,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784737661404-06d33ab3-2ec0-46e7-a757-90c74683bcf1",
+        "rowId": "BOOT-REAL-04",
+        "state": "settled",
+        "inputTokens": 10947,
+        "outputTokens": 2166,
+        "cachedTokens": 28672,
+        "costUsd": 0.134051,
+        "wallTimeMs": 104931,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784737661404-06d33ab3-2ec0-46e7-a757-90c74683bcf1",
+        "rowId": "BOOT-REAL-04",
+        "state": "settled",
+        "inputTokens": 13875,
+        "outputTokens": 895,
+        "cachedTokens": 13312,
+        "costUsd": 0.102881,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784737766420-22abe2ac-114e-4a87-b10f-fcc93aabf95b",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 13308,
+        "outputTokens": 1386,
+        "cachedTokens": 11264,
+        "costUsd": 0.113752,
+        "wallTimeMs": 71219,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784737766420-22abe2ac-114e-4a87-b10f-fcc93aabf95b",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 18737,
+        "outputTokens": 726,
+        "cachedTokens": 7680,
+        "costUsd": 0.11930500000000002,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784737766420-22abe2ac-114e-4a87-b10f-fcc93aabf95b",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 3044,
+        "outputTokens": 572,
+        "cachedTokens": 0,
+        "costUsd": 0.032380000000000006,
+        "wallTimeMs": 11353,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784738568371-ba491f66-7aa7-42b8-8414-a3a95d98a356",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 9670,
+        "outputTokens": 1992,
+        "cachedTokens": 17408,
+        "costUsd": 0.116814,
+        "wallTimeMs": 92780,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784738568371-ba491f66-7aa7-42b8-8414-a3a95d98a356",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 11220,
+        "outputTokens": 738,
+        "cachedTokens": 16384,
+        "costUsd": 0.086432,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784738568371-ba491f66-7aa7-42b8-8414-a3a95d98a356",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 3292,
+        "outputTokens": 588,
+        "cachedTokens": 0,
+        "costUsd": 0.034100000000000005,
+        "wallTimeMs": 14684,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784738675989-4385dfc4-d29c-4c63-858f-ce041da439f6",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 9694,
+        "outputTokens": 2147,
+        "cachedTokens": 17920,
+        "costUsd": 0.12184,
+        "wallTimeMs": 84551,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784738675989-4385dfc4-d29c-4c63-858f-ce041da439f6",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 11380,
+        "outputTokens": 876,
+        "cachedTokens": 16384,
+        "costUsd": 0.091372,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784738675989-4385dfc4-d29c-4c63-858f-ce041da439f6",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 3862,
+        "outputTokens": 602,
+        "cachedTokens": 0,
+        "costUsd": 0.03737,
+        "wallTimeMs": 11646,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784738772310-f2f7279e-fec9-4c0a-afca-571de7b18f12",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 5759,
+        "outputTokens": 1457,
+        "cachedTokens": 9728,
+        "costUsd": 0.07736900000000001,
+        "wallTimeMs": 94934,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784738772310-f2f7279e-fec9-4c0a-afca-571de7b18f12",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 11790,
+        "outputTokens": 812,
+        "cachedTokens": 16384,
+        "costUsd": 0.091502,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784738772310-f2f7279e-fec9-4c0a-afca-571de7b18f12",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 7754,
+        "outputTokens": 1345,
+        "cachedTokens": 7680,
+        "costUsd": 0.08296,
+        "wallTimeMs": 117692,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784738772310-f2f7279e-fec9-4c0a-afca-571de7b18f12",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 11790,
+        "outputTokens": 857,
+        "cachedTokens": 16384,
+        "costUsd": 0.092852,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784738772310-f2f7279e-fec9-4c0a-afca-571de7b18f12",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 3644,
+        "outputTokens": 498,
+        "cachedTokens": 0,
+        "costUsd": 0.03316,
+        "wallTimeMs": 24540,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784739009651-81f32b18-01ed-45a7-8c97-197e292eed5c",
+        "rowId": "BOOT-REAL-04",
+        "state": "settled",
+        "inputTokens": 9909,
+        "outputTokens": 2016,
+        "cachedTokens": 25088,
+        "costUsd": 0.12256900000000001,
+        "wallTimeMs": 92016,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784739009651-81f32b18-01ed-45a7-8c97-197e292eed5c",
+        "rowId": "BOOT-REAL-04",
+        "state": "settled",
+        "inputTokens": 11679,
+        "outputTokens": 873,
+        "cachedTokens": 15360,
+        "costUsd": 0.09226500000000001,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784739101763-975247cd-cb85-4cba-be31-cc904109bd68",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 14318,
+        "outputTokens": 1415,
+        "cachedTokens": 10240,
+        "costUsd": 0.11916000000000002,
+        "wallTimeMs": 64705,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784739101763-975247cd-cb85-4cba-be31-cc904109bd68",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 18690,
+        "outputTokens": 726,
+        "cachedTokens": 7680,
+        "costUsd": 0.11907,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784739101763-975247cd-cb85-4cba-be31-cc904109bd68",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 3060,
+        "outputTokens": 560,
+        "cachedTokens": 0,
+        "costUsd": 0.032100000000000004,
+        "wallTimeMs": 10658,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 15117,
+        "outputTokens": 1938,
+        "cachedTokens": 13824,
+        "costUsd": 0.140637,
+        "wallTimeMs": 85502,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 14535,
+        "outputTokens": 805,
+        "cachedTokens": 13312,
+        "costUsd": 0.103481,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 14263,
+        "outputTokens": 2271,
+        "cachedTokens": 7168,
+        "costUsd": 0.14302900000000002,
+        "wallTimeMs": 87170,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 12169,
+        "outputTokens": 1012,
+        "cachedTokens": 16384,
+        "costUsd": 0.09939700000000001,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 17094,
+        "outputTokens": 1701,
+        "cachedTokens": 12288,
+        "costUsd": 0.142644,
+        "wallTimeMs": 104658,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 6883,
+        "outputTokens": 985,
+        "cachedTokens": 22016,
+        "costUsd": 0.074973,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 10548,
+        "outputTokens": 1507,
+        "cachedTokens": 4608,
+        "costUsd": 0.10025400000000001,
+        "wallTimeMs": 82563,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 6843,
+        "outputTokens": 986,
+        "cachedTokens": 22016,
+        "costUsd": 0.07480300000000001,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 18932,
+        "outputTokens": 2115,
+        "cachedTokens": 18432,
+        "costUsd": 0.16732600000000003,
+        "wallTimeMs": 98003,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 12277,
+        "outputTokens": 1015,
+        "cachedTokens": 15360,
+        "costUsd": 0.099515,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 21781,
+        "outputTokens": 1675,
+        "cachedTokens": 8192,
+        "costUsd": 0.163251,
+        "wallTimeMs": 85086,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784739177294-f1de977c-489a-463f-b41b-3260e9d98291",
+        "rowId": "BOOT-REAL-06",
+        "state": "failed",
+        "inputTokens": 11801,
+        "outputTokens": 941,
+        "cachedTokens": 15360,
+        "costUsd": 0.09491500000000003,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784739779970-732b741b-148a-4113-8ee1-5cf204cd7f26",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 10185,
+        "outputTokens": 2091,
+        "cachedTokens": 9728,
+        "costUsd": 0.11851900000000001,
+        "wallTimeMs": 95636,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784739779970-732b741b-148a-4113-8ee1-5cf204cd7f26",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 6567,
+        "outputTokens": 722,
+        "cachedTokens": 20992,
+        "costUsd": 0.064991,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784739779970-732b741b-148a-4113-8ee1-5cf204cd7f26",
+        "rowId": "BOOT-REAL-01",
+        "state": "settled",
+        "inputTokens": 3298,
+        "outputTokens": 474,
+        "cachedTokens": 0,
+        "costUsd": 0.03071,
+        "wallTimeMs": 11026,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784739886805-5cc7a98d-e6d2-4fa1-9581-f4dd16e094cf",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 13672,
+        "outputTokens": 2458,
+        "cachedTokens": 8704,
+        "costUsd": 0.146452,
+        "wallTimeMs": 102736,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784739886805-5cc7a98d-e6d2-4fa1-9581-f4dd16e094cf",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 13446,
+        "outputTokens": 819,
+        "cachedTokens": 14336,
+        "costUsd": 0.098968,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784739886805-5cc7a98d-e6d2-4fa1-9581-f4dd16e094cf",
+        "rowId": "BOOT-REAL-02",
+        "state": "settled",
+        "inputTokens": 4208,
+        "outputTokens": 684,
+        "cachedTokens": 0,
+        "costUsd": 0.04156,
+        "wallTimeMs": 26507,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784740016201-c3d262dd-d520-4775-b77c-afa61e7c7551",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 13213,
+        "outputTokens": 1770,
+        "cachedTokens": 17920,
+        "costUsd": 0.12812500000000002,
+        "wallTimeMs": 80816,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784740016201-c3d262dd-d520-4775-b77c-afa61e7c7551",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 19618,
+        "outputTokens": 835,
+        "cachedTokens": 8704,
+        "costUsd": 0.12749200000000002,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784740016201-c3d262dd-d520-4775-b77c-afa61e7c7551",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 5812,
+        "outputTokens": 1243,
+        "cachedTokens": 9728,
+        "costUsd": 0.071214,
+        "wallTimeMs": 79905,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784740016201-c3d262dd-d520-4775-b77c-afa61e7c7551",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 13739,
+        "outputTokens": 810,
+        "cachedTokens": 14336,
+        "costUsd": 0.10016300000000002,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784740016201-c3d262dd-d520-4775-b77c-afa61e7c7551",
+        "rowId": "BOOT-REAL-03",
+        "state": "settled",
+        "inputTokens": 4498,
+        "outputTokens": 562,
+        "cachedTokens": 0,
+        "costUsd": 0.03935,
+        "wallTimeMs": 25478,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784740202613-60e2ba97-181f-46d9-9c8c-bb60ac68aed2",
+        "rowId": "BOOT-REAL-04",
+        "state": "settled",
+        "inputTokens": 15279,
+        "outputTokens": 2048,
+        "cachedTokens": 24064,
+        "costUsd": 0.14986700000000003,
+        "wallTimeMs": 87546,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784740202613-60e2ba97-181f-46d9-9c8c-bb60ac68aed2",
+        "rowId": "BOOT-REAL-04",
+        "state": "settled",
+        "inputTokens": 19373,
+        "outputTokens": 920,
+        "cachedTokens": 7680,
+        "costUsd": 0.128305,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784740290290-26ed16c4-89be-411e-b678-95fdcc43b0a2",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 10424,
+        "outputTokens": 1421,
+        "cachedTokens": 13312,
+        "costUsd": 0.10140600000000001,
+        "wallTimeMs": 82251,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784740290290-26ed16c4-89be-411e-b678-95fdcc43b0a2",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 11243,
+        "outputTokens": 828,
+        "cachedTokens": 15360,
+        "costUsd": 0.08873500000000001,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784740290290-26ed16c4-89be-411e-b678-95fdcc43b0a2",
+        "rowId": "BOOT-REAL-05",
+        "state": "settled",
+        "inputTokens": 2980,
+        "outputTokens": 524,
+        "cachedTokens": 0,
+        "costUsd": 0.03062,
+        "wallTimeMs": 24571,
+        "participant": "openai-codex/gpt-5.5"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 15361,
+        "outputTokens": 2008,
+        "cachedTokens": 12288,
+        "costUsd": 0.143189,
+        "wallTimeMs": 100411,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 11523,
+        "outputTokens": 817,
+        "cachedTokens": 16384,
+        "costUsd": 0.09031700000000001,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 10037,
+        "outputTokens": 2665,
+        "cachedTokens": 19456,
+        "costUsd": 0.139863,
+        "wallTimeMs": 91013,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 20832,
+        "outputTokens": 993,
+        "cachedTokens": 7680,
+        "costUsd": 0.13779,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 8038,
+        "outputTokens": 1504,
+        "cachedTokens": 7168,
+        "costUsd": 0.088894,
+        "wallTimeMs": 82194,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 12508,
+        "outputTokens": 989,
+        "cachedTokens": 16384,
+        "costUsd": 0.100402,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 12714,
+        "outputTokens": 1569,
+        "cachedTokens": 6144,
+        "costUsd": 0.11371200000000001,
+        "wallTimeMs": 69894,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 6815,
+        "outputTokens": 1018,
+        "cachedTokens": 22016,
+        "costUsd": 0.075623,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 18691,
+        "outputTokens": 2515,
+        "cachedTokens": 34816,
+        "costUsd": 0.18631299999999998,
+        "wallTimeMs": 104789,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 6662,
+        "outputTokens": 1014,
+        "cachedTokens": 20992,
+        "costUsd": 0.07422599999999999,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 13753,
+        "outputTokens": 1453,
+        "cachedTokens": 7168,
+        "costUsd": 0.115939,
+        "wallTimeMs": 85038,
+        "participant": "openai-codex/gpt-5.6-sol"
+      },
+      {
+        "runId": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee",
+        "rowId": "BOOT-REAL-06",
+        "state": "settled",
+        "inputTokens": 6109,
+        "outputTokens": 941,
+        "cachedTokens": 20992,
+        "costUsd": 0.069271,
+        "wallTimeMs": 0,
+        "participant": "openai-codex/gpt-5.6-sol"
+      }
+    ]
+  },
+  "slots": [
+    {
+      "slotId": "BOOT-REAL-01",
+      "itemId": "BOOT-IMPLEMENT",
+      "itemVersion": 1,
+      "phase": "IMPLEMENT",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "worker",
+        "promptVersion": "sha256:334161f8c69cd3e16b408800b301ad66c26cced0d8bdb46b70305d2d437f2116",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "worker",
+        "promptVersion": "sha256:334161f8c69cd3e16b408800b301ad66c26cced0d8bdb46b70305d2d437f2116",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "judgeIdentity": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "implement-supplemental-v1"
+      },
+      "judgeUsage": {
+        "inputTokens": 3298,
+        "outputTokens": 474,
+        "cachedTokens": 0,
+        "costUsd": 0.03071,
+        "wallTimeMs": 11026
+      },
+      "admission": {
+        "itemHash": "bd3f2dde136dd81d0714ade56ef13715a439ed838fb9ca96adcdcfdf39921a5b",
+        "catalogHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784739779970-732b741b-148a-4113-8ee1-5cf204cd7f26:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "64791f5c736e4706e634c2a18be0e9d22f09fa021a9aa37c6b0008c9e1ecc124",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:64791f5c736e4706e634c2a18be0e9d22f09fa021a9aa37c6b0008c9e1ecc124"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-01-1784739779970-732b741b-148a-4113-8ee1-5cf204cd7f26:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "2da136288c34a7aff8be8e54d7e93f89cfbf74b54d4c1c76950e8d06eeaa5ad1",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:2da136288c34a7aff8be8e54d7e93f89cfbf74b54d4c1c76950e8d06eeaa5ad1"
+          }
+        ]
+      },
+      "isolation": {
+        "repository": "disposed://repository/BOOT-REAL-01",
+        "piHome": "disposed://pi-home/BOOT-REAL-01",
+        "artifactRoot": "disposed://raw/BOOT-REAL-01",
+        "resultNamespace": "ppe-001:BOOT-REAL-01",
+        "processGroup": "bounded:BOOT-REAL-01",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 20050,
+      "outputTokens": 3287,
+      "cachedTokens": 30720,
+      "childCostUsd": 0.11851900000000001,
+      "outerCostUsd": 0.095701,
+      "wallTimeMs": 106662,
+      "firstPlannedPassCostUsd": 0.21422000000000002,
+      "defaultFirstPlannedPassWallTimeMs": 106662,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:64791f5c736e4706e634c2a18be0e9d22f09fa021a9aa37c6b0008c9e1ecc124"
+      ]
+    },
+    {
+      "slotId": "BOOT-REAL-02",
+      "itemId": "BOOT-VERIFY",
+      "itemVersion": 1,
+      "phase": "VERIFY",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "fresh-verifier",
+        "promptVersion": "sha256:e7b26467252939f2e5ad00b49f10f6b7e4b6c4363b9a9d8f4ffbbdd7f8e64543",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "fresh-verifier",
+        "promptVersion": "sha256:e7b26467252939f2e5ad00b49f10f6b7e4b6c4363b9a9d8f4ffbbdd7f8e64543",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "judgeIdentity": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "verify-supplemental-v1"
+      },
+      "judgeUsage": {
+        "inputTokens": 4208,
+        "outputTokens": 684,
+        "cachedTokens": 0,
+        "costUsd": 0.04156,
+        "wallTimeMs": 26507
+      },
+      "admission": {
+        "itemHash": "8a097ecb593f59f3517b33f1226fcb4e62c4f551cd5181f3a0cb7ad1e45ab361",
+        "catalogHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784739886805-5cc7a98d-e6d2-4fa1-9581-f4dd16e094cf:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "71acd9a34a241ed7232003041c26b3e2b9a4902e5e42aae7405c77ee8a3bc5e5",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:71acd9a34a241ed7232003041c26b3e2b9a4902e5e42aae7405c77ee8a3bc5e5"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-02-1784739886805-5cc7a98d-e6d2-4fa1-9581-f4dd16e094cf:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "7c39a90f13f92d67a8f81cab8223aa65c35d4d886f457f762ffe637de0747165",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:7c39a90f13f92d67a8f81cab8223aa65c35d4d886f457f762ffe637de0747165"
+          }
+        ]
+      },
+      "isolation": {
+        "repository": "disposed://repository/BOOT-REAL-02",
+        "piHome": "disposed://pi-home/BOOT-REAL-02",
+        "artifactRoot": "disposed://raw/BOOT-REAL-02",
+        "resultNamespace": "ppe-001:BOOT-REAL-02",
+        "processGroup": "bounded:BOOT-REAL-02",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 31326,
+      "outputTokens": 3961,
+      "cachedTokens": 23040,
+      "childCostUsd": 0.146452,
+      "outerCostUsd": 0.140528,
+      "wallTimeMs": 129243,
+      "firstPlannedPassCostUsd": 0.28698,
+      "defaultFirstPlannedPassWallTimeMs": 129243,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:71acd9a34a241ed7232003041c26b3e2b9a4902e5e42aae7405c77ee8a3bc5e5"
+      ]
+    },
+    {
+      "slotId": "BOOT-REAL-03",
+      "itemId": "BOOT-REVIEW",
+      "itemVersion": 1,
+      "phase": "REVIEW",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "reviewer",
+        "promptVersion": "sha256:4b11446eb9bf74edbc4d3ddee1031db20c1bd8b9a03ffc2273189cdebf18b083",
+        "toolsHash": "a5325888cb38fcd0c84e3577cc3869e2c79943acf4eed9c435813e12b7784b33",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "reviewer",
+        "promptVersion": "sha256:4b11446eb9bf74edbc4d3ddee1031db20c1bd8b9a03ffc2273189cdebf18b083",
+        "toolsHash": "a5325888cb38fcd0c84e3577cc3869e2c79943acf4eed9c435813e12b7784b33",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "judgeIdentity": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "review-supplemental-v1"
+      },
+      "judgeUsage": {
+        "inputTokens": 4498,
+        "outputTokens": 562,
+        "cachedTokens": 0,
+        "costUsd": 0.03935,
+        "wallTimeMs": 25478
+      },
+      "admission": {
+        "itemHash": "bedf830dd3547ae64c4a018f97514a6581330f6b3641157f196e6c66ae91362f",
+        "catalogHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784740016201-c3d262dd-d520-4775-b77c-afa61e7c7551:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "965858e18af013440c65fcc780d5c0e7cd8cc28863a6a4490662a1399940223e",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:965858e18af013440c65fcc780d5c0e7cd8cc28863a6a4490662a1399940223e"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-03-1784740016201-c3d262dd-d520-4775-b77c-afa61e7c7551:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "b5a657ccb63f30bbda869eac68e34247555625b0e33575eef017608569efd386",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:b5a657ccb63f30bbda869eac68e34247555625b0e33575eef017608569efd386"
+          }
+        ]
+      },
+      "isolation": {
+        "repository": "disposed://repository/BOOT-REAL-03",
+        "piHome": "disposed://pi-home/BOOT-REAL-03",
+        "artifactRoot": "disposed://raw/BOOT-REAL-03",
+        "resultNamespace": "ppe-001:BOOT-REAL-03",
+        "processGroup": "bounded:BOOT-REAL-03",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 2,
+      "infrastructureAttempts": 0,
+      "inputTokens": 56880,
+      "outputTokens": 5220,
+      "cachedTokens": 50688,
+      "childCostUsd": 0.19933900000000002,
+      "outerCostUsd": 0.26700500000000005,
+      "wallTimeMs": 186199,
+      "firstPlannedPassCostUsd": 0.46634400000000004,
+      "defaultFirstPlannedPassWallTimeMs": 186199,
+      "minimumPlannedAttempts": 2,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:965858e18af013440c65fcc780d5c0e7cd8cc28863a6a4490662a1399940223e"
+      ]
+    },
+    {
+      "slotId": "BOOT-REAL-04",
+      "itemId": "BOOT-CLOSE",
+      "itemVersion": 1,
+      "phase": "CLOSE",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delegate",
+        "promptVersion": "sha256:a081d3d32389e41565357ce694df71a56a9cd1c8b1d49d42344a94f01b0ab257",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delegate",
+        "promptVersion": "sha256:a081d3d32389e41565357ce694df71a56a9cd1c8b1d49d42344a94f01b0ab257",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "ef0b07cf83a39faa27e866861ea5608123c61e7bcc2025314163c4250724b20f",
+        "catalogHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784740202613-60e2ba97-181f-46d9-9c8c-bb60ac68aed2:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "ca432e2ff952d2e83feb55e59db23f1af232e7037eae31bc921c0378401f032f",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:ca432e2ff952d2e83feb55e59db23f1af232e7037eae31bc921c0378401f032f"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-04-1784740202613-60e2ba97-181f-46d9-9c8c-bb60ac68aed2:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "ab33b9bacced0d97df625772735b6d081eea06c8434742465b2c2ed2c2b58250",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:ab33b9bacced0d97df625772735b6d081eea06c8434742465b2c2ed2c2b58250"
+          }
+        ]
+      },
+      "isolation": {
+        "repository": "disposed://repository/BOOT-REAL-04",
+        "piHome": "disposed://pi-home/BOOT-REAL-04",
+        "artifactRoot": "disposed://raw/BOOT-REAL-04",
+        "resultNamespace": "ppe-001:BOOT-REAL-04",
+        "processGroup": "bounded:BOOT-REAL-04",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "local-stub"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "NOT_ELIGIBLE_CANDIDATE",
+      "deterministicPassed": true,
+      "qualitativeEligible": false,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 34652,
+      "outputTokens": 2968,
+      "cachedTokens": 31744,
+      "childCostUsd": 0.14986700000000003,
+      "outerCostUsd": 0.128305,
+      "wallTimeMs": 87546,
+      "firstPlannedPassCostUsd": 0.27817200000000003,
+      "defaultFirstPlannedPassWallTimeMs": 87546,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:ca432e2ff952d2e83feb55e59db23f1af232e7037eae31bc921c0378401f032f"
+      ]
+    },
+    {
+      "slotId": "BOOT-REAL-05",
+      "itemId": "BOOT-RETRO",
+      "itemVersion": 1,
+      "phase": "RETRO",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delegate",
+        "promptVersion": "sha256:cd81f96f973906bdd167f0acb3e45fb96314c9ff3d488048dd0929c54fdfca13",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delegate",
+        "promptVersion": "sha256:cd81f96f973906bdd167f0acb3e45fb96314c9ff3d488048dd0929c54fdfca13",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "judgeIdentity": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "retro-supplemental-v1"
+      },
+      "judgeUsage": {
+        "inputTokens": 2980,
+        "outputTokens": 524,
+        "cachedTokens": 0,
+        "costUsd": 0.03062,
+        "wallTimeMs": 24571
+      },
+      "admission": {
+        "itemHash": "d6ce0d7ba1ff068ea5c6bead193b06fc3186531a1673add1055c806683df07d1",
+        "catalogHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784740290290-26ed16c4-89be-411e-b678-95fdcc43b0a2:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "da0e049fbf434e4a7ebb3bece6b9369e5f17b0b56ead0b16acde3402213c48ae",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:da0e049fbf434e4a7ebb3bece6b9369e5f17b0b56ead0b16acde3402213c48ae"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-05-1784740290290-26ed16c4-89be-411e-b678-95fdcc43b0a2:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "387fe3ca8f004993602c5e25aa557efce76f74ae1858a482145505e723d08f90",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:387fe3ca8f004993602c5e25aa557efce76f74ae1858a482145505e723d08f90"
+          }
+        ]
+      },
+      "isolation": {
+        "repository": "disposed://repository/BOOT-REAL-05",
+        "piHome": "disposed://pi-home/BOOT-REAL-05",
+        "artifactRoot": "disposed://raw/BOOT-REAL-05",
+        "resultNamespace": "ppe-001:BOOT-REAL-05",
+        "processGroup": "bounded:BOOT-REAL-05",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "none"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "JUDGED",
+      "deterministicPassed": true,
+      "qualitativeEligible": true,
+      "attempts": 1,
+      "infrastructureAttempts": 0,
+      "inputTokens": 24647,
+      "outputTokens": 2773,
+      "cachedTokens": 28672,
+      "childCostUsd": 0.10140600000000001,
+      "outerCostUsd": 0.11935500000000002,
+      "wallTimeMs": 106822,
+      "firstPlannedPassCostUsd": 0.220761,
+      "defaultFirstPlannedPassWallTimeMs": 106822,
+      "minimumPlannedAttempts": 1,
+      "handoffs": [],
+      "evidenceRefs": [
+        "sha256:da0e049fbf434e4a7ebb3bece6b9369e5f17b0b56ead0b16acde3402213c48ae"
+      ]
+    },
+    {
+      "slotId": "BOOT-REAL-06",
+      "itemId": "BOOT-E2E",
+      "itemVersion": 1,
+      "phase": "E2E",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "requested": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delivery-state-machine",
+        "promptVersion": "sha256:e6e1b536a9ccfeed7a0dbe699777d00457ec474c9cd820907749f3f7e4142834",
+        "toolsHash": "8847a45471b1cf33f2ad0c364216b747d50c91aba21f0140ecbdec4c04090d8e",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "effective": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delivery-state-machine",
+        "promptVersion": "sha256:e6e1b536a9ccfeed7a0dbe699777d00457ec474c9cd820907749f3f7e4142834",
+        "toolsHash": "8847a45471b1cf33f2ad0c364216b747d50c91aba21f0140ecbdec4c04090d8e",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "judgeUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0,
+        "wallTimeMs": 0
+      },
+      "admission": {
+        "itemHash": "690e84cff38141f4ead8ce4e838a894ccf5ff99a0ae9f286235a39b6b1b05472",
+        "catalogHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a",
+        "selectionSequence": 0,
+        "dispatchSequence": 0,
+        "publications": [
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee:join:1",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "8aaebae7412f0835acee09216d553c19408a8b1dfeaf659448a8a261286ad11e",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:8aaebae7412f0835acee09216d553c19408a8b1dfeaf659448a8a261286ad11e"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee:join:2",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "4fda4008c036337e865de48ba5d7460aed46599a583f88806a026b20f4e5fcc6",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:4fda4008c036337e865de48ba5d7460aed46599a583f88806a026b20f4e5fcc6"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee:join:3",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "8dfc28b4c37007c26fc185ce31dd40c8a3625fb1b75f0378ed11374d0733276e",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:8dfc28b4c37007c26fc185ce31dd40c8a3625fb1b75f0378ed11374d0733276e"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee:join:4",
+            "kind": "join",
+            "expectedSequence": 0,
+            "evidenceHash": "d1878de4b7bb2899e813c8896963d7b3c066b3823b6c30e33600d51ee08a9f16",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:d1878de4b7bb2899e813c8896963d7b3c066b3823b6c30e33600d51ee08a9f16"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee:result-use",
+            "kind": "result-use",
+            "expectedSequence": 0,
+            "evidenceHash": "14980bc18816e29c38b1973d3de92902dff2973dcac7e414a969923eca1a10d8",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:14980bc18816e29c38b1973d3de92902dff2973dcac7e414a969923eca1a10d8"
+          },
+          {
+            "id": "PPE-001-REAL-CANARY-v3-BOOT-REAL-06-1784740397290-7e7f7e7c-38bf-49c4-aeed-1e5c56b9e7ee:report",
+            "kind": "report",
+            "expectedSequence": 0,
+            "evidenceHash": "6ce26bb33a5b32a535fba60ae584b88a69804c14ed934b77130c754032b675b5",
+            "sequence": 0,
+            "eligibility": "eligible",
+            "evidenceRef": "sha256:6ce26bb33a5b32a535fba60ae584b88a69804c14ed934b77130c754032b675b5"
+          }
+        ]
+      },
+      "isolation": {
+        "repository": "disposed://repository/BOOT-REAL-06",
+        "piHome": "disposed://pi-home/BOOT-REAL-06",
+        "artifactRoot": "disposed://raw/BOOT-REAL-06",
+        "resultNamespace": "ppe-001:BOOT-REAL-06",
+        "processGroup": "bounded:BOOT-REAL-06",
+        "credentialBoundary": "allowlisted-ephemeral",
+        "remotePolicy": "local-stub"
+      },
+      "cleanupPassed": true,
+      "redactionPassed": true,
+      "status": "PASS",
+      "slotState": "NOT_ELIGIBLE_CANDIDATE",
+      "deterministicPassed": true,
+      "qualitativeEligible": false,
+      "attempts": 6,
+      "infrastructureAttempts": 0,
+      "inputTokens": 143043,
+      "outputTokens": 17486,
+      "cachedTokens": 191488,
+      "childCostUsd": 0.78791,
+      "outerCostUsd": 0.5476289999999999,
+      "wallTimeMs": 533339,
+      "firstPlannedPassCostUsd": 1.335539,
+      "defaultFirstPlannedPassWallTimeMs": 533339,
+      "minimumPlannedAttempts": 6,
+      "handoffs": [
+        "IMPLEMENT->VERIFY",
+        "VERIFY->REVIEW",
+        "REVIEW->CLOSE",
+        "CLOSE->RETRO"
+      ],
+      "evidenceRefs": [
+        "sha256:14980bc18816e29c38b1973d3de92902dff2973dcac7e414a969923eca1a10d8"
+      ]
+    }
+  ],
+  "evidenceRefs": [
+    "sha256:64791f5c736e4706e634c2a18be0e9d22f09fa021a9aa37c6b0008c9e1ecc124",
+    "sha256:71acd9a34a241ed7232003041c26b3e2b9a4902e5e42aae7405c77ee8a3bc5e5",
+    "sha256:965858e18af013440c65fcc780d5c0e7cd8cc28863a6a4490662a1399940223e",
+    "sha256:ca432e2ff952d2e83feb55e59db23f1af232e7037eae31bc921c0378401f032f",
+    "sha256:da0e049fbf434e4a7ebb3bece6b9369e5f17b0b56ead0b16acde3402213c48ae",
+    "sha256:14980bc18816e29c38b1973d3de92902dff2973dcac7e414a969923eca1a10d8"
+  ],
+  "reportHash": "48fb4fc620adba73147c10578eefc8ad313577f2797b44a8ae960a463908cdc5"
+}

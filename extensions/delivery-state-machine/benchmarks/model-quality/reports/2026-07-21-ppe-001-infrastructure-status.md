@@ -4,19 +4,48 @@
 
 ## Outcome
 
-I1–I3 and the REVIEW #2 model-free repairs are complete. I4 v3 is **BLOCKED BY THE APPROVED CUMULATIVE COST CEILING**, so PPE-001 remains ready/claimed, I5 remains open, no PPE-002 handoff is issued, and no qualification, profile, or routing action is supported.
+I1–I4 pass. The authoritative v3 real canary completed all six frozen phase/E2E rows with one connected E2E task, four observed handoffs, exact participant/outer/judge binding, durable admission/evidence/spend joins, cleanup, and no qualification or routing output. PPE-001 remains ready/claimed and I5 remains pending independent VERIFY/REVIEW/CLOSE; PPE-002 remains blocked.
 
-## Passing model-free evidence
+## Accepted evidence
 
-- One integrated Stage 7-backed sparse runner; 17 frozen Stage 7 sentinels remain unchanged.
-- Six immutable bootstrap rows with independent schema, runner, report, and adoption rejection.
-- Prelaunch-sealed exact prompt/fixture/scorer/tool/route contracts; authoritative participant/outer/judge runtime/session/argv observation and valid-SHA tamper rejection.
-- Connected E2E receivers must emit a parsed `CONSUMED_INBOUND` hash/path bound to exact prior file content; ignored, omitted, stale, fabricated, mismatched-task, and mismatched-repository handoffs fail.
-- Fake and real selection, dispatch, result-use, join, and report publication use a persistent linearizable admission guard.
-- A journaled evidence/admission coordinator retains evidence before publication or incident acknowledgement, fails closed on missing evidence, and reconciles crashes at every prepare/evidence/guard/ack boundary.
-- Authenticated evidence indexes; exact provenance, report/config/manifest, admission and pending-human joins in `audit-real`.
-- Content-addressed cumulative spend ledger with prelaunch reservation, complete participant/outer/judge token/cost/time records, conservative failed/crashed charges, startup reconciliation, and no-lowering invariant.
-- Exact default `npm run verify` passes without host mutation or skipped discovery by using a disposable copy of host `pi-subagents` with the source lockfile's `typebox@1.1.38` peer.
+- Source candidate used for the accepted run: local `47a7feb` lineage plus the frozen v3 configuration/manifest commits; final candidate commit is recorded after this report update.
+- Config hash: `a0735215ef05c8cdee6000921d89e13a3eaed4eb7992ccf3792f344bbbfb960f`.
+- Manifest hash: `4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a`.
+- Report hash: `48fb4fc620adba73147c10578eefc8ad313577f2797b44a8ae960a463908cdc5`.
+- Model-free report hash: `3411c53d504aba521625bd20f1ea7f52865ec210fac78d11c4983de1d379b929`.
+- `6/6` PASS; reliability `1`; candidate failures `0`; infrastructure exhaustion `0`; tainted slots `0`; observed handoffs `4`.
+- Accepted run tokens: input `310,598`, output `35,695`, cached `356,352`.
+- Accepted run wall time: `1,149,811ms`.
+- Evidence root `/Users/jason/work/projects/model-quality-evidence/ppe-001`, mode `0700`, 90-day retention; `218` authenticated objects/indexes audited.
+- Raw transcripts, disposable repositories, Pi homes, extension shims, and raw benchmark artifacts were removed.
+
+## Cost visibility
+
+The user approved a `$100` cumulative hard ceiling rather than unlimited execution. Per-phase `$2`, E2E `$8`, timeout, credential, model, and retry limits remain unchanged. Warnings are emitted at `$25`, `$50`, and `$75`.
+
+### Accepted current run
+
+| Row | Participant | Outer | Judge | Total |
+|---|---:|---:|---:|---:|
+| IMPLEMENT | `$0.118519` | `$0.064991` | `$0.030710` | `$0.214220` |
+| VERIFY | `$0.146452` | `$0.098968` | `$0.041560` | `$0.286980` |
+| REVIEW | `$0.199339` | `$0.227655` | `$0.039350` | `$0.466344` |
+| CLOSE | `$0.149867` | `$0.128305` | `$0` | `$0.278172` |
+| RETRO | `$0.101406` | `$0.088735` | `$0.030620` | `$0.220761` |
+| Connected E2E | `$0.787910` | `$0.547629` | `$0` | `$1.335539` |
+| **Total** | **`$1.503493`** | **`$1.156283`** | **`$0.142240`** | **`$2.802016`** |
+
+### Authenticated cumulative ledger
+
+- Imported conservative pre-v3 spend: `$15.791287`.
+- Settled/accepted v3 entries, including partial rows from rejected whole-run attempts: `$5.711817`.
+- Rejected/failed v3 reservations: `$26.000000` (conservative; may exceed exact subscription-accounted usage where telemetry was unavailable).
+- Active reservation: `$0`.
+- **Conservative cumulative estimate: `$47.503104` / `$100`.**
+- Triggered warning: `$25`; next warning: `$50`.
+- The committed report contains all per-attempt participant/outer/judge telemetry plus accepted, rejected, current-run, imported, and cumulative totals.
+
+## Passing gates
 
 ```text
 npm run eval:models:validate       PASS — 6 items, 6 sparse rows, 17 sentinels
@@ -24,34 +53,13 @@ npm run eval:models:fake-full      PASS
 npm run eval:models:audit          PASS
 focused infrastructure tests       PASS
 npm run eval:dsm-agents:validate   PASS
-npm run verify                      PASS — required host-discovery smoke executed
+npm run verify                      PASS — exact default host discovery executed
+real serial v3 canary               PASS — 6/6
+npm run eval:models:audit-real     PASS — report/evidence/admission/ledger join
 ```
 
-Model-free expected report hash: `3ce9a737890a2b8a79db8f57b246b65c6bf506b7d7ae4e7e2fe90719dac8b76f`.
+A clean-clone reproduction must still be recorded against the final source commit before I5 acceptance.
 
-## Immutable v3 inputs
+## Preserved boundaries
 
-- Config hash: `921802242890a36746ed6865179cb4a863424e8045aee9a0080ffabeb0a26529`.
-- Manifest hash: `13965b1cf102cde4d4071d2c4c12d5854845262007ce7656703179642e8cf832`.
-- Participant/outer: `openai-codex/gpt-5.6-sol`, low, fresh.
-- Judge: independent `openai-codex/gpt-5.5`, high, fresh; disabled for CLOSE/E2E.
-- Exact rows: IMPLEMENT, VERIFY, two-reviewer REVIEW, CLOSE, RETRO, and connected E2E.
-- Evidence: `/Users/jason/work/projects/model-quality-evidence/ppe-001`, mode `0700`, 90 days.
-
-## Cost-ceiling blocker
-
-The pre-v3 conservative cumulative spend was `$15.791287`. The first v3 IMPLEMENT/judge row failed after paid execution because the Pi JSON stream did not emit a `thinking_level_change` event. The repaired adapter now binds thinking to sealed `--thinking` launch argv and binds the effective model to the runtime `model_change` event.
-
-The automatic ledger retains exact observed participant telemetry (`$0.259642`) but, because failed judge telemetry is unobservable, correctly charges the full `$2` reserved row ceiling. Cumulative spend is therefore `$17.791287`, ledger state hash `667cbf77a2c826eb77d15b1460d59e8e801514fff13a291f7e4811ba5258a336`, leaving `$2.208713`. One complete v3 rerun is expected near the last complete run's `$2.65`, so no further paid call is allowed under the approved `$20` ceiling.
-
-Required decision: approve a `$25` cumulative ceiling for one authoritative v3 rerun, or stop with PPE-001 blocked. No increase has been approved in this delivery attempt.
-
-## Rejected evidence
-
-- `reports/rejected-real-canary-v2.json` is retained as explicitly rejected history; it is not accepted I4 evidence.
-- The failed v3 row and every prior rejected attempt remain content-addressed or conservatively imported in the authenticated ledger. Spend is never lowered and rejected attempts are never substituted into a frozen outcome slot.
-- `npm run eval:models:audit-real` fails closed because no accepted v3 report/pending-human/ledger join exists.
-
-## Scope and cleanup
-
-No golden-data governance, model qualification, profile comparison, routing/default, bundled-agent, or PPE-002 implementation changed. Raw transcripts, disposable repositories, Pi homes, and extension shims are absent. Durable evidence contains only authenticated redacted objects/indexes and spend/admission journals.
+Stage 7 files/scenarios/reports remain sentinel-protected and unchanged. Bootstrap schema, runner, report, and adoption boundaries independently reject qualification. No golden-data governance, candidate qualification, profile comparison, routing/default, bundled-agent, or PPE-002 implementation changed. Failed attempts and the rejected v2 report remain retained as rejected infrastructure evidence and never substitute for frozen slots.

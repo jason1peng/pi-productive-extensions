@@ -81,6 +81,15 @@ function disposeRaw(result: NormalizedResult): void {
 	for (const target of paths) if (target && fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
 }
 
+async function withOuterThinking<T>(thinking: string, run: () => Promise<T>): Promise<T> {
+	const wrapperRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ppe-001-pi-wrapper-")); const wrapper = path.join(wrapperRoot, "pi");
+	const realPi = process.env.PI_BIN ?? "pi"; const quoted = `'${realPi.replace(/'/g, `'"'"'`)}'`;
+	fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${quoted} --thinking '${thinking}' "$@"\n`, { mode: 0o700 });
+	const prior = process.env.PI_BIN; process.env.PI_BIN = wrapper;
+	try { return await run(); }
+	finally { if (prior === undefined) delete process.env.PI_BIN; else process.env.PI_BIN = prior; fs.rmSync(wrapperRoot, { recursive: true, force: true }); }
+}
+
 async function spawnCapture(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ code: number | null; timedOut: boolean; stdout: string; stderr: string }> {
 	return await new Promise((resolve) => {
 		const child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
@@ -223,7 +232,7 @@ async function stage7Run(phase: string, config: RealCanaryConfig, timeoutMs: num
 		fs.writeFileSync(path.join(shim, "package.json"), `${JSON.stringify({ name: "ppe-001-explicit-subagents-shim", private: true, type: "module", pi: { extensions: [] } }, null, 2)}\n`);
 		const prior = process.env.PI_SUBAGENTS_ROOT; process.env.PI_SUBAGENTS_ROOT = shim;
 		try {
-			const runtime = await executePiRuntime(candidateScenario, actualAgent, run);
+			const runtime = await withOuterThinking(config.outer.thinking, () => executePiRuntime(candidateScenario, actualAgent, run));
 			const provisional = { outer: runtime.outer, child: runtime.child } as NormalizedResult;
 			observedBinding = bindObservedExecution(prelaunch, provisional);
 			return runtime;
@@ -263,7 +272,7 @@ async function executeConnectedRuntime(scenario: ScenarioRecord, agent: string, 
 	fs.symlinkSync(path.join(installed, "src"), path.join(shim, "src"), "dir");
 	fs.writeFileSync(path.join(shim, "package.json"), `${JSON.stringify({ name: "ppe-001-explicit-subagents-shim", private: true, type: "module", pi: { extensions: [] } }, null, 2)}\n`);
 	const prior = process.env.PI_SUBAGENTS_ROOT; process.env.PI_SUBAGENTS_ROOT = shim;
-	try { return await executePiRuntime(scenario, agent, run); }
+	try { return await withOuterThinking(scenario.launch.thinking, () => executePiRuntime(scenario, agent, run)); }
 	finally { if (prior === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = prior; fs.rmSync(shim, { recursive: true, force: true }); }
 }
 

@@ -470,8 +470,8 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 			const resultUse = coordinator.publish({ id: `${runId}:result-use`, publicationKind: "result-use", expectedSequence: dispatch.sequence, value: transient, schemaVersionRef: "model-quality-real-canary-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }); publications.push(resultUse);
 			const reportPublication = coordinator.publish({ id: `${runId}:report`, publicationKind: "report", expectedSequence: dispatch.sequence, value: { row: row.slotId, transientRef: resultUse.evidenceRef, handoffs }, schemaVersionRef: "model-quality-real-canary-row-report-v3", assetVersions: assets, participantProvenance: provenance, retentionUntil }); publications.push(reportPublication);
 			const admission: NormalizedSlotResult["admission"] = { itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, selectionSequence: selection.sequence, dispatchSequence: dispatch.sequence, publications };
-			const slot = slotFromResults(row, results, resultUse.evidenceRef, config, admission, handoffs, judge); const rowCost = slot.childCostUsd + slot.outerCostUsd;
 			for (const result of results) disposeRaw(result); journeyCleanup?.(); journeyCleanup = undefined;
+			const slot = slotFromResults(row, results, resultUse.evidenceRef, config, admission, handoffs, judge); const rowCost = slot.childCostUsd + slot.outerCostUsd;
 			if (rowCost > row.budgetUsd + Number.EPSILON) throw new Error(`${row.slotId} exceeded approved cost ceiling: ${rowCost} > ${row.budgetUsd}`);
 			ledger.finish(runId, "settled", "accepted row completed with exact participant/outer/judge telemetry"); spendFinished = true; emitCostVisibility(ledger, currentRunIds);
 			slots.push(slot); if (slot.status !== "PASS") throw new Error(`${row.slotId} did not pass: ${slot.status}`);

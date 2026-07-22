@@ -392,6 +392,37 @@ try {
 	assert.equal(guard.publish({ id: "joined", kind: "join", expectedSequence: fresh.sequence, evidenceHash: HASH_C }).eligibility, "eligible", "publication retry must not duplicate");
 } finally { fs.rmSync(guardRoot, { recursive: true, force: true }); }
 
+// Rejected incident outcomes reserve their idempotency keys just like holds.
+// Exact retries remain no-ops across restart; content drift always fails.
+const rejectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-rejected-idempotency-"));
+try {
+	let guard = makeGuard(rejectRoot);
+	const rejectedReport = report("rejected-1", "untrusted-report");
+	const rejected = guard.applyIncident(rejectedReport);
+	assert.equal(rejected.acknowledged, false);
+	assert.equal(guard.snapshot().sequence, 0);
+	const auditLength = guard.snapshot().audit.length;
+	guard = makeGuard(rejectRoot);
+	assert.deepEqual(guard.applyIncident(rejectedReport), rejected, "identical rejected replay after restart must return its original decision");
+	assert.equal(guard.snapshot().audit.length, auditLength, "identical rejected replay must not mutate audit state");
+	assert.throws(() => guard.applyIncident(report("rejected-1")), /replay/, "changed rejected replay must never become a hold");
+	assert.equal((guard.snapshot() as any).incidentRecords.length, 1);
+
+	const admissionModule = path.resolve(ROOT, "admission.ts");
+	const sameDone = path.join(rejectRoot, "same-done"); const changedDone = path.join(rejectRoot, "changed-done");
+	const guardArgs = `${JSON.stringify(rejectRoot)},{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,()=>true`;
+	const concurrentScript = (done: string, value: IncidentReport) => `import * as fs from "node:fs"; import { AdmissionGuard,SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST } from ${JSON.stringify(admissionModule)}; const until=Date.now()+10000; for(;;){try{const guard=new AdmissionGuard(${guardArgs});fs.writeFileSync(${JSON.stringify(done)},JSON.stringify(guard.applyIncident(${JSON.stringify(value)})));break;}catch(error){if(String(error).includes("live owner")&&Date.now()<until){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);continue;}fs.writeFileSync(${JSON.stringify(done)},String(error));break;}}`;
+	const sameScript = concurrentScript(sameDone, rejectedReport);
+	const changedReport = report("rejected-1");
+	const changedScript = concurrentScript(changedDone, changedReport);
+	const same = spawn(process.execPath, ["-e", sameScript], { stdio: "ignore" }); const changed = spawn(process.execPath, ["-e", changedScript], { stdio: "ignore" });
+	waitForFile(sameDone); waitForFile(changedDone);
+	assert.equal(JSON.parse(fs.readFileSync(sameDone, "utf8")).acknowledged, false, "concurrent identical rejected replay must return the original rejection");
+	assert.match(fs.readFileSync(changedDone, "utf8"), /replay/, "concurrent changed rejected replay must fail");
+	if (same.pid) { try { process.kill(same.pid, 0); } catch {} } if (changed.pid) { try { process.kill(changed.pid, 0); } catch {} }
+	assert.equal((makeGuard(rejectRoot).snapshot() as any).incidentRecords.length, 1);
+} finally { fs.rmSync(rejectRoot, { recursive: true, force: true }); }
+
 for (const kind of ["result-use", "join", "report"] as const) {
 	for (const order of ["publication-first", "hold-first"] as const) {
 		assert.throws(() => admissionRunnerProbe(order, kind), /admission publication|incomplete or tainted/, `actual runner/report ${order} ${kind} must fail closed`);
@@ -425,7 +456,7 @@ try {
 	const guard = makeGuard(recoveryRoot);
 	const state: any = guard.snapshot();
 	state.sequence += 1; state.holdState = "pending"; state.audit.push({ sequence: state.sequence, action: "simulated-crash", evidenceHash: HASH_C });
-	fs.writeFileSync(path.join(recoveryRoot, "BOOT-VERIFY-1.json.journal"), `${JSON.stringify(state)}\n`);
+	fs.writeFileSync(path.join(recoveryRoot, "BOOT-VERIFY-1.json.journal"), `${JSON.stringify({ schemaVersion: 1, state, stateHash: hashObject(state) })}\n`);
 	const recovered = makeGuard(recoveryRoot);
 	assert.equal(recovered.snapshot().holdState, "pending");
 	assert.throws(() => recovered.authorize("selection"), /not effectively admitted/);
@@ -443,10 +474,21 @@ try {
 	assert.equal(fs.existsSync(admissionLock), true, "malformed ownership must not be stolen");
 } finally { fs.rmSync(recoveryRoot, { recursive: true, force: true }); }
 
+// A malformed or unauthenticated committed journal remains fail-closed and is
+// never confused with an uncommitted temporary file.
+for (const journalBody of ["{malformed", JSON.stringify({ schemaVersion: 1, state: { itemId: "BOOT-VERIFY" }, stateHash: HASH_A })]) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-bad-admission-journal-"));
+	try {
+		makeGuard(root); const journal = path.join(root, "BOOT-VERIFY-1.json.journal"); fs.writeFileSync(journal, journalBody);
+		assert.throws(() => makeGuard(root), /JSON|authentication/, "committed invalid journal must fail closed");
+		assert.equal(fs.existsSync(journal), true, "committed invalid journal must remain for operator inspection");
+	} finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 // Admission transaction interruption is recovered under the same authenticated
-// lock before admission reopens. Journal/state boundaries preserve a pending
-// hold; a pre-read interruption preserves the prior clear state.
-for (const crashPoint of ["after-lock", "after-journal", "after-state"] as const) {
+// lock before admission reopens. Uncommitted partial/full temporary journals are
+// discarded; a committed journal replays the pending hold on first restart.
+for (const crashPoint of ["after-lock", "during-journal-write", "before-journal-publish", "after-journal", "after-state"] as const) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-admission-killed-${crashPoint}-`));
 	try {
 		makeGuard(root);
@@ -454,7 +496,9 @@ for (const crashPoint of ["after-lock", "after-journal", "after-state"] as const
 		const script = `import { AdmissionGuard,SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST } from ${JSON.stringify(admissionModule)}; const guard=new AdmissionGuard(${JSON.stringify(root)},{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,()=>true,${JSON.stringify(crashPoint)}); guard.applyIncident({idempotencyKey:"killed-${crashPoint}",itemId:"BOOT-VERIFY",itemVersion:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)},evidenceHash:${JSON.stringify(HASH_C)},reportClass:"credible-bootstrap-leakage",actorId:"bootstrap-incident-service"});`;
 		const child = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" }); assert.notEqual(child.status, 0);
 		const restarted = makeGuard(root); const snapshot: any = restarted.snapshot();
-		assert.equal(snapshot.holdState, crashPoint === "after-lock" ? "clear" : "pending", `${crashPoint} must reconcile on first restart`);
+		const committed = crashPoint === "after-journal" || crashPoint === "after-state";
+		assert.equal(snapshot.holdState, committed ? "pending" : "clear", `${crashPoint} must reconcile on first restart`);
+		assert.equal(fs.readdirSync(root).some((entry) => entry.includes(".journal")), false, `${crashPoint} journal artifacts must be reconciled`);
 		assert.equal(fs.existsSync(path.join(root, "BOOT-VERIFY-1.json.lock")), false);
 	} finally { fs.rmSync(root, { recursive: true, force: true }); }
 }

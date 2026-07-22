@@ -77,7 +77,7 @@ export function fakeFull(generatedAt = "2026-07-21T04:00:00.000Z"): Infrastructu
 		store.audit();
 		const registry = new Map(loadRegistry().items.map((item) => [`${item.id}@${item.version}`, item]));
 		const slots = manifest.rows.map((row) => {
-			const item = registry.get(`${row.itemId}@${row.itemVersion}`)!; const coordinator = new EvidenceAdmissionCoordinator(path.join(root, "admission", row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+			const item = registry.get(`${row.itemId}@${row.itemVersion}`)!; const coordinator = new EvidenceAdmissionCoordinator(path.join(root, "admission", row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, coordinatorScope: `bootstrap:${manifest.manifestHash}:${row.slotId}` }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
 			const selection = coordinator.authorize("selection"), dispatch = coordinator.authorize("dispatch"); const retentionUntil = "2099-01-01T00:00:00.000Z"; const publications: any[] = [];
 			// Preserve the frozen bootstrap report's legacy hash-only presentation. The
 			// durable coordinator journal still retains and reconciles through its exact
@@ -98,7 +98,7 @@ export function admissionRunnerProbe(order: "hold-first" | "publication-first", 
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), `ppe-001-runner-admission-${order}-${boundary}-`));
 	try {
 		const store = new EvidenceStore(path.join(root, "evidence")); const manifest = loadManifest(), row = manifest.rows[0], item = loadRegistry().items.find((entry) => entry.id === row.itemId)!;
-		const coordinator = new EvidenceAdmissionCoordinator(path.join(root, "admission"), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const coordinator = new EvidenceAdmissionCoordinator(path.join(root, "admission"), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, coordinatorScope: `probe:${manifest.manifestHash}:${row.slotId}` }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
 		const selection = coordinator.authorize("selection"), dispatch = coordinator.authorize("dispatch"); const retentionUntil = "2099-01-01T00:00:00.000Z"; const refs = new Map<string, string>();
 		const publish = (id: string, kind: "result-use" | "join" | "report") => { const value = coordinator.publish({ id, publicationKind: kind, expectedSequence: dispatch.sequence, value: { id, kind }, schemaVersionRef: "runner-probe-v1", assetVersions: [`manifest:${manifest.manifestHash}`], participantProvenance: ["fake/bootstrap-participant@v1"], retentionUntil }); refs.set(id, value.evidenceRef); return value; };
 		const incident = () => coordinator.incident({ report: { idempotencyKey: `${order}-${boundary}`, itemId: item.id, itemVersion: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, reportClass: "credible-bootstrap-leakage", actorId: "bootstrap-incident-service" }, value: { credible: true }, schemaVersionRef: "runner-probe-incident-v1", assetVersions: [`manifest:${manifest.manifestHash}`], participantProvenance: ["bootstrap-incident-service"], retentionUntil });

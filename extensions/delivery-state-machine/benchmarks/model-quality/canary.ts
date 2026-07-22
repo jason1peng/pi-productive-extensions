@@ -423,7 +423,7 @@ export function auditRealCanary(): { reportHash: string; evidenceObjects: number
 		const slot = report.slots.find((entry) => entry.slotId === row.slotId)!; const item = registry.get(`${row.itemId}@${row.itemVersion}`); if (!item) throw new Error("audit registry item unavailable");
 		const expectedProvenance = [`${config.participant.provider}/${config.participant.model}@${config.participant.version}`, `${config.outer.provider}/${config.outer.model}@${config.outer.version}`, ...(row.judge ? [`${config.judge.provider}/${config.judge.model}@${config.judge.version}`] : [])];
 		for (const reference of slot.evidenceRefs) store.getByRef(reference, { schemaVersionRef: "model-quality-real-canary-v3", assetVersions: [`${row.itemId}@${row.itemVersion}`, `manifest:${manifest.manifestHash}`, `config:${config.configHash}`], participantProvenance: expectedProvenance });
-		const coordinator = new EvidenceAdmissionCoordinator(path.join(config.evidence.root, "admission-v3", manifest.manifestHash, row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const coordinator = new EvidenceAdmissionCoordinator(path.join(config.evidence.root, "admission-v3", manifest.manifestHash, row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, coordinatorScope: `real-canary:${manifest.manifestHash}:${row.slotId}` }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
 		const snapshot: any = coordinator.snapshot();
 		for (const publication of slot.admission.publications) {
 			const retained = snapshot.publications.find((entry: any) => entry.id === publication.id); if (!retained || retained.eligibility !== "eligible" || retained.evidenceHash !== publication.evidenceHash) throw new Error(`admission publication is unavailable/tainted: ${publication.id}`);
@@ -476,7 +476,7 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 		const item = registry.get(`${row.itemId}@${row.itemVersion}`); if (!item) throw new Error(`registry item unavailable: ${row.itemId}@${row.itemVersion}`);
 		const runId = `${config.id}-v${config.version}-${row.slotId}-${Date.now()}-${randomUUID()}`;
 		ledger.begin(runId, row.slotId, row.budgetUsd); currentRunIds.push(runId); emitCostVisibility(ledger, currentRunIds);
-		const coordinator = new EvidenceAdmissionCoordinator(path.join(config.evidence.root, "admission-v3", manifest.manifestHash, row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const coordinator = new EvidenceAdmissionCoordinator(path.join(config.evidence.root, "admission-v3", manifest.manifestHash, row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash, coordinatorScope: `real-canary:${manifest.manifestHash}:${row.slotId}` }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
 		const selection = coordinator.authorize("selection"), dispatch = coordinator.authorize("dispatch");
 		const phases = row.phase === "REVIEW" ? ["REVIEW", "REVIEW"] : [row.phase];
 		const rowDeadline = Math.min(deadline, Date.now() + (row.phase === "E2E" ? config.limits.e2eTimeoutMs : config.limits.phaseTimeoutMs));

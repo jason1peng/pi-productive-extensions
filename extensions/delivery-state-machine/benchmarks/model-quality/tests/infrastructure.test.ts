@@ -723,6 +723,80 @@ try {
 	for (const operation of operations) assert.doesNotThrow(() => operation.method === "publish" ? restarted.publish(operation.input) : restarted.incident(operation.input));
 } finally { fs.rmSync(concurrentIdenticalRoot, { recursive: true, force: true }); }
 
+// REVIEW #9: operation IDs are local to a stable coordinator/item/version
+// namespace. Separate roots/scopes sharing one store must never alias indexes.
+const fallbackMultiRootRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-fallback-multi-root-"));
+try {
+	const store = new EvidenceStore(path.join(fallbackMultiRootRoot, "evidence")); const item = { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B };
+	const first = new EvidenceAdmissionCoordinator(path.join(fallbackMultiRootRoot, "root-a"), store, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const second = new EvidenceAdmissionCoordinator(path.join(fallbackMultiRootRoot, "root-b"), store, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const common = { id: "same-local-id", publicationKind: "report" as const, expectedSequence: 0, value: { same: true }, schemaVersionRef: "fallback-multi-root-v1", assetVersions: ["asset-v1"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	const firstRef = first.publish({ ...common, participantProvenance: ["bootstrap/root-a"] }).evidenceRef; const secondRef = second.publish({ ...common, participantProvenance: ["bootstrap/root-b"] }).evidenceRef;
+	assert.notEqual(firstRef, secondRef, "compatible roots without explicit scopes require distinct persisted instance namespaces"); assert.deepEqual(store.audit(), { objects: 1, indexes: 2 });
+	assert.equal(new EvidenceAdmissionCoordinator(path.join(fallbackMultiRootRoot, "root-a"), store, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST).publish({ ...common, participantProvenance: ["bootstrap/root-a"] }).evidenceRef, firstRef);
+} finally { fs.rmSync(fallbackMultiRootRoot, { recursive: true, force: true }); }
+
+const multiRootScopeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-multi-root-scope-"));
+try {
+	const evidenceRoot = path.join(multiRootScopeRoot, "evidence"); const store = new EvidenceStore(evidenceRoot);
+	const item = { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B };
+	const roots = [path.join(multiRootScopeRoot, "scope-a"), path.join(multiRootScopeRoot, "scope-b")];
+	const scopes = ["catalog:item:1:scope-a", "catalog:item:1:scope-b"];
+	const coordinators = roots.map((root, index) => new EvidenceAdmissionCoordinator(root, store, { ...item, coordinatorScope: scopes[index]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST));
+	const common = { value: { shared: "cross-root-content" }, schemaVersionRef: "multi-root-v1", assetVersions: ["asset-multi-root-v1"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	const references: string[] = [];
+	for (let scopeIndex = 0; scopeIndex < coordinators.length; scopeIndex++) {
+		const coordinator = coordinators[scopeIndex]!; const participantProvenance = [`bootstrap/scope-${scopeIndex}`];
+		for (const publicationKind of ["result-use", "join", "report"] as const) references.push(coordinator.publish({ id: `local-${publicationKind}`, publicationKind, expectedSequence: 0, participantProvenance, ...common }).evidenceRef);
+		const { evidenceHash: _, ...localReport } = report("local-incident", "untrusted-report");
+		references.push(coordinator.incident({ report: localReport, participantProvenance, ...common }).evidenceRef);
+	}
+	assert.equal(new Set(references).size, 8, "colliding local IDs in distinct logical scopes require distinct exact indexes");
+	assert.deepEqual(store.audit(), { objects: 1, indexes: 8 }, "cross-root identical content must deduplicate only the object");
+	for (let scopeIndex = 0; scopeIndex < roots.length; scopeIndex++) {
+		const restarted = new EvidenceAdmissionCoordinator(roots[scopeIndex]!, store, { ...item, coordinatorScope: scopes[scopeIndex]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		assert.doesNotThrow(() => restarted.snapshot());
+		assert.match(restarted.publish({ id: "local-report", publicationKind: "report", expectedSequence: 0, participantProvenance: [`bootstrap/scope-${scopeIndex}`], ...common }).evidenceRef, /#index:/);
+		assert.throws(() => new EvidenceAdmissionCoordinator(roots[scopeIndex]!, store, { ...item, coordinatorScope: "wrong-scope" }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /journal namespace mismatch/);
+	}
+	const relocatedRoot = path.join(multiRootScopeRoot, "scope-b-relocated"); fs.renameSync(roots[1]!, relocatedRoot);
+	assert.doesNotThrow(() => new EvidenceAdmissionCoordinator(relocatedRoot, store, { ...item, coordinatorScope: scopes[1]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST).snapshot(), "logical namespace must survive workspace relocation");
+	const journalFile = path.join(roots[0]!, "coordinator-journal", `${hashObject("publication:local-report")}.json`); const journalRecord = JSON.parse(fs.readFileSync(journalFile, "utf8")); journalRecord.coordinatorNamespace = HASH_C; fs.writeFileSync(journalFile, JSON.stringify(journalRecord));
+	assert.throws(() => new EvidenceAdmissionCoordinator(roots[0]!, store, { ...item, coordinatorScope: scopes[0]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /journal authentication failed/);
+} finally { fs.rmSync(multiRootScopeRoot, { recursive: true, force: true }); }
+
+const legacyCoordinatorJournalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-legacy-journal-"));
+try {
+	const admissionRoot = path.join(legacyCoordinatorJournalRoot, "admission"); const store = new EvidenceStore(path.join(legacyCoordinatorJournalRoot, "evidence")); const scope = "legacy:item:1:scope";
+	const item = { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B, coordinatorScope: scope };
+	const input = { id: "legacy-recovery", publicationKind: "report" as const, expectedSequence: 0, value: { legacy: true }, schemaVersionRef: "legacy-coordinator-v2", assetVersions: ["legacy-v2"], participantProvenance: ["bootstrap/legacy"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	const coordinator = new EvidenceAdmissionCoordinator(admissionRoot, store, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	assert.throws(() => coordinator.publish(input, "after-evidence"), /simulated/);
+	const file = path.join(admissionRoot, "coordinator-journal", `${hashObject("publication:legacy-recovery")}.json`); const legacy = JSON.parse(fs.readFileSync(file, "utf8")); legacy.schemaVersion = 2; delete legacy.coordinatorNamespace; const { journalHash: _, ...legacyBody } = legacy; legacy.journalHash = hashObject(legacyBody); fs.writeFileSync(file, `${JSON.stringify(legacy, null, 2)}\n`);
+	assert.equal(new EvidenceAdmissionCoordinator(admissionRoot, store, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST).publish(input).kind, "report");
+	const migrated = JSON.parse(fs.readFileSync(file, "utf8")); assert.equal(migrated.schemaVersion, 3); assert.match(migrated.coordinatorNamespace, /^[a-f0-9]{64}$/);
+} finally { fs.rmSync(legacyCoordinatorJournalRoot, { recursive: true, force: true }); }
+
+const concurrentMultiRootScopeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-concurrent-multi-root-scope-"));
+try {
+	const evidenceRoot = path.join(concurrentMultiRootScopeRoot, "evidence"); const roots = [path.join(concurrentMultiRootScopeRoot, "scope-a"), path.join(concurrentMultiRootScopeRoot, "scope-b")]; const scopes = ["concurrent:item:1:scope-a", "concurrent:item:1:scope-b"];
+	const coordinatorModule = path.resolve(ROOT, "admission-coordinator.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts"); const admissionModule = path.resolve(ROOT, "admission.ts");
+	for (let index = 0; index < roots.length; index++) new EvidenceAdmissionCoordinator(roots[index]!, new EvidenceStore(evidenceRoot), { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B, coordinatorScope: scopes[index]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const common = { value: { shared: "concurrent-cross-root-content" }, schemaVersionRef: "concurrent-multi-root-v1", assetVersions: ["asset-multi-root-v1"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	const children: Array<{ done: string; child: ReturnType<typeof spawn> }> = [];
+	for (let scopeIndex = 0; scopeIndex < roots.length; scopeIndex++) for (const kind of ["result-use", "join", "report", "incident"] as const) {
+		const participantProvenance = [`bootstrap/concurrent-scope-${scopeIndex}`]; const done = path.join(concurrentMultiRootScopeRoot, `${scopeIndex}-${kind}.done`);
+		const input = kind === "incident" ? { report: (() => { const { evidenceHash: _, ...value } = report("local-incident", "untrusted-report"); return value; })(), participantProvenance, ...common } : { id: `local-${kind}`, publicationKind: kind, expectedSequence: 0, participantProvenance, ...common };
+		const method = kind === "incident" ? "incident" : "publish";
+		const script = `import * as fs from "node:fs"; import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; try{const c=new EvidenceAdmissionCoordinator(${JSON.stringify(roots[scopeIndex]!)},new EvidenceStore(${JSON.stringify(evidenceRoot)}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)},coordinatorScope:${JSON.stringify(scopes[scopeIndex]!)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST);fs.writeFileSync(${JSON.stringify(done)},JSON.stringify(c.${method}(${JSON.stringify(input)})));}catch(error){fs.writeFileSync(${JSON.stringify(done)},String(error));}`;
+		children.push({ done, child: spawn(process.execPath, ["-e", script], { stdio: "ignore" }) });
+	}
+	for (const entry of children) waitForFile(entry.done);
+	for (const entry of children) assert.doesNotMatch(fs.readFileSync(entry.done, "utf8"), /Error:/);
+	const store = new EvidenceStore(evidenceRoot); assert.deepEqual(store.audit(), { objects: 1, indexes: 8 });
+	for (let index = 0; index < roots.length; index++) assert.doesNotThrow(() => new EvidenceAdmissionCoordinator(roots[index]!, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B, coordinatorScope: scopes[index]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST).snapshot());
+} finally { fs.rmSync(concurrentMultiRootScopeRoot, { recursive: true, force: true }); }
+
 const baseRow = manifest.rows[0];
 const slot = (overrides: Partial<NormalizedSlotResult> = {}): NormalizedSlotResult => ({ slotId: "S", itemId: "BOOT-X", itemVersion: 1, phase: "IMPLEMENT", datasetClass: "bootstrap", qualificationEligible: false, requested: structuredClone(baseRow.candidate), effective: structuredClone(baseRow.candidate), nonTargetRoutes: structuredClone(baseRow.nonTargetRoutes), judgeIdentity: structuredClone(baseRow.judge), judgeUsage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.1, wallTimeMs: 10 }, admission: { itemHash: HASH_A, catalogHash: manifest.manifestHash, selectionSequence: 0, dispatchSequence: 0, publications: [{ id: "result", kind: "result-use", sequence: 0, eligibility: "eligible", evidenceHash: HASH_A, evidenceRef: `sha256:${HASH_A}` }, { id: "report", kind: "report", sequence: 0, eligibility: "eligible", evidenceHash: HASH_B, evidenceRef: `sha256:${HASH_B}` }] }, isolation: { repository: "disposable://repo", piHome: "disposable://home", artifactRoot: "disposable://artifact", resultNamespace: "slot:S", processGroup: "isolated:S", credentialBoundary: "allowlisted-ephemeral", remotePolicy: "none" }, cleanupPassed: true, redactionPassed: true, status: "PASS", slotState: "JUDGED", deterministicPassed: true, qualitativeEligible: true, attempts: 2, infrastructureAttempts: 1, inputTokens: 10, outputTokens: 5, cachedTokens: 2, childCostUsd: 2, outerCostUsd: 1, wallTimeMs: 200, firstPlannedPassCostUsd: 2, defaultFirstPlannedPassWallTimeMs: 100, minimumPlannedAttempts: 1, handoffs: ["a->b"], evidenceRefs: ["sha256:x"], ...overrides });
 const matchingSlot = { ...slot(), slotId: baseRow.slotId, itemId: baseRow.itemId, phase: baseRow.phase, handoffs: [] };

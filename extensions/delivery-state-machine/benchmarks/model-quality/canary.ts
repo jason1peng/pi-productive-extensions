@@ -333,7 +333,8 @@ function observedRoutes(row: ManifestRow, config: RealCanaryConfig): Record<stri
 }
 export function assertObservedExecutionBinding(result: NormalizedResult, config: Pick<RealCanaryConfig, "participant" | "outer" | "routes">, row: ManifestRow): void {
 	if (!result.child || !(result as any).executionBinding) throw new Error("authoritative runtime/provision binding is unavailable");
-	const binding = (result as any).executionBinding as ObservedExecutionBinding;
+	const retained = (result as any).executionBinding as ObservedExecutionBinding;
+	const binding: ObservedExecutionBinding = { phase: retained.phase, renderedPromptHash: retained.renderedPromptHash, promptContractHash: retained.promptContractHash, expectedToolsHash: retained.expectedToolsHash, fixtureHash: retained.fixtureHash, scorerHash: retained.scorerHash, routesHash: retained.routesHash, outerRequested: retained.outerRequested, sealHash: retained.sealHash, child: retained.child, outer: retained.outer };
 	assertObservedBinding(binding, row, { outer: config.outer, routes: config.routes });
 	if (binding.fixtureHash !== result.fixtureHash || binding.scorerHash !== hashObject(scenarioById(result.scenarioId).scorers)) throw new Error("fixture/scorer observed binding mismatch");
 }

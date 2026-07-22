@@ -551,6 +551,121 @@ for (const fault of ["after-prepare", "after-evidence", "after-guard"] as const)
 	} finally { fs.rmSync(crossStoreRoot, { recursive: true, force: true }); }
 }
 
+// REVIEW #7: bind every coordinator retry to the authenticated persisted input.
+for (const fault of ["after-prepare", "after-evidence", "after-guard"] as const) {
+	for (const publicationKind of ["result-use", "join", "report"] as const) {
+		const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-coordinator-publication-${fault}-${publicationKind}-`));
+		try {
+			const store = new EvidenceStore(path.join(retryRoot, "evidence"));
+			let coordinator = new EvidenceAdmissionCoordinator(path.join(retryRoot, "admission"), store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+			const input = { id: `exact-${fault}-${publicationKind}`, publicationKind, expectedSequence: coordinator.authorize("dispatch").sequence, value: { exact: fault, publicationKind }, schemaVersionRef: "coordinator-exact-v1", assetVersions: ["asset-exact-v1"], participantProvenance: ["bootstrap/exact"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+			assert.throws(() => coordinator.publish(input, fault), /simulated/);
+			const first = coordinator.publish(input);
+			assert.deepEqual(coordinator.publish(input), first, `${publicationKind} identical retry after ${fault} must return the exact result`);
+			assert.throws(() => coordinator.publish({ ...input, value: { changed: true } }), /original exact operation input/);
+			assert.throws(() => coordinator.publish({ ...input, publicationKind: publicationKind === "report" ? "join" : "report" }), /original exact operation input/);
+			assert.throws(() => coordinator.publish({ ...input, assetVersions: ["changed-asset"] }), /original exact operation input/);
+			coordinator = new EvidenceAdmissionCoordinator(path.join(retryRoot, "admission"), store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+			assert.deepEqual(coordinator.publish(input), first, `${publicationKind} exact result must survive restart`);
+			assert.equal(coordinator.snapshot().publications.filter((entry) => entry.id === input.id).length, 1);
+		} finally { fs.rmSync(retryRoot, { recursive: true, force: true }); }
+	}
+	const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-coordinator-incident-${fault}-`));
+	try {
+		const store = new EvidenceStore(path.join(retryRoot, "evidence"));
+		let coordinator = new EvidenceAdmissionCoordinator(path.join(retryRoot, "admission"), store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const { evidenceHash: _, ...rejectedReport } = report(`exact-incident-${fault}`, "untrusted-report");
+		const input = { report: rejectedReport, value: { exact: fault }, schemaVersionRef: "coordinator-incident-exact-v1", assetVersions: ["asset-exact-v1"], participantProvenance: ["bootstrap/exact"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+		assert.throws(() => coordinator.incident(input, fault), /simulated/);
+		const first = coordinator.incident(input); assert.equal(first.acknowledged, false);
+		assert.deepEqual(coordinator.incident(input), first, `incident identical retry after ${fault} must return exact rejection`);
+		assert.throws(() => coordinator.incident({ ...input, report: { ...input.report, reportClass: "credible-bootstrap-leakage" } }), /original exact operation input/);
+		assert.throws(() => coordinator.incident({ ...input, value: { changed: true } }), /original exact operation input/);
+		coordinator = new EvidenceAdmissionCoordinator(path.join(retryRoot, "admission"), store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		assert.deepEqual(coordinator.incident(input), first, "incident exact rejection must survive restart");
+		assert.equal((coordinator.snapshot() as any).incidentRecords.filter((entry: any) => entry.report.idempotencyKey === input.report.idempotencyKey).length, 1);
+	} finally { fs.rmSync(retryRoot, { recursive: true, force: true }); }
+}
+
+// Concurrent identical/conflicting replays serialize on the same operation ID.
+for (const publicationKind of ["result-use", "join", "report"] as const) {
+	const concurrentRoot = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-coordinator-concurrent-${publicationKind}-`));
+	try {
+		const evidenceRoot = path.join(concurrentRoot, "evidence"); const admissionRoot = path.join(concurrentRoot, "admission");
+		const store = new EvidenceStore(evidenceRoot);
+		const coordinator = new EvidenceAdmissionCoordinator(admissionRoot, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+		const input = { id: `concurrent-${publicationKind}`, publicationKind, expectedSequence: coordinator.authorize("dispatch").sequence, value: { exact: publicationKind }, schemaVersionRef: "coordinator-concurrent-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/concurrent"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+		assert.throws(() => coordinator.publish(input, "after-prepare"), /simulated/);
+		const coordinatorModule = path.resolve(ROOT, "admission-coordinator.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts"); const admissionModule = path.resolve(ROOT, "admission.ts");
+		const sameDone = path.join(concurrentRoot, "same.done"); const changedDone = path.join(concurrentRoot, "changed.done");
+		const child = (done: string, value: unknown) => `import * as fs from "node:fs"; import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; try{const c=new EvidenceAdmissionCoordinator(${JSON.stringify(admissionRoot)},new EvidenceStore(${JSON.stringify(evidenceRoot)}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST);fs.writeFileSync(${JSON.stringify(done)},JSON.stringify(c.publish(${JSON.stringify(value)})));}catch(error){fs.writeFileSync(${JSON.stringify(done)},String(error));}`;
+		const same = spawn(process.execPath, ["-e", child(sameDone, input)], { stdio: "ignore" });
+		const changed = spawn(process.execPath, ["-e", child(changedDone, { ...input, value: { changed: true } })], { stdio: "ignore" });
+		waitForFile(sameDone); waitForFile(changedDone);
+		assert.equal(JSON.parse(fs.readFileSync(sameDone, "utf8")).kind, publicationKind);
+		assert.match(fs.readFileSync(changedDone, "utf8"), /original exact operation input/);
+		if (same.pid) { try { process.kill(same.pid, 0); } catch {} } if (changed.pid) { try { process.kill(changed.pid, 0); } catch {} }
+	} finally { fs.rmSync(concurrentRoot, { recursive: true, force: true }); }
+}
+
+const concurrentIncidentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-concurrent-incident-"));
+try {
+	const evidenceRoot = path.join(concurrentIncidentRoot, "evidence"); const admissionRoot = path.join(concurrentIncidentRoot, "admission");
+	const store = new EvidenceStore(evidenceRoot);
+	const coordinator = new EvidenceAdmissionCoordinator(admissionRoot, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const { evidenceHash: _, ...rejected } = report("concurrent-incident", "untrusted-report");
+	const input = { report: rejected, value: { exact: true }, schemaVersionRef: "coordinator-concurrent-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/concurrent"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	assert.throws(() => coordinator.incident(input, "after-prepare"), /simulated/);
+	const coordinatorModule = path.resolve(ROOT, "admission-coordinator.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts"); const admissionModule = path.resolve(ROOT, "admission.ts");
+	const sameDone = path.join(concurrentIncidentRoot, "same.done"); const changedDone = path.join(concurrentIncidentRoot, "changed.done");
+	const child = (done: string, value: unknown) => `import * as fs from "node:fs"; import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; try{const c=new EvidenceAdmissionCoordinator(${JSON.stringify(admissionRoot)},new EvidenceStore(${JSON.stringify(evidenceRoot)}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST);fs.writeFileSync(${JSON.stringify(done)},JSON.stringify(c.incident(${JSON.stringify(value)})));}catch(error){fs.writeFileSync(${JSON.stringify(done)},String(error));}`;
+	const same = spawn(process.execPath, ["-e", child(sameDone, input)], { stdio: "ignore" });
+	const changed = spawn(process.execPath, ["-e", child(changedDone, { ...input, report: { ...input.report, reportClass: "credible-bootstrap-leakage" } })], { stdio: "ignore" });
+	waitForFile(sameDone); waitForFile(changedDone);
+	assert.equal(JSON.parse(fs.readFileSync(sameDone, "utf8")).acknowledged, false);
+	assert.match(fs.readFileSync(changedDone, "utf8"), /original exact operation input/);
+	if (same.pid) { try { process.kill(same.pid, 0); } catch {} } if (changed.pid) { try { process.kill(changed.pid, 0); } catch {} }
+} finally { fs.rmSync(concurrentIncidentRoot, { recursive: true, force: true }); }
+
+// Operation lock candidate-link SIGKILL and PID-reuse ownership recover on first restart.
+const coordinatorLockRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-lock-recovery-"));
+try {
+	const evidenceRoot = path.join(coordinatorLockRoot, "evidence"); const admissionRoot = path.join(coordinatorLockRoot, "admission");
+	const coordinatorModule = path.resolve(ROOT, "admission-coordinator.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts"); const admissionModule = path.resolve(ROOT, "admission.ts");
+	const input = { id: "lock-recovery", publicationKind: "report", expectedSequence: 0, value: { lock: true }, schemaVersionRef: "lock-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/lock"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	const script = `import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; const c=new EvidenceAdmissionCoordinator(${JSON.stringify(admissionRoot)},new EvidenceStore(${JSON.stringify(evidenceRoot)}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,{afterCandidateLinked(){process.kill(process.pid,"SIGKILL")}});c.publish(${JSON.stringify(input)});`;
+	const killed = spawnSync(process.execPath, ["-e", script], { stdio: "ignore" }); assert.notEqual(killed.status, 0);
+	let coordinator = new EvidenceAdmissionCoordinator(admissionRoot, new EvidenceStore(evidenceRoot), { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	assert.equal(coordinator.publish(input).kind, "report", "first restart must reclaim killed operation lock");
+	const reusedInput = { ...input, id: "pid-reuse-recovery", value: { reused: true } }; const reusedOperationId = `publication:${reusedInput.id}`;
+	const reusedLock = path.join(admissionRoot, "coordinator-journal", "locks", `${hashObject(reusedOperationId)}.lock`);
+	writeOwnedLock(reusedLock, process.pid, "definitely-not-this-process-start", "pid-reused-owner");
+	assert.equal(coordinator.publish(reusedInput).id, reusedInput.id, "PID-reused operation owner must recover on first attempt");
+	assert.equal(fs.existsSync(reusedLock), false);
+} finally { fs.rmSync(coordinatorLockRoot, { recursive: true, force: true }); }
+
+const coordinatorAuthenticationRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-authentication-"));
+try {
+	const evidenceRoot = path.join(coordinatorAuthenticationRoot, "evidence"); const admissionRoot = path.join(coordinatorAuthenticationRoot, "admission");
+	const store = new EvidenceStore(evidenceRoot); const coordinator = new EvidenceAdmissionCoordinator(admissionRoot, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	coordinator.publish({ id: "authenticated-journal", publicationKind: "report", expectedSequence: 0, value: { authentic: true }, schemaVersionRef: "auth-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/auth"], retentionUntil: "2099-01-01T00:00:00.000Z" });
+	const journalFile = path.join(admissionRoot, "coordinator-journal", `${hashObject("publication:authenticated-journal")}.json`);
+	const tampered = JSON.parse(fs.readFileSync(journalFile, "utf8")); tampered.input.value = { authentic: false }; fs.writeFileSync(journalFile, JSON.stringify(tampered));
+	assert.throws(() => new EvidenceAdmissionCoordinator(admissionRoot, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /authentication failed/);
+} finally { fs.rmSync(coordinatorAuthenticationRoot, { recursive: true, force: true }); }
+
+// Different operation IDs retain parallel ownership rather than sharing a global operation mutex.
+const coordinatorParallelRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-parallel-"));
+try {
+	const evidenceRoot = path.join(coordinatorParallelRoot, "evidence"); const admissionRoot = path.join(coordinatorParallelRoot, "admission");
+	const coordinatorModule = path.resolve(ROOT, "admission-coordinator.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts"); const admissionModule = path.resolve(ROOT, "admission.ts");
+	const readyA = path.join(coordinatorParallelRoot, "a.ready"); const readyB = path.join(coordinatorParallelRoot, "b.ready"); const resume = path.join(coordinatorParallelRoot, "resume"); const doneA = path.join(coordinatorParallelRoot, "a.done"); const doneB = path.join(coordinatorParallelRoot, "b.done");
+	const script = (id: string, ready: string, done: string) => `import * as fs from "node:fs"; import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; const c=new EvidenceAdmissionCoordinator(${JSON.stringify(admissionRoot)},new EvidenceStore(${JSON.stringify(evidenceRoot)}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,{afterCandidateLinked(){fs.writeFileSync(${JSON.stringify(ready)},"ready");${waitExpression(resume)}}});c.publish({id:${JSON.stringify(id)},publicationKind:"report",expectedSequence:0,value:{id:${JSON.stringify(id)}},schemaVersionRef:"parallel-v1",assetVersions:["asset-v1"],participantProvenance:["bootstrap/parallel"],retentionUntil:"2099-01-01T00:00:00.000Z"});fs.writeFileSync(${JSON.stringify(done)},"done");`;
+	const a = spawn(process.execPath, ["-e", script("parallel-a", readyA, doneA)], { stdio: "ignore" }); const b = spawn(process.execPath, ["-e", script("parallel-b", readyB, doneB)], { stdio: "ignore" });
+	waitForFile(readyA); waitForFile(readyB); fs.writeFileSync(resume, "resume"); waitForFile(doneA); waitForFile(doneB);
+	if (a.pid) { try { process.kill(a.pid, 0); } catch {} } if (b.pid) { try { process.kill(b.pid, 0); } catch {} }
+} finally { fs.rmSync(coordinatorParallelRoot, { recursive: true, force: true }); }
+
 const baseRow = manifest.rows[0];
 const slot = (overrides: Partial<NormalizedSlotResult> = {}): NormalizedSlotResult => ({ slotId: "S", itemId: "BOOT-X", itemVersion: 1, phase: "IMPLEMENT", datasetClass: "bootstrap", qualificationEligible: false, requested: structuredClone(baseRow.candidate), effective: structuredClone(baseRow.candidate), nonTargetRoutes: structuredClone(baseRow.nonTargetRoutes), judgeIdentity: structuredClone(baseRow.judge), judgeUsage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.1, wallTimeMs: 10 }, admission: { itemHash: HASH_A, catalogHash: manifest.manifestHash, selectionSequence: 0, dispatchSequence: 0, publications: [{ id: "result", kind: "result-use", sequence: 0, eligibility: "eligible", evidenceHash: HASH_A, evidenceRef: `sha256:${HASH_A}` }, { id: "report", kind: "report", sequence: 0, eligibility: "eligible", evidenceHash: HASH_B, evidenceRef: `sha256:${HASH_B}` }] }, isolation: { repository: "disposable://repo", piHome: "disposable://home", artifactRoot: "disposable://artifact", resultNamespace: "slot:S", processGroup: "isolated:S", credentialBoundary: "allowlisted-ephemeral", remotePolicy: "none" }, cleanupPassed: true, redactionPassed: true, status: "PASS", slotState: "JUDGED", deterministicPassed: true, qualitativeEligible: true, attempts: 2, infrastructureAttempts: 1, inputTokens: 10, outputTokens: 5, cachedTokens: 2, childCostUsd: 2, outerCostUsd: 1, wallTimeMs: 200, firstPlannedPassCostUsd: 2, defaultFirstPlannedPassWallTimeMs: 100, minimumPlannedAttempts: 1, handoffs: ["a->b"], evidenceRefs: ["sha256:x"], ...overrides });
 const matchingSlot = { ...slot(), slotId: baseRow.slotId, itemId: baseRow.itemId, phase: baseRow.phase, handoffs: [] };

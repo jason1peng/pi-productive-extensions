@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AdmissionGuard, SYNTHETIC_HUMAN_AUTHORIZER, type HumanAuthorizer, type IncidentPolicy, type IncidentReport } from "./admission.ts";
 import { EvidenceStore, assertRedacted, redactValue, type EvidenceIndexRecord } from "./evidence.ts";
+import { OwnedFileLock, type OwnedLockHooks, type OwnedLockRecord } from "./owned-lock.ts";
 import { hashObject } from "./schema.ts";
 
 export type PublicationKind = "result-use" | "join" | "report";
@@ -10,7 +11,7 @@ export interface CoordinatedPublication {
 	id: string; kind: PublicationKind; sequence: number; eligibility: "eligible" | "TAINTED_OR_INVALIDATED"; evidenceHash: string; evidenceRef: string;
 }
 interface BaseJournal {
-	schemaVersion: 1; operationId: string; state: "prepared" | "evidence-retained" | "guard-committed"; evidence?: EvidenceIndexRecord;
+	schemaVersion: 2; operationId: string; state: "prepared" | "evidence-retained" | "guard-committed"; inputHash: string; journalHash: string; evidence?: EvidenceIndexRecord;
 }
 interface PublicationJournal extends BaseJournal {
 	kind: "publication";
@@ -23,31 +24,107 @@ interface IncidentJournal extends BaseJournal {
 	ack?: { acknowledged: boolean; sequence: number };
 }
 type Journal = PublicationJournal | IncidentJournal;
+type JournalBody = Omit<Journal, "journalHash">;
 export type CoordinatorFault = "after-prepare" | "after-evidence" | "after-guard";
+export type CoordinatorLockHooks = OwnedLockHooks;
 
-function atomicJson(file: string, value: unknown): void {
-	const temporary = `${file}.${randomUUID()}.tmp`;
-	fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-	fs.renameSync(temporary, file);
+function jsonClone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
+function journalBody(journal: Journal): JournalBody { const { journalHash: _, ...body } = journal; return body; }
+function sleep(milliseconds: number): void { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds); }
+function acquireWaiting(lock: OwnedFileLock): OwnedLockRecord {
+	for (let attempt = 0; attempt < 1000; attempt++) {
+		try { return lock.acquire(); }
+		catch (error: any) {
+			if (!/locked by live owner/.test(String(error?.message))) throw error;
+			sleep(5);
+		}
+	}
+	throw new Error(`${lock.label} timed out waiting for serialized ownership`);
 }
 
-/**
- * Coordinates the content-addressed store with AdmissionGuard. The journal is
- * durable before either side changes; replay is idempotent and fail-closed.
- */
+/** Coordinates durable evidence and admission with exact-input, process-safe replay. */
 export class EvidenceAdmissionCoordinator {
 	readonly guard: AdmissionGuard;
 	readonly journalRoot: string;
-	constructor(readonly root: string, readonly store: EvidenceStore, item: { id: string; version: number; itemHash: string; catalogHash: string }, policy: IncidentPolicy, serviceAllowlist: ReadonlySet<string>, humanAuthorizer: HumanAuthorizer = SYNTHETIC_HUMAN_AUTHORIZER) {
+	readonly lockRoot: string;
+	constructor(
+		readonly root: string,
+		readonly store: EvidenceStore,
+		item: { id: string; version: number; itemHash: string; catalogHash: string },
+		policy: IncidentPolicy,
+		serviceAllowlist: ReadonlySet<string>,
+		humanAuthorizer: HumanAuthorizer = SYNTHETIC_HUMAN_AUTHORIZER,
+		readonly testLockHooks?: CoordinatorLockHooks,
+	) {
 		this.journalRoot = path.join(root, "coordinator-journal");
-		fs.mkdirSync(this.journalRoot, { recursive: true });
-		this.guard = new AdmissionGuard(path.join(root, "guard"), item, policy, serviceAllowlist, humanAuthorizer, (hash) => store.hasContentHash(hash));
-		this.reconcile();
+		this.lockRoot = path.join(this.journalRoot, "locks");
+		fs.mkdirSync(this.lockRoot, { recursive: true, mode: 0o700 });
+		const initialization = new OwnedFileLock(path.join(root, "coordinator-init.lock"), "coordinator initialization");
+		const initializationOwner = acquireWaiting(initialization);
+		try {
+			this.guard = new AdmissionGuard(path.join(root, "guard"), item, policy, serviceAllowlist, humanAuthorizer, (hash) => store.hasContentHash(hash));
+			this.discardUncommittedJournals();
+			this.reconcile();
+		} finally { initialization.release(initializationOwner); }
 	}
 	authorize(boundary: "selection" | "dispatch") { return this.guard.authorize(boundary); }
 	private journalFile(operationId: string): string { return path.join(this.journalRoot, `${hashObject(operationId)}.json`); }
-	private write(journal: Journal): void { atomicJson(this.journalFile(journal.operationId), journal); }
+	private lockFile(operationId: string): string { return path.join(this.lockRoot, `${hashObject(operationId)}.lock`); }
+	private syncDirectory(directory: string): void { const descriptor = fs.openSync(directory, "r"); try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); } }
+	private discardUncommittedJournals(): void {
+		const groups = new Map<string, string[]>();
+		for (const entry of fs.readdirSync(this.journalRoot)) {
+			const match = /^([a-f0-9]{64})\.json\.[^.]+\.tmp$/.exec(entry);
+			if (!match) continue;
+			groups.set(match[1]!, [...(groups.get(match[1]!) ?? []), entry]);
+		}
+		for (const [operationHash, entries] of groups) {
+			const lock = new OwnedFileLock(path.join(this.lockRoot, `${operationHash}.lock`), `coordinator operation ${operationHash}`);
+			const owner = acquireWaiting(lock);
+			try { for (const entry of entries) fs.rmSync(path.join(this.journalRoot, entry), { force: true }); this.syncDirectory(this.journalRoot); }
+			finally { lock.release(owner); }
+		}
+	}
+	private write(journal: Journal): void {
+		journal.inputHash = hashObject(journal.input);
+		journal.journalHash = hashObject(journalBody(journal));
+		const file = this.journalFile(journal.operationId);
+		const temporary = `${file}.${randomUUID()}.tmp`;
+		const descriptor = fs.openSync(temporary, "wx", 0o600);
+		try { fs.writeFileSync(descriptor, `${JSON.stringify(journal, null, 2)}\n`); fs.fsyncSync(descriptor); }
+		finally { fs.closeSync(descriptor); }
+		fs.renameSync(temporary, file);
+		this.syncDirectory(this.journalRoot);
+	}
+	private read(operationId: string): Journal {
+		const file = this.journalFile(operationId);
+		const journal = JSON.parse(fs.readFileSync(file, "utf8")) as Journal;
+		if (journal.schemaVersion !== 2 || journal.operationId !== operationId || !["incident", "publication"].includes(journal.kind) || journal.inputHash !== hashObject(journal.input) || journal.journalHash !== hashObject(journalBody(journal))) throw new Error("fail-closed: coordinator journal authentication failed");
+		if ((journal.kind === "incident" && operationId !== `incident:${journal.input.report.idempotencyKey}`) || (journal.kind === "publication" && operationId !== `publication:${journal.input.id}`)) throw new Error("fail-closed: coordinator journal operation identity mismatch");
+		return journal;
+	}
+	private compareInput(journal: Journal, input: Journal["input"]): void {
+		if (hashObject(input) !== journal.inputHash) throw new Error("coordinator idempotency replay does not match the original exact operation input");
+	}
+	private acquireOperation(operationId: string): { lock: OwnedFileLock; owner: OwnedLockRecord } {
+		const lock = new OwnedFileLock(this.lockFile(operationId), `coordinator operation ${operationId}`, this.testLockHooks);
+		return { lock, owner: acquireWaiting(lock) };
+	}
+	private withOperation<T>(operationId: string, action: () => T): T {
+		const { lock, owner } = this.acquireOperation(operationId);
+		try { return action(); } finally { lock.release(owner); }
+	}
 	private maybeFault(fault: CoordinatorFault | undefined, point: CoordinatorFault): void { if (fault === point) throw new Error(`simulated coordinator crash ${point}`); }
+	private retryGuard<T>(action: () => T): T {
+		for (let attempt = 0; attempt < 1000; attempt++) {
+			try { return action(); }
+			catch (error: any) {
+				if (!/admission guard is locked by live owner/.test(String(error?.message))) throw error;
+				sleep(5);
+			}
+		}
+		throw new Error("admission guard timed out waiting for serialized ownership");
+	}
 	private evidenceFor(journal: Journal, explicitSecrets: string[] = []): EvidenceIndexRecord {
 		if (journal.evidence) return this.store.getByRef(journal.evidence.retrievalRef, { schemaVersionRef: journal.input.schemaVersionRef, assetVersions: journal.input.assetVersions, participantProvenance: journal.input.participantProvenance }).record;
 		const record = this.store.put({ value: journal.input.value, schemaVersionRef: journal.input.schemaVersionRef, assetVersions: journal.input.assetVersions, participantProvenance: journal.input.participantProvenance, retentionUntil: journal.input.retentionUntil, explicitSecrets, indexId: `coordinator:${journal.operationId}` });
@@ -57,23 +134,22 @@ export class EvidenceAdmissionCoordinator {
 	private finishPublication(journal: PublicationJournal): CoordinatedPublication {
 		const evidence = this.evidenceFor(journal);
 		if (!journal.publication) {
-			const published = this.guard.publish({ id: journal.input.id, kind: journal.input.publicationKind, expectedSequence: journal.input.expectedSequence, evidenceHash: evidence.contentHash });
+			const published = this.retryGuard(() => this.guard.publish({ id: journal.input.id, kind: journal.input.publicationKind, expectedSequence: journal.input.expectedSequence, evidenceHash: evidence.contentHash }));
 			journal.publication = { ...published, evidenceRef: evidence.retrievalRef };
 			journal.state = "guard-committed"; this.write(journal);
 		}
+		if (journal.publication.evidenceHash !== evidence.contentHash || journal.publication.evidenceRef !== evidence.retrievalRef) throw new Error("fail-closed: coordinator publication/evidence binding mismatch");
 		this.store.getByRef(journal.publication.evidenceRef, { schemaVersionRef: journal.input.schemaVersionRef, assetVersions: journal.input.assetVersions, participantProvenance: journal.input.participantProvenance });
-		fs.rmSync(this.journalFile(journal.operationId), { force: true });
 		return structuredClone(journal.publication);
 	}
 	private finishIncident(journal: IncidentJournal): { acknowledged: boolean; sequence: number; evidenceRef: string } {
 		const evidence = this.evidenceFor(journal);
 		if (!journal.ack) {
-			const result = this.guard.applyIncident({ ...journal.input.report, evidenceHash: evidence.contentHash });
+			const result = this.retryGuard(() => this.guard.applyIncident({ ...journal.input.report, evidenceHash: evidence.contentHash }));
 			journal.ack = { acknowledged: result.acknowledged, sequence: result.sequence };
 			journal.state = "guard-committed"; this.write(journal);
 		}
 		this.store.getByRef(evidence.retrievalRef, { schemaVersionRef: journal.input.schemaVersionRef, assetVersions: journal.input.assetVersions, participantProvenance: journal.input.participantProvenance });
-		fs.rmSync(this.journalFile(journal.operationId), { force: true });
 		return { ...journal.ack, evidenceRef: evidence.retrievalRef };
 	}
 	publish(input: PublicationJournal["input"], faultAfter?: CoordinatorFault, explicitSecrets: string[] = []): CoordinatedPublication {
@@ -81,37 +157,41 @@ export class EvidenceAdmissionCoordinator {
 		const original = JSON.stringify(input.value);
 		if (meaningful.some((secret) => original.includes(secret))) throw new Error("credential material required redaction before evidence publication");
 		const safeValue = redactValue(input.value, meaningful); assertRedacted(safeValue, meaningful);
-		const safeInput: PublicationJournal["input"] = { ...input, value: safeValue };
-		const operationId = `publication:${safeInput.id}`; const file = this.journalFile(operationId);
-		const journal: PublicationJournal = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { schemaVersion: 1, operationId, kind: "publication", state: "prepared", input: safeInput };
-		if (!fs.existsSync(file)) this.write(journal);
-		this.maybeFault(faultAfter, "after-prepare");
-		this.evidenceFor(journal, meaningful); this.maybeFault(faultAfter, "after-evidence");
-		const publication = this.finishPublicationWithoutDelete(journal); this.maybeFault(faultAfter, "after-guard");
-		fs.rmSync(file, { force: true }); return publication;
-	}
-	private finishPublicationWithoutDelete(journal: PublicationJournal): CoordinatedPublication {
-		const evidence = this.evidenceFor(journal);
-		if (!journal.publication) {
-			const published = this.guard.publish({ id: journal.input.id, kind: journal.input.publicationKind, expectedSequence: journal.input.expectedSequence, evidenceHash: evidence.contentHash });
-			journal.publication = { ...published, evidenceRef: evidence.retrievalRef }; journal.state = "guard-committed"; this.write(journal);
-		}
-		return structuredClone(journal.publication);
+		const safeInput = jsonClone<PublicationJournal["input"]>({ ...input, value: safeValue });
+		const operationId = `publication:${safeInput.id}`;
+		return this.withOperation(operationId, () => {
+			const file = this.journalFile(operationId);
+			let journal: PublicationJournal;
+			if (fs.existsSync(file)) { journal = this.read(operationId) as PublicationJournal; if (journal.kind !== "publication") throw new Error("fail-closed: coordinator journal kind mismatch"); this.compareInput(journal, safeInput); }
+			else { const body = { schemaVersion: 2 as const, operationId, kind: "publication" as const, state: "prepared" as const, input: safeInput, inputHash: hashObject(safeInput) }; journal = { ...body, journalHash: hashObject(body) }; this.write(journal); }
+			this.maybeFault(faultAfter, "after-prepare");
+			this.evidenceFor(journal, meaningful); this.maybeFault(faultAfter, "after-evidence");
+			const publication = this.finishPublication(journal); this.maybeFault(faultAfter, "after-guard");
+			return publication;
+		});
 	}
 	incident(input: IncidentJournal["input"], faultAfter?: CoordinatorFault): { acknowledged: boolean; sequence: number; evidenceRef: string } {
-		const operationId = `incident:${input.report.idempotencyKey}`; const file = this.journalFile(operationId);
-		const journal: IncidentJournal = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { schemaVersion: 1, operationId, kind: "incident", state: "prepared", input };
-		if (!fs.existsSync(file)) this.write(journal);
-		this.maybeFault(faultAfter, "after-prepare"); this.evidenceFor(journal); this.maybeFault(faultAfter, "after-evidence");
-		const evidence = journal.evidence!;
-		if (!journal.ack) { const result = this.guard.applyIncident({ ...input.report, evidenceHash: evidence.contentHash }); journal.ack = { acknowledged: result.acknowledged, sequence: result.sequence }; journal.state = "guard-committed"; this.write(journal); }
-		this.maybeFault(faultAfter, "after-guard"); fs.rmSync(file, { force: true }); return { ...journal.ack, evidenceRef: evidence.retrievalRef };
+		const safeInput = jsonClone(input);
+		const operationId = `incident:${safeInput.report.idempotencyKey}`;
+		return this.withOperation(operationId, () => {
+			const file = this.journalFile(operationId);
+			let journal: IncidentJournal;
+			if (fs.existsSync(file)) { journal = this.read(operationId) as IncidentJournal; if (journal.kind !== "incident") throw new Error("fail-closed: coordinator journal kind mismatch"); this.compareInput(journal, safeInput); }
+			else { const body = { schemaVersion: 2 as const, operationId, kind: "incident" as const, state: "prepared" as const, input: safeInput, inputHash: hashObject(safeInput) }; journal = { ...body, journalHash: hashObject(body) }; this.write(journal); }
+			this.maybeFault(faultAfter, "after-prepare");
+			this.evidenceFor(journal); this.maybeFault(faultAfter, "after-evidence");
+			const result = this.finishIncident(journal); this.maybeFault(faultAfter, "after-guard");
+			return result;
+		});
 	}
 	reconcile(): void {
 		for (const file of fs.readdirSync(this.journalRoot).filter((entry) => entry.endsWith(".json"))) {
-			const journal = JSON.parse(fs.readFileSync(path.join(this.journalRoot, file), "utf8")) as Journal;
-			if (journal.schemaVersion !== 1 || !journal.operationId) throw new Error("fail-closed: coordinator journal is invalid");
-			if (journal.kind === "publication") this.finishPublication(journal); else this.finishIncident(journal);
+			const parsed = JSON.parse(fs.readFileSync(path.join(this.journalRoot, file), "utf8")) as { operationId?: string };
+			if (!parsed.operationId || file !== `${hashObject(parsed.operationId)}.json`) throw new Error("fail-closed: coordinator journal is invalid");
+			this.withOperation(parsed.operationId, () => {
+				const journal = this.read(parsed.operationId);
+				if (journal.kind === "publication") this.finishPublication(journal); else this.finishIncident(journal);
+			});
 		}
 	}
 	snapshot() { this.reconcile(); return this.guard.snapshot(); }

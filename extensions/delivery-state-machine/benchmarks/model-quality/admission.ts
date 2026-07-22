@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { hashObject } from "./schema.ts";
+import { OwnedFileLock, type OwnedLockHooks, type OwnedLockRecord } from "./owned-lock.ts";
 
 export interface IncidentReport {
 	idempotencyKey: string;
@@ -45,46 +46,36 @@ interface AdmissionState {
 }
 
 export interface AdmissionAuthorization { itemId: string; itemVersion: number; sequence: number; boundary: "selection" | "dispatch" }
+export type AdmissionCrashPoint = "after-candidate-link" | "after-lock" | "after-journal" | "after-state";
+export type AdmissionLockRecord = OwnedLockRecord;
+export type AdmissionTestHooks = OwnedLockHooks;
 
 function isHash(value: string): boolean { return /^[a-f0-9]{64}$/.test(value); }
-function sleep(milliseconds: number): void { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds); }
 
 export class AdmissionGuard {
 	private readonly stateFile: string;
 	private readonly journalFile: string;
 	private readonly lockFile: string;
-	constructor(readonly root: string, readonly item: { id: string; version: number; itemHash: string; catalogHash: string }, readonly policy: IncidentPolicy, readonly serviceAllowlist: ReadonlySet<string>, readonly humanAuthorizer: HumanAuthorizer = SYNTHETIC_HUMAN_AUTHORIZER, readonly evidenceExists: (contentHash: string) => boolean = () => false) {
+	constructor(readonly root: string, readonly item: { id: string; version: number; itemHash: string; catalogHash: string }, readonly policy: IncidentPolicy, readonly serviceAllowlist: ReadonlySet<string>, readonly humanAuthorizer: HumanAuthorizer = SYNTHETIC_HUMAN_AUTHORIZER, readonly evidenceExists: (contentHash: string) => boolean = () => false, readonly testCrashPoint?: AdmissionCrashPoint, readonly testLockHooks?: AdmissionTestHooks) {
 		if (![item.itemHash, item.catalogHash].every(isHash)) throw new Error("admission item hashes must be SHA-256");
 		fs.mkdirSync(root, { recursive: true });
 		this.stateFile = path.join(root, `${item.id}-${item.version}.json`);
 		this.journalFile = `${this.stateFile}.journal`;
 		this.lockFile = `${this.stateFile}.lock`;
-		this.recover();
-		if (!fs.existsSync(this.stateFile)) this.atomicWrite(this.initialState());
+		const lock = this.acquire();
+		try { this.recover(); if (!fs.existsSync(this.stateFile)) this.atomicWrite(this.initialState()); }
+		finally { this.release(lock); }
 	}
 	private initialState(): AdmissionState { return { schemaVersion: 1, itemId: this.item.id, itemVersion: this.item.version, itemHash: this.item.itemHash, catalogHash: this.item.catalogHash, sequence: 0, admissionState: "admitted", holdState: "clear", incidents: [], publications: [], audit: [] }; }
-	private acquire(): number {
-		for (let attempt = 0; attempt < 500; attempt++) {
-			try {
-				const fd = fs.openSync(this.lockFile, "wx", 0o600);
-				fs.writeFileSync(fd, `${process.pid}\n`, { encoding: "utf8" });
-				return fd;
-			} catch (error: any) {
-				if (error?.code !== "EEXIST") throw error;
-				try {
-					const owner = Number(fs.readFileSync(this.lockFile, "utf8").trim());
-					if (!Number.isInteger(owner) || owner < 1) throw new Error("invalid stale lock owner");
-					try { process.kill(owner, 0); } catch (signalError: any) { if (signalError?.code === "ESRCH") fs.rmSync(this.lockFile, { force: true }); else throw signalError; }
-				} catch (lockError: any) {
-					if (lockError?.code === "ENOENT") continue;
-					if (String(lockError?.message).includes("invalid stale lock owner")) throw new Error("fail-closed: admission lock ownership is invalid");
-				}
-				sleep(2);
-			}
-		}
-		throw new Error("admission guard lock timeout");
+	private lockProtocol(): OwnedFileLock {
+		return new OwnedFileLock(this.lockFile, "admission guard", {
+			...this.testLockHooks,
+			afterCandidateLinked: (owner) => { this.maybeCrash("after-candidate-link"); this.testLockHooks?.afterCandidateLinked?.(owner); },
+		});
 	}
-	private release(fd: number): void { try { fs.closeSync(fd); } finally { fs.rmSync(this.lockFile, { force: true }); } }
+	private acquire(): AdmissionLockRecord { return this.lockProtocol().acquire(); }
+	private release(lock: AdmissionLockRecord): void { this.lockProtocol().release(lock); }
+	private maybeCrash(point: AdmissionCrashPoint): void { if (this.testCrashPoint === point) process.kill(process.pid, "SIGKILL"); }
 	private read(): AdmissionState {
 		const state = JSON.parse(fs.readFileSync(this.stateFile, "utf8")) as AdmissionState;
 		if (state.schemaVersion !== 1 || state.itemId !== this.item.id || state.itemVersion !== this.item.version || state.itemHash !== this.item.itemHash || state.catalogHash !== this.item.catalogHash) throw new Error("admission state identity/hash mismatch");
@@ -98,10 +89,13 @@ export class AdmissionGuard {
 	private transaction<T>(action: (state: AdmissionState) => T): T {
 		const lock = this.acquire();
 		try {
+			this.maybeCrash("after-lock");
 			const state = this.read();
 			const result = action(state);
 			fs.writeFileSync(this.journalFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+			this.maybeCrash("after-journal");
 			this.atomicWrite(state);
+			this.maybeCrash("after-state");
 			fs.rmSync(this.journalFile, { force: true });
 			return result;
 		} finally { this.release(lock); }

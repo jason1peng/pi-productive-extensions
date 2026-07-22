@@ -199,10 +199,14 @@ try {
 	assert.equal(ledger.total(), 19.5, "failed reservation must preserve the authenticated total");
 } finally { fs.rmSync(nearCeilingRoot, { recursive: true, force: true }); }
 
-function writeSpendLock(root: string, pid: number, processStart: string, nonce: string): void {
+function writeOwnedLock(file: string, pid: number, processStart: string, nonce: string): SpendLockRecord {
 	const body = { schemaVersion: 1 as const, pid, processStart, nonce, createdAt: new Date().toISOString() };
 	const lock: SpendLockRecord = { ...body, lockHash: hashObject(body) };
-	fs.writeFileSync(path.join(root, "spend-ledger-v2.json.lock"), `${JSON.stringify(lock)}\n`, { mode: 0o600 });
+	fs.writeFileSync(file, `${JSON.stringify(lock)}\n`, { mode: 0o600 });
+	return lock;
+}
+function writeSpendLock(root: string, pid: number, processStart: string, nonce: string): void {
+	writeOwnedLock(path.join(root, "spend-ledger-v2.json.lock"), pid, processStart, nonce);
 }
 function waitForFile(file: string, timeoutMs = 15_000): void {
 	const until = Date.now() + timeoutMs;
@@ -211,6 +215,7 @@ function waitForFile(file: string, timeoutMs = 15_000): void {
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
 	}
 }
+const waitExpression = (file: string) => `while(!fs.existsSync(${JSON.stringify(file)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2);`;
 const lockRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-lock-"));
 try {
 	const store = new EvidenceStore(lockRoot); const ledger = new SpendLedger(lockRoot, store, 20, ["PPE-001-I4-SPEND"]);
@@ -234,7 +239,6 @@ try {
 	const spendModule = path.resolve(ROOT, "spend.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts");
 	const aReady = path.join(twoReclaimerRoot, "a-ready"); const aResume = path.join(twoReclaimerRoot, "a-resume"); const aDone = path.join(twoReclaimerRoot, "a-done");
 	const bReady = path.join(twoReclaimerRoot, "b-live"); const bResume = path.join(twoReclaimerRoot, "b-resume"); const bDone = path.join(twoReclaimerRoot, "b-done");
-	const waitExpression = (file: string) => `while(!fs.existsSync(${JSON.stringify(file)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2);`;
 	const aScript = `import * as fs from "node:fs"; import { SpendLedger } from ${JSON.stringify(spendModule)}; import { EvidenceStore } from ${JSON.stringify(evidenceModule)}; try { new SpendLedger(${JSON.stringify(twoReclaimerRoot)},new EvidenceStore(${JSON.stringify(twoReclaimerRoot)}),20,["PPE-001-I4-SPEND"],undefined,{afterDeadOwnerValidated(){fs.writeFileSync(${JSON.stringify(aReady)},"ready");${waitExpression(aResume)}}}); fs.writeFileSync(${JSON.stringify(aDone)},"unexpected-success"); } catch(error) { fs.writeFileSync(${JSON.stringify(aDone)},String(error)); }`;
 	const bScript = `import * as fs from "node:fs"; import { SpendLedger } from ${JSON.stringify(spendModule)}; import { EvidenceStore } from ${JSON.stringify(evidenceModule)}; new SpendLedger(${JSON.stringify(twoReclaimerRoot)},new EvidenceStore(${JSON.stringify(twoReclaimerRoot)}),20,["PPE-001-I4-SPEND"],undefined,{afterLockAcquired(){fs.writeFileSync(${JSON.stringify(bReady)},"live");${waitExpression(bResume)}}}); fs.writeFileSync(${JSON.stringify(bDone)},"done");`;
 	const a = spawn(process.execPath, ["-e", aScript], { stdio: "ignore" }); waitForFile(aReady);
@@ -246,6 +250,26 @@ try {
 	fs.writeFileSync(bResume, "resume"); waitForFile(bDone); assert.equal(fs.existsSync(path.join(twoReclaimerRoot, "spend-ledger-v2.json.lock")), false);
 	if (a.pid) { try { process.kill(a.pid, 0); } catch {} } if (b.pid) { try { process.kill(b.pid, 0); } catch {} }
 } finally { fs.rmSync(twoReclaimerRoot, { recursive: true, force: true }); }
+
+// REVIEW #5 reproducer: a candidate is SIGKILLed after linking a different
+// primary inode while an old exact-inode marker exists. First restart must
+// recover both dead identities without weakening the live-owner invariant.
+const killedCandidateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-killed-candidate-"));
+try {
+	new SpendLedger(killedCandidateRoot, new EvidenceStore(killedCandidateRoot), 20, ["PPE-001-I4-SPEND"]);
+	const spendModule = path.resolve(ROOT, "spend.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts");
+	const ready = path.join(killedCandidateRoot, "candidate-ready"); const resume = path.join(killedCandidateRoot, "candidate-resume");
+	const script = `import * as fs from "node:fs"; import { SpendLedger } from ${JSON.stringify(spendModule)}; import { EvidenceStore } from ${JSON.stringify(evidenceModule)}; const ledger=new SpendLedger(${JSON.stringify(killedCandidateRoot)},new EvidenceStore(${JSON.stringify(killedCandidateRoot)}),20,["PPE-001-I4-SPEND"],"after-candidate-link",{beforeCandidateLinked(){fs.writeFileSync(${JSON.stringify(ready)},"ready");${waitExpression(resume)}}}); ledger.begin("must-die-before-return","ROW",1);`;
+	const child = spawn(process.execPath, ["-e", script], { stdio: "ignore" }); waitForFile(ready);
+	const lockFile = path.join(killedCandidateRoot, "spend-ledger-v2.json.lock"); const reclaimFile = `${lockFile}.reclaim`; const old = `${lockFile}.old-dead`;
+	writeOwnedLock(old, 2147483647, "old-dead-process-start", "old-dead-marker"); fs.linkSync(old, reclaimFile); fs.rmSync(old);
+	fs.writeFileSync(resume, "resume");
+	const exit = await new Promise<number | null>((resolve) => child.once("exit", resolve)); assert.notEqual(exit, 0);
+	assert.equal(fs.existsSync(lockFile), true); assert.equal(fs.existsSync(reclaimFile), true, "killed pre-return candidate must leave the reachable two-inode state");
+	const restarted = new SpendLedger(killedCandidateRoot, new EvidenceStore(killedCandidateRoot), 20, ["PPE-001-I4-SPEND"]);
+	restarted.begin("first-restart-after-killed-candidate", "ROW", 1); restarted.finish("first-restart-after-killed-candidate", "settled");
+	assert.equal(fs.existsSync(lockFile), false); assert.equal(fs.existsSync(reclaimFile), false, "first restart must clear both dead fenced states");
+} finally { fs.rmSync(killedCandidateRoot, { recursive: true, force: true }); }
 
 // Multiprocess stress: all successful full reservations must survive contention;
 // callers may retry live-owner refusal, but no split brain may lose an entry.
@@ -405,9 +429,67 @@ try {
 	const recovered = makeGuard(recoveryRoot);
 	assert.equal(recovered.snapshot().holdState, "pending");
 	assert.throws(() => recovered.authorize("selection"), /not effectively admitted/);
-	fs.writeFileSync(path.join(recoveryRoot, "BOOT-VERIFY-1.json.lock"), "99999999\n");
-	assert.equal(makeGuard(recoveryRoot).snapshot().holdState, "pending", "restart must reclaim a demonstrably dead lock owner");
+	const admissionLock = path.join(recoveryRoot, "BOOT-VERIFY-1.json.lock");
+	const currentStart = spendProcessStart(); assert.ok(currentStart);
+	writeOwnedLock(admissionLock, process.pid, currentStart!, "admission-live-owner");
+	assert.throws(() => makeGuard(recoveryRoot), /live owner/, "a live admission owner must never be removed");
+	fs.rmSync(admissionLock);
+	writeOwnedLock(admissionLock, process.pid, `${currentStart}-pid-reused`, "admission-pid-reused");
+	assert.equal(makeGuard(recoveryRoot).snapshot().holdState, "pending", "PID-reused admission owner must be reclaimed on first restart");
+	writeOwnedLock(admissionLock, 2147483647, "dead-process-start", "admission-dead-owner");
+	assert.equal(makeGuard(recoveryRoot).snapshot().holdState, "pending", "dead admission owner must be reclaimed on first restart");
+	fs.writeFileSync(admissionLock, "{malformed", { mode: 0o600 });
+	assert.throws(() => makeGuard(recoveryRoot), /malformed|JSON|Unexpected/, "malformed admission ownership must fail closed");
+	assert.equal(fs.existsSync(admissionLock), true, "malformed ownership must not be stolen");
 } finally { fs.rmSync(recoveryRoot, { recursive: true, force: true }); }
+
+// Admission transaction interruption is recovered under the same authenticated
+// lock before admission reopens. Journal/state boundaries preserve a pending
+// hold; a pre-read interruption preserves the prior clear state.
+for (const crashPoint of ["after-lock", "after-journal", "after-state"] as const) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-admission-killed-${crashPoint}-`));
+	try {
+		makeGuard(root);
+		const admissionModule = path.resolve(ROOT, "admission.ts");
+		const script = `import { AdmissionGuard,SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST } from ${JSON.stringify(admissionModule)}; const guard=new AdmissionGuard(${JSON.stringify(root)},{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,()=>true,${JSON.stringify(crashPoint)}); guard.applyIncident({idempotencyKey:"killed-${crashPoint}",itemId:"BOOT-VERIFY",itemVersion:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)},evidenceHash:${JSON.stringify(HASH_C)},reportClass:"credible-bootstrap-leakage",actorId:"bootstrap-incident-service"});`;
+		const child = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" }); assert.notEqual(child.status, 0);
+		const restarted = makeGuard(root); const snapshot: any = restarted.snapshot();
+		assert.equal(snapshot.holdState, crashPoint === "after-lock" ? "clear" : "pending", `${crashPoint} must reconcile on first restart`);
+		assert.equal(fs.existsSync(path.join(root, "BOOT-VERIFY-1.json.lock")), false);
+	} finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// A process killed before returning admission lock ownership leaves an
+// authenticated dead record, which the first restart reclaims.
+const admissionCandidateKillRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-admission-killed-candidate-"));
+try {
+	makeGuard(admissionCandidateKillRoot);
+	const admissionModule = path.resolve(ROOT, "admission.ts");
+	const script = `import { AdmissionGuard,SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST } from ${JSON.stringify(admissionModule)}; new AdmissionGuard(${JSON.stringify(admissionCandidateKillRoot)},{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,()=>true,"after-candidate-link");`;
+	const child = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" }); assert.notEqual(child.status, 0);
+	assert.equal(fs.existsSync(path.join(admissionCandidateKillRoot, "BOOT-VERIFY-1.json.lock")), true);
+	assert.doesNotThrow(() => makeGuard(admissionCandidateKillRoot));
+	assert.equal(fs.existsSync(path.join(admissionCandidateKillRoot, "BOOT-VERIFY-1.json.lock")), false);
+} finally { fs.rmSync(admissionCandidateKillRoot, { recursive: true, force: true }); }
+
+// Concurrent admission reclaimers cannot steal the newly acquired live inode.
+const admissionTwoReclaimerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-admission-two-reclaimer-"));
+try {
+	makeGuard(admissionTwoReclaimerRoot);
+	const lockFile = path.join(admissionTwoReclaimerRoot, "BOOT-VERIFY-1.json.lock"); writeOwnedLock(lockFile, 2147483647, "dead-process-start", "admission-shared-dead");
+	const admissionModule = path.resolve(ROOT, "admission.ts");
+	const aReady = path.join(admissionTwoReclaimerRoot, "a-ready"); const aResume = path.join(admissionTwoReclaimerRoot, "a-resume"); const aDone = path.join(admissionTwoReclaimerRoot, "a-done");
+	const bReady = path.join(admissionTwoReclaimerRoot, "b-ready"); const bResume = path.join(admissionTwoReclaimerRoot, "b-resume"); const bDone = path.join(admissionTwoReclaimerRoot, "b-done");
+	const args = `{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,()=>true,undefined`;
+	const aScript = `import * as fs from "node:fs"; import { AdmissionGuard,SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST } from ${JSON.stringify(admissionModule)}; try{new AdmissionGuard(${JSON.stringify(admissionTwoReclaimerRoot)},${args},{afterDeadOwnerValidated(){fs.writeFileSync(${JSON.stringify(aReady)},"ready");${waitExpression(aResume)}}});fs.writeFileSync(${JSON.stringify(aDone)},"unexpected-success");}catch(error){fs.writeFileSync(${JSON.stringify(aDone)},String(error));}`;
+	const bScript = `import * as fs from "node:fs"; import { AdmissionGuard,SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST } from ${JSON.stringify(admissionModule)}; new AdmissionGuard(${JSON.stringify(admissionTwoReclaimerRoot)},${args},{afterLockAcquired(){fs.writeFileSync(${JSON.stringify(bReady)},"live");${waitExpression(bResume)}}});fs.writeFileSync(${JSON.stringify(bDone)},"done");`;
+	const a = spawn(process.execPath, ["-e", aScript], { stdio: "ignore" }); waitForFile(aReady);
+	const b = spawn(process.execPath, ["-e", bScript], { stdio: "ignore" }); waitForFile(bReady);
+	fs.writeFileSync(aResume, "resume"); waitForFile(aDone);
+	const live = JSON.parse(fs.readFileSync(lockFile, "utf8")); assert.equal(live.pid, b.pid); assert.match(fs.readFileSync(aDone, "utf8"), /live owner/);
+	fs.writeFileSync(bResume, "resume"); waitForFile(bDone); assert.equal(fs.existsSync(lockFile), false);
+	if (a.pid) { try { process.kill(a.pid, 0); } catch {} } if (b.pid) { try { process.kill(b.pid, 0); } catch {} }
+} finally { fs.rmSync(admissionTwoReclaimerRoot, { recursive: true, force: true }); }
 
 for (const fault of ["after-prepare", "after-evidence", "after-guard"] as const) {
 	const crossStoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-cross-store-${fault}-`));

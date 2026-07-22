@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EvidenceStore } from "./evidence.ts";
-import { canonicalJson, hashObject } from "./schema.ts";
+import { hashObject } from "./schema.ts";
+import { OwnedFileLock, observedProcessStart, type OwnedLockRecord } from "./owned-lock.ts";
 
 export interface SpendUsage { inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; wallTimeMs: number; participant: string }
 export interface SpendEntry { runId: string; rowId: string; state: "active" | "settled" | "failed"; reservedUsd: number; chargedUsd: number; startedAt: string; finishedAt?: string; attempts: SpendUsage[]; reason?: string; activeOwner?: { pid: number; processStart: string; nonce: string } }
@@ -22,25 +22,17 @@ export interface SpendSummary {
 	attempts: Array<{ runId: string; rowId: string; state: SpendEntry["state"]; participant: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; wallTimeMs: number }>;
 }
 interface Pointer { schemaVersion: 1; stateHash: string; retrievalRef: string; pointerHash: string }
-export interface SpendLockRecord { schemaVersion: 1; pid: number; processStart: string; nonce: string; createdAt: string; lockHash: string }
-export type SpendCrashPoint = "after-lock" | "after-read" | "after-persist";
+export type SpendLockRecord = OwnedLockRecord;
+export type SpendCrashPoint = "after-candidate-link" | "after-lock" | "after-read" | "after-persist";
 export interface SpendTestHooks {
+	beforeCandidateLinked?: (owner: SpendLockRecord) => void;
+	afterCandidateLinked?: (owner: SpendLockRecord) => void;
 	afterDeadOwnerValidated?: (owner: SpendLockRecord) => void;
 	afterLockAcquired?: (owner: SpendLockRecord) => void;
 }
 
-function lockContent(lock: SpendLockRecord): Omit<SpendLockRecord, "lockHash"> { const { lockHash: _, ...content } = lock; return content; }
-export function spendProcessStart(pid = process.pid): string | null {
-	try { const value = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); return value || null; }
-	catch { return null; }
-}
+export const spendProcessStart = observedProcessStart;
 function processAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (error: any) { return error?.code !== "ESRCH"; } }
-function validateLock(value: unknown): SpendLockRecord {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("spend ledger lock ownership is malformed");
-	const lock = value as SpendLockRecord;
-	if (lock.schemaVersion !== 1 || !Number.isSafeInteger(lock.pid) || lock.pid <= 0 || !lock.processStart || !lock.nonce || !Number.isFinite(Date.parse(lock.createdAt)) || lock.lockHash !== hashObject(lockContent(lock))) throw new Error("spend ledger lock ownership is malformed");
-	return lock;
-}
 
 function stateContent(state: SpendState): Omit<SpendState, "stateHash"> { const { stateHash: _, ...content } = state; return content; }
 function pointerContent(pointer: Pointer): Omit<Pointer, "pointerHash"> { const { pointerHash: _, ...content } = pointer; return content; }
@@ -100,105 +92,17 @@ export class SpendLedger {
 		const body = { schemaVersion: 1 as const, stateHash: state.stateHash, retrievalRef: retained.retrievalRef }; const pointer: Pointer = { ...body, pointerHash: hashObject(body) };
 		atomicJson(this.pointerFile, pointer); return state;
 	}
-	private createLockRecord(): SpendLockRecord {
-		const processStart = spendProcessStart();
-		if (!processStart) throw new Error("spend ledger cannot establish process-start ownership");
-		const body = { schemaVersion: 1 as const, pid: process.pid, processStart, nonce: randomUUID(), createdAt: new Date().toISOString() };
-		return { ...body, lockHash: hashObject(body) };
+	private lockProtocol(): OwnedFileLock {
+		return new OwnedFileLock(this.lockFile, "spend ledger", {
+			beforeCandidateLinked: this.testHooks?.beforeCandidateLinked,
+			afterCandidateLinked: (owner) => { this.maybeCrash("after-candidate-link"); this.testHooks?.afterCandidateLinked?.(owner); },
+			afterDeadOwnerValidated: this.testHooks?.afterDeadOwnerValidated,
+			afterLockAcquired: this.testHooks?.afterLockAcquired,
+		});
 	}
-	private lockOwnerIsLive(lock: SpendLockRecord): boolean {
-		if (!processAlive(lock.pid)) return false;
-		const observed = spendProcessStart(lock.pid);
-		if (!observed) throw new Error("spend ledger cannot validate live lock owner");
-		return observed === lock.processStart;
-	}
-	/**
-	 * Complete or abandon a stale-lock reclamation without ever unlinking an
-	 * unvalidated primary lock.  The reclaim pathname is a hard link to the
-	 * exact inode selected for recovery.  A contender that creates a primary
-	 * lock while the marker exists must withdraw before it can return as owner.
-	 */
-	private helpReclamation(): void {
-		if (!fs.existsSync(this.reclaimFile)) return;
-		let markerText: string; let markerStat: fs.Stats;
-		try { markerText = fs.readFileSync(this.reclaimFile, "utf8"); markerStat = fs.statSync(this.reclaimFile); }
-		catch { return; }
-		const markerOwner = validateLock(JSON.parse(markerText));
-		if (this.lockOwnerIsLive(markerOwner)) {
-			// A late reclaimer linked a newly acquired live lock.  Removing the
-			// auxiliary hard link is safe; the primary pathname is never touched.
-			try {
-				const current = fs.statSync(this.reclaimFile);
-				if (current.dev === markerStat.dev && current.ino === markerStat.ino) fs.rmSync(this.reclaimFile);
-			} catch { /* another helper completed it */ }
-			throw new Error(`spend ledger is locked by live owner ${markerOwner.pid}`);
-		}
-		for (let attempt = 0; attempt < 20; attempt++) {
-			let primary: fs.Stats | undefined;
-			try { primary = fs.statSync(this.lockFile); } catch { primary = undefined; }
-			if (!primary) break;
-			if (primary.dev === markerStat.dev && primary.ino === markerStat.ino) {
-				// The pathname still names the exact dead inode captured by the
-				// marker.  Once the marker exists no contender may return ownership.
-				try { fs.rmSync(this.lockFile); } catch { /* raced with another helper */ }
-				continue;
-			}
-			// A contender linked a different candidate during recovery.  It must
-			// observe the marker and withdraw; never unlink that different inode.
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
-		}
-		if (fs.existsSync(this.lockFile)) throw new Error("spend ledger reclamation is waiting for a contending owner to withdraw");
-		try {
-			const current = fs.statSync(this.reclaimFile);
-			if (current.dev === markerStat.dev && current.ino === markerStat.ino) fs.rmSync(this.reclaimFile);
-		} catch { /* another helper completed it */ }
-	}
-	private withdrawCandidate(record: SpendLockRecord): void {
-		try {
-			const retained = validateLock(JSON.parse(fs.readFileSync(this.lockFile, "utf8")));
-			if (retained.nonce === record.nonce && retained.pid === record.pid && retained.processStart === record.processStart) fs.rmSync(this.lockFile);
-		} catch { /* a helper already removed this non-returned candidate */ }
-	}
-	private acquireLock(): SpendLockRecord {
-		for (let attempt = 0; attempt < 20; attempt++) {
-			this.helpReclamation();
-			const record = this.createLockRecord();
-			const temporary = `${this.lockFile}.${record.nonce}.tmp`;
-			fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600, flag: "wx" });
-			try {
-				fs.linkSync(temporary, this.lockFile);
-				fs.rmSync(temporary, { force: true });
-				if (fs.existsSync(this.reclaimFile)) { this.withdrawCandidate(record); continue; }
-				this.testHooks?.afterLockAcquired?.(record);
-				// A reclaimer may have linked our inode after the prior check.  It
-				// will recognize a live owner and remove only its auxiliary link.
-				if (fs.existsSync(this.reclaimFile)) { this.helpReclamation(); }
-				return record;
-			} catch (error: any) {
-				fs.rmSync(temporary, { force: true });
-				if (error?.code !== "EEXIST") throw error;
-				let text: string;
-				try { text = fs.readFileSync(this.lockFile, "utf8"); }
-				catch { continue; }
-				const owner = validateLock(JSON.parse(text));
-				if (this.lockOwnerIsLive(owner)) throw new Error(`spend ledger is locked by live owner ${owner.pid}`);
-				this.testHooks?.afterDeadOwnerValidated?.(owner);
-				try { fs.linkSync(this.lockFile, this.reclaimFile); }
-				catch (linkError: any) {
-					if (linkError?.code === "ENOENT") continue;
-					if (linkError?.code !== "EEXIST") throw linkError;
-				}
-				this.helpReclamation();
-			}
-		}
-		throw new Error("spend ledger lock could not be acquired safely");
-	}
-	private releaseLock(lock: SpendLockRecord): void {
-		if (!fs.existsSync(this.lockFile)) return;
-		const retained = validateLock(JSON.parse(fs.readFileSync(this.lockFile, "utf8")));
-		if (retained.nonce !== lock.nonce || retained.pid !== lock.pid || retained.processStart !== lock.processStart) throw new Error("spend ledger lock ownership changed before release");
-		fs.rmSync(this.lockFile);
-	}
+	private acquireLock(): SpendLockRecord { return this.lockProtocol().acquire(); }
+	private releaseLock(lock: SpendLockRecord): void { this.lockProtocol().release(lock); }
+
 	private maybeCrash(point: SpendCrashPoint): void { if (this.testCrashPoint === point) process.kill(process.pid, "SIGKILL"); }
 	private transaction<T>(fn: (state: SpendState) => T): T {
 		const lock = this.acquireLock();

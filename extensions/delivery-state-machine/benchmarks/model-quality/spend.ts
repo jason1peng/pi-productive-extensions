@@ -6,7 +6,7 @@ import { EvidenceStore } from "./evidence.ts";
 import { canonicalJson, hashObject } from "./schema.ts";
 
 export interface SpendUsage { inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; wallTimeMs: number; participant: string }
-export interface SpendEntry { runId: string; rowId: string; state: "active" | "settled" | "failed"; reservedUsd: number; chargedUsd: number; startedAt: string; finishedAt?: string; attempts: SpendUsage[]; reason?: string }
+export interface SpendEntry { runId: string; rowId: string; state: "active" | "settled" | "failed"; reservedUsd: number; chargedUsd: number; startedAt: string; finishedAt?: string; attempts: SpendUsage[]; reason?: string; activeOwner?: { pid: number; processStart: string; nonce: string } }
 export interface SpendState { schemaVersion: 2; ceilingUsd: number; importedSpendUsd: number; importedEvidence: unknown[]; ceilingHistory?: Array<{ fromUsd: number; toUsd: number; approvedBy: string; changedAt: string }>; sequence: number; entries: SpendEntry[]; stateHash: string }
 export interface SpendSummary {
 	ceilingUsd: number;
@@ -24,6 +24,10 @@ export interface SpendSummary {
 interface Pointer { schemaVersion: 1; stateHash: string; retrievalRef: string; pointerHash: string }
 export interface SpendLockRecord { schemaVersion: 1; pid: number; processStart: string; nonce: string; createdAt: string; lockHash: string }
 export type SpendCrashPoint = "after-lock" | "after-read" | "after-persist";
+export interface SpendTestHooks {
+	afterDeadOwnerValidated?: (owner: SpendLockRecord) => void;
+	afterLockAcquired?: (owner: SpendLockRecord) => void;
+}
 
 function lockContent(lock: SpendLockRecord): Omit<SpendLockRecord, "lockHash"> { const { lockHash: _, ...content } = lock; return content; }
 export function spendProcessStart(pid = process.pid): string | null {
@@ -47,8 +51,9 @@ function charged(state: SpendState): number { return state.importedSpendUsd + st
 export class SpendLedger {
 	readonly pointerFile: string;
 	readonly lockFile: string;
-	constructor(readonly root: string, readonly store: EvidenceStore, readonly ceilingUsd: number, readonly provenance: string[], readonly testCrashPoint?: SpendCrashPoint) {
-		this.pointerFile = path.join(root, "spend-ledger-v2.json"); this.lockFile = `${this.pointerFile}.lock`;
+	readonly reclaimFile: string;
+	constructor(readonly root: string, readonly store: EvidenceStore, readonly ceilingUsd: number, readonly provenance: string[], readonly testCrashPoint?: SpendCrashPoint, readonly testHooks?: SpendTestHooks) {
+		this.pointerFile = path.join(root, "spend-ledger-v2.json"); this.lockFile = `${this.pointerFile}.lock`; this.reclaimFile = `${this.lockFile}.reclaim`;
 		fs.mkdirSync(root, { recursive: true });
 		if (fs.existsSync(this.lockFile)) { const startupLock = this.acquireLock(); this.releaseLock(startupLock); }
 		if (!fs.existsSync(this.pointerFile)) this.persist({ schemaVersion: 2, ceilingUsd, importedSpendUsd: 0, importedEvidence: [], ceilingHistory: [], sequence: 0, entries: [], stateHash: "" });
@@ -107,27 +112,83 @@ export class SpendLedger {
 		if (!observed) throw new Error("spend ledger cannot validate live lock owner");
 		return observed === lock.processStart;
 	}
+	/**
+	 * Complete or abandon a stale-lock reclamation without ever unlinking an
+	 * unvalidated primary lock.  The reclaim pathname is a hard link to the
+	 * exact inode selected for recovery.  A contender that creates a primary
+	 * lock while the marker exists must withdraw before it can return as owner.
+	 */
+	private helpReclamation(): void {
+		if (!fs.existsSync(this.reclaimFile)) return;
+		let markerText: string; let markerStat: fs.Stats;
+		try { markerText = fs.readFileSync(this.reclaimFile, "utf8"); markerStat = fs.statSync(this.reclaimFile); }
+		catch { return; }
+		const markerOwner = validateLock(JSON.parse(markerText));
+		if (this.lockOwnerIsLive(markerOwner)) {
+			// A late reclaimer linked a newly acquired live lock.  Removing the
+			// auxiliary hard link is safe; the primary pathname is never touched.
+			try {
+				const current = fs.statSync(this.reclaimFile);
+				if (current.dev === markerStat.dev && current.ino === markerStat.ino) fs.rmSync(this.reclaimFile);
+			} catch { /* another helper completed it */ }
+			throw new Error(`spend ledger is locked by live owner ${markerOwner.pid}`);
+		}
+		for (let attempt = 0; attempt < 20; attempt++) {
+			let primary: fs.Stats | undefined;
+			try { primary = fs.statSync(this.lockFile); } catch { primary = undefined; }
+			if (!primary) break;
+			if (primary.dev === markerStat.dev && primary.ino === markerStat.ino) {
+				// The pathname still names the exact dead inode captured by the
+				// marker.  Once the marker exists no contender may return ownership.
+				try { fs.rmSync(this.lockFile); } catch { /* raced with another helper */ }
+				continue;
+			}
+			// A contender linked a different candidate during recovery.  It must
+			// observe the marker and withdraw; never unlink that different inode.
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+		}
+		if (fs.existsSync(this.lockFile)) throw new Error("spend ledger reclamation is waiting for a contending owner to withdraw");
+		try {
+			const current = fs.statSync(this.reclaimFile);
+			if (current.dev === markerStat.dev && current.ino === markerStat.ino) fs.rmSync(this.reclaimFile);
+		} catch { /* another helper completed it */ }
+	}
+	private withdrawCandidate(record: SpendLockRecord): void {
+		try {
+			const retained = validateLock(JSON.parse(fs.readFileSync(this.lockFile, "utf8")));
+			if (retained.nonce === record.nonce && retained.pid === record.pid && retained.processStart === record.processStart) fs.rmSync(this.lockFile);
+		} catch { /* a helper already removed this non-returned candidate */ }
+	}
 	private acquireLock(): SpendLockRecord {
-		for (let attempt = 0; attempt < 3; attempt++) {
+		for (let attempt = 0; attempt < 20; attempt++) {
+			this.helpReclamation();
 			const record = this.createLockRecord();
 			const temporary = `${this.lockFile}.${record.nonce}.tmp`;
 			fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600, flag: "wx" });
 			try {
 				fs.linkSync(temporary, this.lockFile);
 				fs.rmSync(temporary, { force: true });
+				if (fs.existsSync(this.reclaimFile)) { this.withdrawCandidate(record); continue; }
+				this.testHooks?.afterLockAcquired?.(record);
+				// A reclaimer may have linked our inode after the prior check.  It
+				// will recognize a live owner and remove only its auxiliary link.
+				if (fs.existsSync(this.reclaimFile)) { this.helpReclamation(); }
 				return record;
 			} catch (error: any) {
 				fs.rmSync(temporary, { force: true });
 				if (error?.code !== "EEXIST") throw error;
-				let text: string; let stat: fs.Stats;
-				try { text = fs.readFileSync(this.lockFile, "utf8"); stat = fs.statSync(this.lockFile); }
+				let text: string;
+				try { text = fs.readFileSync(this.lockFile, "utf8"); }
 				catch { continue; }
 				const owner = validateLock(JSON.parse(text));
 				if (this.lockOwnerIsLive(owner)) throw new Error(`spend ledger is locked by live owner ${owner.pid}`);
-				const currentText = fs.readFileSync(this.lockFile, "utf8"); const currentStat = fs.statSync(this.lockFile);
-				if (currentText !== text || currentStat.ino !== stat.ino) continue;
-				const stale = `${this.lockFile}.reclaimed-${record.nonce}`;
-				fs.renameSync(this.lockFile, stale); fs.rmSync(stale, { force: true });
+				this.testHooks?.afterDeadOwnerValidated?.(owner);
+				try { fs.linkSync(this.lockFile, this.reclaimFile); }
+				catch (linkError: any) {
+					if (linkError?.code === "ENOENT") continue;
+					if (linkError?.code !== "EEXIST") throw linkError;
+				}
+				this.helpReclamation();
 			}
 		}
 		throw new Error("spend ledger lock could not be acquired safely");
@@ -162,7 +223,9 @@ export class SpendLedger {
 			if (!Number.isFinite(requestedReserveUsd) || requestedReserveUsd <= 0) throw new Error("frozen row reservation must be finite and positive");
 			const remaining = state.ceilingUsd - charged(state);
 			if (requestedReserveUsd > remaining + Number.EPSILON) throw new Error("full frozen row reservation exceeds remaining approved cumulative ceiling before launch");
-			const entry: SpendEntry = { runId, rowId, state: "active", reservedUsd: requestedReserveUsd, chargedUsd: 0, startedAt: new Date().toISOString(), attempts: [] };
+			const processStart = spendProcessStart();
+			if (!processStart) throw new Error("spend run cannot establish active process ownership");
+			const entry: SpendEntry = { runId, rowId, state: "active", reservedUsd: requestedReserveUsd, chargedUsd: 0, startedAt: new Date().toISOString(), attempts: [], activeOwner: { pid: process.pid, processStart, nonce: randomUUID() } };
 			state.entries.push(entry); return structuredClone(entry);
 		});
 	}
@@ -189,9 +252,19 @@ export class SpendLedger {
 		const state = this.read(); if (!state.entries.some((entry) => entry.state === "failed" && entry.chargedUsd < entry.reservedUsd)) return state;
 		return this.transaction((current) => { for (const entry of current.entries.filter((candidate) => candidate.state === "failed")) entry.chargedUsd = Math.max(entry.chargedUsd, entry.reservedUsd); return current; });
 	}
+	private activeRunOwnerIsLive(entry: SpendEntry): boolean {
+		if (!entry.activeOwner) return false;
+		if (!processAlive(entry.activeOwner.pid)) return false;
+		const observed = spendProcessStart(entry.activeOwner.pid);
+		if (!observed) throw new Error("spend ledger cannot validate active run owner");
+		return observed === entry.activeOwner.processStart;
+	}
 	reconcileIncomplete(): SpendState {
-		const state = this.read(); if (!state.entries.some((entry) => entry.state === "active")) return state;
-		return this.transaction((current) => { for (const entry of current.entries.filter((candidate) => candidate.state === "active")) { entry.state = "failed"; entry.chargedUsd = Math.max(entry.reservedUsd, entry.attempts.reduce((sum, attempt) => sum + attempt.costUsd, 0)); entry.finishedAt = new Date().toISOString(); entry.reason = "startup reconciliation conservatively closed an incomplete paid run"; } return current; });
+		const state = this.read();
+		const incomplete = state.entries.filter((entry) => entry.state === "active" && !this.activeRunOwnerIsLive(entry));
+		if (!incomplete.length) return state;
+		const ids = new Set(incomplete.map((entry) => entry.runId));
+		return this.transaction((current) => { for (const entry of current.entries.filter((candidate) => candidate.state === "active" && ids.has(candidate.runId))) { entry.state = "failed"; entry.chargedUsd = Math.max(entry.reservedUsd, entry.attempts.reduce((sum, attempt) => sum + attempt.costUsd, 0)); entry.finishedAt = new Date().toISOString(); entry.reason = "startup reconciliation conservatively closed an incomplete paid run whose owner is gone"; } return current; });
 	}
 	total(): number { return charged(this.read()); }
 	summary(currentRunIds: readonly string[] = [], warningThresholdsUsd: readonly number[] = [25, 50, 75]): SpendSummary {

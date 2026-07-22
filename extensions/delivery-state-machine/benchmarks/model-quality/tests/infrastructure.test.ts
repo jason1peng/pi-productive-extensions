@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -178,7 +178,7 @@ try {
 	assert.equal(ledger.total(), 10.6); assert.equal(ledger.read().entries[0].attempts.length, 2);
 	const summary = ledger.summary(["run-pass"], [5, 10, 15]); assert.equal(summary.currentRunUsd, 0.6); assert.deepEqual(summary.triggeredWarningsUsd, [5, 10]); assert.equal(summary.nextWarningUsd, 15); assert.equal(summary.attempts.length, 2);
 	ledger.begin("run-crash", "ROW-2", 2); ledger.record("run-crash", { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.25, wallTimeMs: 10, participant: "participant" });
-	ledger = new SpendLedger(spendRoot, spendStore, 20, ["PPE-001-I4-SPEND"]); assert.equal(ledger.read().entries.find((entry) => entry.runId === "run-crash")!.state, "failed"); assert.equal(ledger.total(), 12.6);
+	ledger = new SpendLedger(spendRoot, spendStore, 20, ["PPE-001-I4-SPEND"]); assert.equal(ledger.read().entries.find((entry) => entry.runId === "run-crash")!.state, "active", "a concurrently live run owner must not be reconciled as crashed"); ledger.finish("run-crash", "failed", "synthetic same-process failure"); assert.equal(ledger.total(), 12.6);
 	assert.throws(() => ledger.begin("partial-reservation-forbidden", "ROW-3", 20), /full frozen row reservation|ceiling/); assert.equal(ledger.total(), 12.6);
 	const pointer = JSON.parse(fs.readFileSync(path.join(spendRoot, "spend-ledger-v2.json"), "utf8")); fs.writeFileSync(path.join(spendRoot, "spend-ledger-v2.json"), JSON.stringify({ ...pointer, stateHash: HASH_A })); assert.throws(() => ledger.read(), /authentication|mismatch/);
 } finally { fs.rmSync(spendRoot, { recursive: true, force: true }); }
@@ -204,6 +204,13 @@ function writeSpendLock(root: string, pid: number, processStart: string, nonce: 
 	const lock: SpendLockRecord = { ...body, lockHash: hashObject(body) };
 	fs.writeFileSync(path.join(root, "spend-ledger-v2.json.lock"), `${JSON.stringify(lock)}\n`, { mode: 0o600 });
 }
+function waitForFile(file: string, timeoutMs = 15_000): void {
+	const until = Date.now() + timeoutMs;
+	while (!fs.existsSync(file)) {
+		if (Date.now() >= until) throw new Error(`timed out waiting for ${file}`);
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+	}
+}
 const lockRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-lock-"));
 try {
 	const store = new EvidenceStore(lockRoot); const ledger = new SpendLedger(lockRoot, store, 20, ["PPE-001-I4-SPEND"]);
@@ -217,6 +224,48 @@ try {
 	fs.writeFileSync(path.join(lockRoot, "spend-ledger-v2.json.lock"), "{malformed", { mode: 0o600 });
 	assert.throws(() => ledger.begin("malformed-must-not-steal", "ROW", 1), /JSON|malformed|Unexpected/);
 } finally { fs.rmSync(lockRoot, { recursive: true, force: true }); }
+
+// Deterministic REVIEW #4 interleaving: A validates the dead owner and pauses;
+// B reclaims and acquires a live lock; A resumes and must not remove B's inode.
+const twoReclaimerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-two-reclaimer-"));
+try {
+	new SpendLedger(twoReclaimerRoot, new EvidenceStore(twoReclaimerRoot), 20, ["PPE-001-I4-SPEND"]);
+	writeSpendLock(twoReclaimerRoot, 2147483647, "dead-process-start", "shared-dead-owner");
+	const spendModule = path.resolve(ROOT, "spend.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts");
+	const aReady = path.join(twoReclaimerRoot, "a-ready"); const aResume = path.join(twoReclaimerRoot, "a-resume"); const aDone = path.join(twoReclaimerRoot, "a-done");
+	const bReady = path.join(twoReclaimerRoot, "b-live"); const bResume = path.join(twoReclaimerRoot, "b-resume"); const bDone = path.join(twoReclaimerRoot, "b-done");
+	const waitExpression = (file: string) => `while(!fs.existsSync(${JSON.stringify(file)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2);`;
+	const aScript = `import * as fs from "node:fs"; import { SpendLedger } from ${JSON.stringify(spendModule)}; import { EvidenceStore } from ${JSON.stringify(evidenceModule)}; try { new SpendLedger(${JSON.stringify(twoReclaimerRoot)},new EvidenceStore(${JSON.stringify(twoReclaimerRoot)}),20,["PPE-001-I4-SPEND"],undefined,{afterDeadOwnerValidated(){fs.writeFileSync(${JSON.stringify(aReady)},"ready");${waitExpression(aResume)}}}); fs.writeFileSync(${JSON.stringify(aDone)},"unexpected-success"); } catch(error) { fs.writeFileSync(${JSON.stringify(aDone)},String(error)); }`;
+	const bScript = `import * as fs from "node:fs"; import { SpendLedger } from ${JSON.stringify(spendModule)}; import { EvidenceStore } from ${JSON.stringify(evidenceModule)}; new SpendLedger(${JSON.stringify(twoReclaimerRoot)},new EvidenceStore(${JSON.stringify(twoReclaimerRoot)}),20,["PPE-001-I4-SPEND"],undefined,{afterLockAcquired(){fs.writeFileSync(${JSON.stringify(bReady)},"live");${waitExpression(bResume)}}}); fs.writeFileSync(${JSON.stringify(bDone)},"done");`;
+	const a = spawn(process.execPath, ["-e", aScript], { stdio: "ignore" }); waitForFile(aReady);
+	const b = spawn(process.execPath, ["-e", bScript], { stdio: "ignore" }); waitForFile(bReady);
+	fs.writeFileSync(aResume, "resume"); waitForFile(aDone);
+	const live = JSON.parse(fs.readFileSync(path.join(twoReclaimerRoot, "spend-ledger-v2.json.lock"), "utf8")) as SpendLockRecord;
+	assert.equal(live.pid, b.pid, "late reclaimer A must not remove B's newly acquired live lock");
+	assert.match(fs.readFileSync(aDone, "utf8"), /live owner/, "A must refuse the validated live owner");
+	fs.writeFileSync(bResume, "resume"); waitForFile(bDone); assert.equal(fs.existsSync(path.join(twoReclaimerRoot, "spend-ledger-v2.json.lock")), false);
+	if (a.pid) { try { process.kill(a.pid, 0); } catch {} } if (b.pid) { try { process.kill(b.pid, 0); } catch {} }
+} finally { fs.rmSync(twoReclaimerRoot, { recursive: true, force: true }); }
+
+// Multiprocess stress: all successful full reservations must survive contention;
+// callers may retry live-owner refusal, but no split brain may lose an entry.
+const stressRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-multiprocess-"));
+try {
+	new SpendLedger(stressRoot, new EvidenceStore(stressRoot), 20, ["PPE-001-I4-SPEND"]);
+	const spendModule = path.resolve(ROOT, "spend.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts");
+	const workers = 8; const children = [];
+	for (let index = 0; index < workers; index++) {
+		const done = path.join(stressRoot, `stress-${index}.done`);
+		const script = `import * as fs from "node:fs"; import { SpendLedger } from ${JSON.stringify(spendModule)}; import { EvidenceStore } from ${JSON.stringify(evidenceModule)}; let last; for(let n=0;n<500;n++){try{const ledger=new SpendLedger(${JSON.stringify(stressRoot)},new EvidenceStore(${JSON.stringify(stressRoot)}),20,["PPE-001-I4-SPEND"]); const entry=ledger.read().entries.find(e=>e.runId==="stress-${index}"); if(!entry) ledger.begin("stress-${index}","ROW-${index}",1); const current=ledger.read().entries.find(e=>e.runId==="stress-${index}"); if(current?.state==="active") ledger.finish("stress-${index}","settled"); if(ledger.read().entries.find(e=>e.runId==="stress-${index}")?.state==="settled"){fs.writeFileSync(${JSON.stringify(done)},"done"); process.exit(0);}}catch(error){last=error;} Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2);} fs.writeFileSync(${JSON.stringify(done)},"error:"+String(last)); process.exit(1);`;
+		children.push(spawn(process.execPath, ["-e", script], { stdio: "ignore" }));
+	}
+	for (let index = 0; index < workers; index++) { const done = path.join(stressRoot, `stress-${index}.done`); waitForFile(done, 30_000); assert.equal(fs.readFileSync(done, "utf8"), "done"); }
+	const final = new SpendLedger(stressRoot, new EvidenceStore(stressRoot), 20, ["PPE-001-I4-SPEND"]).read();
+	const entries = final.entries.filter((entry) => entry.runId.startsWith("stress-"));
+	assert.equal(entries.length, workers, "serialized multiprocess transactions must preserve every reservation entry");
+	assert.equal(new Set(entries.map((entry) => entry.runId)).size, workers); assert.ok(entries.every((entry) => entry.state === "settled"));
+	for (const child of children) if (child.pid) { try { process.kill(child.pid, 0); } catch {} }
+} finally { fs.rmSync(stressRoot, { recursive: true, force: true }); }
 
 for (const crashPoint of ["after-lock", "after-read", "after-persist"] as const) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), `model-quality-spend-killed-${crashPoint}-`));

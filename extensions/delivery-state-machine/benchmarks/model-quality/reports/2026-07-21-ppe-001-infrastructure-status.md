@@ -58,7 +58,7 @@ real serial v3 canary               PASS — 6/6
 npm run eval:models:audit-real     PASS — report/evidence/admission/ledger join
 ```
 
-A clean-clone reproduction must still be recorded against the final source commit before I5 acceptance.
+Exact no-local clean-clone reproduction of the final committed candidate passed install, validate, focused infrastructure tests, model-free audit, `audit-real`, default `npm run verify` with required host discovery, and clean-worktree checks without another model call.
 
 ## Preserved boundaries
 

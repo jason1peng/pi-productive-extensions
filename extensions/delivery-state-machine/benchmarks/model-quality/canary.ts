@@ -276,13 +276,15 @@ async function executeConnectedRuntime(scenario: ScenarioRecord, agent: string, 
 	finally { if (prior === undefined) delete process.env.PI_SUBAGENTS_ROOT; else process.env.PI_SUBAGENTS_ROOT = prior; fs.rmSync(shim, { recursive: true, force: true }); }
 }
 
+export function mayRetryConnectedInfrastructure(evidence: { started: boolean; timedOut: boolean }, retriesRemaining: number): boolean { return !evidence.started && !evidence.timedOut && retriesRemaining > 0; }
+
 async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise<ConnectedJourney> {
 	const taskId = "PPE-001-E2E-CONNECTED-v3"; const base = controlledScenario("IMPLEMENT", config, Math.max(1000, deadline - Date.now()), "worker");
 	const shared = provisionScenario(base); const repositoryId = sha256(`${taskId}:${shared.gitBefore}:${base.fixture.sha256}`);
 	const remote = path.join(shared.root, "connected-remote.git"); Bun.spawnSync(["git", "init", "--bare", remote]); Bun.spawnSync(["git", "remote", "add", "origin", remote], { cwd: shared.workspace });
 	fs.appendFileSync(path.join(shared.workspace, ".git", "info", "exclude"), "\n.delivery-evidence/\n");
 	const results: NormalizedResult[] = [], artifacts: string[] = [], handoffs: HandoffRecord[] = [];
-	let priorOutbound: { phase: string; hash: string; content: string; relativePath: string } | undefined; let sequence = 0;
+	let priorOutbound: { phase: string; hash: string; content: string; relativePath: string } | undefined; let sequence = 0; let retriesRemaining = config.limits.infrastructureRetries;
 	const phases = ["IMPLEMENT", "VERIFY", "REVIEW", "REVIEW", "CLOSE", "RETRO"];
 	try {
 		for (let index = 0; index < phases.length; index++) {
@@ -290,12 +292,19 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 			const source = scenarioById(SCENARIO[phase]); const actualAgent = ROUTE_AGENT[phase]; const candidate = phase === "VERIFY" ? "reviewer" : actualAgent;
 			const scenario = connectedScenario(base, phase, config, candidate, taskId, priorOutbound); scenario.launch.timeoutMs = Math.max(1000, deadline - Date.now());
 			const artifactPath = path.join(shared.workspace, ".delivery-evidence", `${index + 1}-${phase.toLowerCase()}.md`); fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
-			const rawEvidence = path.join(shared.root, "connected-raw", `${index + 1}-${phase.toLowerCase()}`); fs.mkdirSync(rawEvidence, { recursive: true });
-			const phaseHome = path.join(shared.root, "connected-agent-homes", `${index + 1}-${phase.toLowerCase()}`); const phaseAgentDir = path.join(phaseHome, ".pi", "agent"); const phaseTmp = path.join(phaseHome, "tmp"); fs.mkdirSync(phaseAgentDir, { recursive: true }); fs.mkdirSync(phaseTmp, { recursive: true });
-			const phaseRun: ProvisionedRun = { ...shared, agentHome: phaseHome, artifactPath, rawEvidence, localRemote: remote, env: { ...shared.env, HOME: phaseHome, PI_CODING_AGENT_DIR: phaseAgentDir, TMPDIR: phaseTmp, PWD: shared.workspace } };
-			const prelaunch = capturePrelaunchBinding(scenario, phaseRun, config.routes, config.outer);
-			const startedAt = new Date().toISOString(); const runtime = await executeConnectedRuntime(scenario, actualAgent, phaseRun); const finishedAt = new Date().toISOString();
-			if (!runtime.evidence.completed || runtime.evidence.timedOut || !runtime.child || !fs.existsSync(artifactPath)) throw new Error(`connected ${phase} runtime did not complete with an artifact: ${JSON.stringify({ evidence: runtime.evidence, childUsage: runtime.child?.usage, outerUsage: runtime.outer.usage })}`);
+			const failedAttempts: HarnessAttempt[] = []; let runtime!: RuntimeRun; let phaseRun!: ProvisionedRun; let prelaunch!: ReturnType<typeof capturePrelaunchBinding>; let startedAt = ""; let finishedAt = ""; let rawEvidence = "";
+			for (let phaseAttempt = 1; ; phaseAttempt++) {
+				rawEvidence = path.join(shared.root, "connected-raw", `${index + 1}-${phase.toLowerCase()}-${phaseAttempt}`); fs.mkdirSync(rawEvidence, { recursive: true });
+				const phaseHome = path.join(shared.root, "connected-agent-homes", `${index + 1}-${phase.toLowerCase()}-${phaseAttempt}`); const phaseAgentDir = path.join(phaseHome, ".pi", "agent"); const phaseTmp = path.join(phaseHome, "tmp"); fs.mkdirSync(phaseAgentDir, { recursive: true }); fs.mkdirSync(phaseTmp, { recursive: true });
+				phaseRun = { ...shared, agentHome: phaseHome, artifactPath, rawEvidence, localRemote: remote, env: { ...shared.env, HOME: phaseHome, PI_CODING_AGENT_DIR: phaseAgentDir, TMPDIR: phaseTmp, PWD: shared.workspace } };
+				prelaunch = capturePrelaunchBinding(scenario, phaseRun, config.routes, config.outer);
+				startedAt = new Date().toISOString(); runtime = await executeConnectedRuntime(scenario, actualAgent, phaseRun); finishedAt = new Date().toISOString();
+				if (runtime.evidence.completed && !runtime.evidence.timedOut && runtime.child && fs.existsSync(artifactPath)) break;
+				const diagnostics = [`connected ${phase} runtime did not complete: ${JSON.stringify(runtime.evidence.infrastructureErrors)}`];
+				failedAttempts.push({ attempt: phaseAttempt, status: "INFRASTRUCTURE_FAILURE", completion: runtime.evidence.timedOut ? "timed_out" : "launch_failed", diagnostics, rawEvidencePath: rawEvidence, outer: runtime.outer, child: runtime.child, scorers: [], redactionPassed: true });
+				if (!mayRetryConnectedInfrastructure(runtime.evidence, retriesRemaining)) throw new Error(`connected ${phase} runtime did not complete with an artifact: ${JSON.stringify({ evidence: runtime.evidence, childUsage: runtime.child?.usage, outerUsage: runtime.outer.usage })}`);
+				retriesRemaining -= 1; fs.rmSync(rawEvidence, { recursive: true, force: true }); fs.rmSync(phaseHome, { recursive: true, force: true }); fs.rmSync(artifactPath, { force: true });
+			}
 			const content = fs.readFileSync(artifactPath, "utf8"); const outboundHash = sha256(content);
 			let consumption: ReturnType<typeof parseConsumedInbound> | undefined;
 			if (priorOutbound) consumption = parseConsumedInbound(content, { hash: priorOutbound.hash, relativePath: priorOutbound.relativePath, content: priorOutbound.content });
@@ -304,7 +313,7 @@ async function connectedE2E(config: RealCanaryConfig, deadline: number): Promise
 				if (from) handoffs.push({ from, to: phase, sequence: ++sequence, outboundHash: priorOutbound.hash, outboundRef: priorOutbound.relativePath, inboundHash: priorOutbound.hash, consumedInboundHash: consumption!.hash, consumedInboundRef: consumption!.ref, consumptionEvidenceHash: consumption!.evidenceHash, taskId, repositoryId });
 			}
 			const result: NormalizedResult = { schemaVersion: SCHEMA_VERSION, promptfooVersion: PROMPTFOO_VERSION, candidateCommit: Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: path.resolve(ROOT, "../../../..") }).stdout.toString().trim(), fixtureHash: base.fixture.sha256, scenarioId: source.id, role: phase as any, candidate, comparisonMode: "canary", repetition: index, outer: runtime.outer, child: runtime.child, startedAt, finishedAt, timedOut: false, completion: "completed", artifactPath, scorers: [{ name: "runtime", passed: true, critical: true, detail: "connected runtime and authoritative identity observed" }, { name: "artifact", passed: true, critical: true, detail: "hash-linked connected artifact observed" }], status: "PASS", diagnostics: [], redactionPassed: true, rawEvidencePath: rawEvidence };
-			result.harness = { classification: "scored", maxAttempts: 1, finalAttempt: 1, attempts: [{ attempt: 1, status: "PASS", completion: "completed", diagnostics: [], rawEvidencePath: rawEvidence, artifactPath, outer: runtime.outer, child: runtime.child, scorers: result.scorers, redactionPassed: true }] };
+			result.harness = { classification: "scored", maxAttempts: config.limits.infrastructureRetries + 1, finalAttempt: failedAttempts.length + 1, attempts: [...failedAttempts, { attempt: failedAttempts.length + 1, status: "PASS", completion: "completed", diagnostics: [], rawEvidencePath: rawEvidence, artifactPath, outer: runtime.outer, child: runtime.child, scorers: result.scorers, redactionPassed: true }] };
 			(result as any).executionBinding = { ...bindObservedExecution(prelaunch, result), taskId, repositoryId, inboundHash: consumption?.hash ?? null, inboundRef: consumption?.ref ?? null, consumptionEvidenceHash: consumption?.evidenceHash ?? null, outboundHash };
 			results.push(result); artifacts.push(content);
 			const relativePath = path.relative(shared.workspace, artifactPath);

@@ -5,7 +5,7 @@
   "frozenAt": "2026-07-21T18:00:00.000Z",
   "expectedRows": 6,
   "maxRows": 6,
-  "maxCostUsd": 20,
+  "maxCostUsd": 100,
   "serial": true,
   "rows": [
     {
@@ -206,5 +206,5 @@
       "minimumPlannedAttempts": 6
     }
   ],
-  "manifestHash": "13965b1cf102cde4d4071d2c4c12d5854845262007ce7656703179642e8cf832"
+  "manifestHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a"
 }

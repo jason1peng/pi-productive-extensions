@@ -24,6 +24,19 @@
     "reliability": 1,
     "handoffCount": 4
   },
+  "cost": {
+    "ceilingUsd": 0,
+    "warningThresholdsUsd": [],
+    "triggeredWarningsUsd": [],
+    "nextWarningUsd": null,
+    "importedUsd": 0,
+    "acceptedUsd": 0,
+    "rejectedUsd": 0,
+    "activeReservedUsd": 0,
+    "currentRunUsd": 0,
+    "cumulativeUsd": 0,
+    "attempts": []
+  },
   "slots": [
     {
       "slotId": "BOOT-SLOT-01",
@@ -693,5 +706,5 @@
   "evidenceRefs": [
     "sha256:365de2f35b9c4d3b9ccb0e8748f311318fdc07bfcb636b733a7312ebf82ea6b7"
   ],
-  "reportHash": "3ce9a737890a2b8a79db8f57b246b65c6bf506b7d7ae4e7e2fe90719dac8b76f"
+  "reportHash": "3411c53d504aba521625bd20f1ea7f52865ec210fac78d11c4983de1d379b929"
 }

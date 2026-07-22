@@ -49,7 +49,8 @@ assert.throws(() => validateConnectedHandoffs(connectedHandoffs.map((entry, inde
 const realCanary = loadRealCanary();
 assert.equal(realCanary.manifest.rows.length, 6);
 assert.equal(realCanary.manifest.rows.reduce((sum, row) => sum + row.budgetUsd, 0), 18);
-assert.equal(realCanary.config.limits.totalCostUsd, 20);
+assert.equal(realCanary.config.limits.totalCostUsd, 100);
+assert.equal(realCanary.config.evidence.priorSpendUsd, 17.791287);
 assert.deepEqual(realCanary.config.credentialPolicy.forwardedEnvironment, []);
 assert.deepEqual(realCanary.config.rows.find((row) => row.phase === "REVIEW")?.scenarioIds, ["REV-01", "REV-01"]);
 assert.equal(realCanary.manifest.rows.find((row) => row.phase === "CLOSE")?.judge, undefined);
@@ -153,11 +154,20 @@ try {
 	ledger.migrateLegacy(10, [{ source: "retained conservative evidence" }]);
 	ledger.begin("run-pass", "ROW-1", 2); ledger.record("run-pass", { inputTokens: 10, outputTokens: 2, cachedTokens: 3, costUsd: 0.5, wallTimeMs: 100, participant: "participant" }); ledger.record("run-pass", { inputTokens: 4, outputTokens: 1, cachedTokens: 0, costUsd: 0.1, wallTimeMs: 30, participant: "judge" }); ledger.finish("run-pass", "settled");
 	assert.equal(ledger.total(), 10.6); assert.equal(ledger.read().entries[0].attempts.length, 2);
+	const summary = ledger.summary(["run-pass"], [5, 10, 15]); assert.equal(summary.currentRunUsd, 0.6); assert.deepEqual(summary.triggeredWarningsUsd, [5, 10]); assert.equal(summary.nextWarningUsd, 15); assert.equal(summary.attempts.length, 2);
 	ledger.begin("run-crash", "ROW-2", 2); ledger.record("run-crash", { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.25, wallTimeMs: 10, participant: "participant" });
 	ledger = new SpendLedger(spendRoot, spendStore, 20, ["PPE-001-I4-SPEND"]); assert.equal(ledger.read().entries.find((entry) => entry.runId === "run-crash")!.state, "failed"); assert.equal(ledger.total(), 12.6);
 	ledger.begin("consume-remaining-reservation", "ROW-3", 20); assert.throws(() => ledger.begin("too-large", "ROW-4", 1), /exhausted|ceiling/);
 	const pointer = JSON.parse(fs.readFileSync(path.join(spendRoot, "spend-ledger-v2.json"), "utf8")); fs.writeFileSync(path.join(spendRoot, "spend-ledger-v2.json"), JSON.stringify({ ...pointer, stateHash: HASH_A })); assert.throws(() => ledger.read(), /authentication|mismatch/);
 } finally { fs.rmSync(spendRoot, { recursive: true, force: true }); }
+
+const raisedSpendRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-spend-raise-test-"));
+try {
+	const raisedStore = new EvidenceStore(raisedSpendRoot); let raisedLedger = new SpendLedger(raisedSpendRoot, raisedStore, 20, ["PPE-001-I4-SPEND"]);
+	raisedLedger.migrateLegacy(17.791287, [{ source: "retained conservative evidence" }]);
+	raisedLedger = new SpendLedger(raisedSpendRoot, raisedStore, 100, ["PPE-001-I4-SPEND"]);
+	assert.equal(raisedLedger.total(), 17.791287); assert.equal(raisedLedger.read().ceilingUsd, 100); assert.deepEqual(raisedLedger.read().ceilingHistory?.map(({ fromUsd, toUsd }) => ({ fromUsd, toUsd })), [{ fromUsd: 20, toUsd: 100 }]);
+} finally { fs.rmSync(raisedSpendRoot, { recursive: true, force: true }); }
 
 const retryThenPass = boundedOutcome("FROZEN-SLOT", 2, (attempt) => ({ classification: attempt === 1 ? "INFRASTRUCTURE_FAILURE" : "PASS", evidenceRef: `sha256:${attempt}` }));
 assert.equal(retryThenPass.attempts.length, 2);

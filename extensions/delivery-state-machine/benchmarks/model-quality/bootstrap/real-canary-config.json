@@ -57,10 +57,10 @@
     "root": "/Users/jason/work/projects/model-quality-evidence/ppe-001",
     "mode": "0700",
     "retentionDays": 90,
-    "priorSpendUsd": 15.791287
+    "priorSpendUsd": 17.791287
   },
   "limits": {
-    "totalCostUsd": 20,
+    "totalCostUsd": 100,
     "phaseCostUsd": 2,
     "e2eCostUsd": 8,
     "phaseTimeoutMs": 900000,
@@ -124,5 +124,5 @@
       "judge": false
     }
   ],
-  "configHash": "921802242890a36746ed6865179cb4a863424e8045aee9a0080ffabeb0a26529"
+  "configHash": "a0735215ef05c8cdee6000921d89e13a3eaed4eb7992ccf3792f344bbbfb960f"
 }

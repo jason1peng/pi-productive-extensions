@@ -6,7 +6,20 @@ import { canonicalJson, hashObject } from "./schema.ts";
 
 export interface SpendUsage { inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; wallTimeMs: number; participant: string }
 export interface SpendEntry { runId: string; rowId: string; state: "active" | "settled" | "failed"; reservedUsd: number; chargedUsd: number; startedAt: string; finishedAt?: string; attempts: SpendUsage[]; reason?: string }
-export interface SpendState { schemaVersion: 2; ceilingUsd: number; importedSpendUsd: number; importedEvidence: unknown[]; sequence: number; entries: SpendEntry[]; stateHash: string }
+export interface SpendState { schemaVersion: 2; ceilingUsd: number; importedSpendUsd: number; importedEvidence: unknown[]; ceilingHistory?: Array<{ fromUsd: number; toUsd: number; approvedBy: string; changedAt: string }>; sequence: number; entries: SpendEntry[]; stateHash: string }
+export interface SpendSummary {
+	ceilingUsd: number;
+	warningThresholdsUsd: number[];
+	triggeredWarningsUsd: number[];
+	nextWarningUsd: number | null;
+	importedUsd: number;
+	acceptedUsd: number;
+	rejectedUsd: number;
+	activeReservedUsd: number;
+	currentRunUsd: number;
+	cumulativeUsd: number;
+	attempts: Array<{ runId: string; rowId: string; state: SpendEntry["state"]; participant: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; wallTimeMs: number }>;
+}
 interface Pointer { schemaVersion: 1; stateHash: string; retrievalRef: string; pointerHash: string }
 
 function stateContent(state: SpendState): Omit<SpendState, "stateHash"> { const { stateHash: _, ...content } = state; return content; }
@@ -21,13 +34,32 @@ export class SpendLedger {
 	constructor(readonly root: string, readonly store: EvidenceStore, readonly ceilingUsd: number, readonly provenance: string[]) {
 		this.pointerFile = path.join(root, "spend-ledger-v2.json"); this.lockFile = `${this.pointerFile}.lock`;
 		fs.mkdirSync(root, { recursive: true });
-		if (!fs.existsSync(this.pointerFile)) this.persist({ schemaVersion: 2, ceilingUsd, importedSpendUsd: 0, importedEvidence: [], sequence: 0, entries: [], stateHash: "" });
+		if (!fs.existsSync(this.pointerFile)) this.persist({ schemaVersion: 2, ceilingUsd, importedSpendUsd: 0, importedEvidence: [], ceilingHistory: [], sequence: 0, entries: [], stateHash: "" });
+		else this.raiseCeilingIfApproved();
 		this.reconcileIncomplete(); this.enforceConservativeFailures();
 	}
-	private validate(state: SpendState): SpendState {
-		if (state.schemaVersion !== 2 || state.ceilingUsd !== this.ceilingUsd || state.stateHash !== hashObject(stateContent(state))) throw new Error("spend ledger authentication/config mismatch");
+	private validateForCeiling(state: SpendState, ceilingUsd: number): SpendState {
+		if (state.schemaVersion !== 2 || state.ceilingUsd !== ceilingUsd || state.stateHash !== hashObject(stateContent(state))) throw new Error("spend ledger authentication/config mismatch");
 		if (!Number.isFinite(state.importedSpendUsd) || state.importedSpendUsd < 0 || charged(state) > state.ceilingUsd + Number.EPSILON) throw new Error("spend ledger exceeds approved ceiling");
 		return state;
+	}
+	private validate(state: SpendState): SpendState {
+		this.validateForCeiling(state, this.ceilingUsd);
+		if (!Number.isFinite(state.importedSpendUsd) || state.importedSpendUsd < 0 || charged(state) > state.ceilingUsd + Number.EPSILON) throw new Error("spend ledger exceeds approved ceiling");
+		return state;
+	}
+	private raiseCeilingIfApproved(): void {
+		const pointer = this.readPointer();
+		const retained = this.store.getByRef(pointer.retrievalRef, { schemaVersionRef: "model-quality-spend-ledger-v2", participantProvenance: this.provenance });
+		const state = JSON.parse(retained.content.toString("utf8")) as SpendState;
+		this.validateForCeiling(state, state.ceilingUsd);
+		if (state.stateHash !== pointer.stateHash) throw new Error("spend ledger pointer/state mismatch");
+		if (state.ceilingUsd > this.ceilingUsd) throw new Error("approved cumulative ceiling may not be lowered");
+		if (state.ceilingUsd === this.ceilingUsd) return;
+		state.ceilingHistory = [...(state.ceilingHistory ?? []), { fromUsd: state.ceilingUsd, toUsd: this.ceilingUsd, approvedBy: "user-explicit-approval-2026-07-21", changedAt: new Date().toISOString() }];
+		state.ceilingUsd = this.ceilingUsd;
+		state.sequence += 1;
+		this.persist(state);
 	}
 	private readPointer(): Pointer {
 		const pointer = JSON.parse(fs.readFileSync(this.pointerFile, "utf8")) as Pointer;
@@ -96,6 +128,29 @@ export class SpendLedger {
 		return this.transaction((current) => { for (const entry of current.entries.filter((candidate) => candidate.state === "active")) { entry.state = "failed"; entry.chargedUsd = Math.max(entry.reservedUsd, entry.attempts.reduce((sum, attempt) => sum + attempt.costUsd, 0)); entry.finishedAt = new Date().toISOString(); entry.reason = "startup reconciliation conservatively closed an incomplete paid run"; } return current; });
 	}
 	total(): number { return charged(this.read()); }
+	summary(currentRunIds: readonly string[] = [], warningThresholdsUsd: readonly number[] = [25, 50, 75]): SpendSummary {
+		const state = this.read();
+		const current = new Set(currentRunIds);
+		const cumulativeUsd = charged(state);
+		const acceptedUsd = state.entries.filter((entry) => entry.state === "settled").reduce((sum, entry) => sum + entry.chargedUsd, 0);
+		const rejectedUsd = state.entries.filter((entry) => entry.state === "failed").reduce((sum, entry) => sum + entry.chargedUsd, 0);
+		const activeReservedUsd = state.entries.filter((entry) => entry.state === "active").reduce((sum, entry) => sum + entry.reservedUsd, 0);
+		const currentRunUsd = state.entries.filter((entry) => current.has(entry.runId)).reduce((sum, entry) => sum + (entry.state === "active" ? entry.reservedUsd : entry.chargedUsd), 0);
+		const thresholds = [...warningThresholdsUsd];
+		return {
+			ceilingUsd: state.ceilingUsd,
+			warningThresholdsUsd: thresholds,
+			triggeredWarningsUsd: thresholds.filter((threshold) => cumulativeUsd >= threshold),
+			nextWarningUsd: thresholds.find((threshold) => cumulativeUsd < threshold) ?? null,
+			importedUsd: state.importedSpendUsd,
+			acceptedUsd,
+			rejectedUsd,
+			activeReservedUsd,
+			currentRunUsd,
+			cumulativeUsd,
+			attempts: state.entries.flatMap((entry) => entry.attempts.map((attempt) => ({ runId: entry.runId, rowId: entry.rowId, state: entry.state, ...attempt }))),
+		};
+	}
 	audit(expectedMinimum: number): { totalUsd: number; stateHash: string; retrievalRef: string } {
 		const state = this.read(); const total = charged(state); if (total + Number.EPSILON < expectedMinimum) throw new Error("spend ledger may not lower retained cumulative spend");
 		const pointer = this.readPointer(); return { totalUsd: total, stateHash: state.stateHash, retrievalRef: pointer.retrievalRef };

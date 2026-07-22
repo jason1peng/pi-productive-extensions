@@ -34,7 +34,7 @@ interface RealCanaryConfig {
 	routes: { IMPLEMENT: ["worker"]; VERIFY: ["fresh-verifier"]; REVIEW: ["reviewer", "reviewer"]; CLOSE: ["delegate"]; RETRO: ["delegate"] };
 	credentialPolicy: { providers: ["openai-codex"]; forwardedEnvironment: []; source: "pi-managed-auth-only" };
 	evidence: { root: string; mode: "0700"; retentionDays: 90; priorSpendUsd: number };
-	limits: { totalCostUsd: 20; phaseCostUsd: 2; e2eCostUsd: 8; phaseTimeoutMs: 900000; e2eTimeoutMs: 2700000; totalTimeoutMs: 7200000; infrastructureRetries: 1 };
+	limits: { totalCostUsd: 100; phaseCostUsd: 2; e2eCostUsd: 8; phaseTimeoutMs: 900000; e2eTimeoutMs: 2700000; totalTimeoutMs: 7200000; infrastructureRetries: 1 };
 	rows: Array<{ slotId: string; phase: string; scenarioIds: string[]; judge: boolean }>;
 }
 
@@ -46,8 +46,8 @@ export function loadRealCanary(): { config: RealCanaryConfig; manifest: SparseMa
 	if (config.schemaVersion !== 1 || config.id !== "PPE-001-REAL-CANARY" || config.version !== 3) throw new Error("real canary config identity is invalid");
 	if (hashObject(configContent(config)) !== config.configHash) throw new Error("real canary config hash mismatch");
 	if (JSON.stringify(config.credentialPolicy) !== JSON.stringify({ providers: ["openai-codex"], forwardedEnvironment: [], source: "pi-managed-auth-only" })) throw new Error("real canary credential policy changed");
-	if (!path.isAbsolute(config.evidence.root) || config.evidence.root !== "/Users/jason/work/projects/model-quality-evidence/ppe-001" || config.evidence.mode !== "0700" || config.evidence.retentionDays !== 90 || config.evidence.priorSpendUsd !== 15.791287) throw new Error("real canary evidence boundary/prior spend changed");
-	if (JSON.stringify(config.limits) !== JSON.stringify({ totalCostUsd: 20, phaseCostUsd: 2, e2eCostUsd: 8, phaseTimeoutMs: 900000, e2eTimeoutMs: 2700000, totalTimeoutMs: 7200000, infrastructureRetries: 1 })) throw new Error("real canary limits changed");
+	if (!path.isAbsolute(config.evidence.root) || config.evidence.root !== "/Users/jason/work/projects/model-quality-evidence/ppe-001" || config.evidence.mode !== "0700" || config.evidence.retentionDays !== 90 || config.evidence.priorSpendUsd !== 17.791287) throw new Error("real canary evidence boundary/prior spend changed");
+	if (JSON.stringify(config.limits) !== JSON.stringify({ totalCostUsd: 100, phaseCostUsd: 2, e2eCostUsd: 8, phaseTimeoutMs: 900000, e2eTimeoutMs: 2700000, totalTimeoutMs: 7200000, infrastructureRetries: 1 })) throw new Error("real canary limits changed");
 	if (JSON.stringify(config.routes) !== JSON.stringify({ IMPLEMENT: ["worker"], VERIFY: ["fresh-verifier"], REVIEW: ["reviewer", "reviewer"], CLOSE: ["delegate"], RETRO: ["delegate"] })) throw new Error("real canary routes changed");
 	assertJudgeIndependence([config.judge], [config.participant, config.outer]);
 	const manifest = validateManifest(readJson(MANIFEST_FILE));
@@ -358,7 +358,7 @@ export function auditRealCanary(): { reportHash: string; evidenceObjects: number
 		validateSlotResult(slot, row);
 		if (slot.status !== "PASS") throw new Error(`real canary slot did not pass: ${row.slotId}`);
 	}
-	const reproduced = buildInfrastructureReport({ manifestHash: manifest.manifestHash, slots: report.slots, generatedAt: report.generatedAt });
+	const reproduced = buildInfrastructureReport({ manifestHash: manifest.manifestHash, slots: report.slots, generatedAt: report.generatedAt, cost: report.cost });
 	if (reproduced.reportHash !== report.reportHash || JSON.stringify(reproduced) !== JSON.stringify(report)) throw new Error("real canary report hash/content does not reproduce");
 	if ((fs.statSync(config.evidence.root).mode & 0o777) !== 0o700) throw new Error("durable evidence root permissions changed");
 	const store = new EvidenceStore(config.evidence.root); const evidence = store.audit();
@@ -379,7 +379,7 @@ export function auditRealCanary(): { reportHash: string; evidenceObjects: number
 	const reportRecords = store.indexes().filter((record) => record.schemaVersionRef === "model-quality-real-canary-report-v3" && record.assetVersions.includes(`manifest:${manifest.manifestHash}`) && record.assetVersions.includes(`config:${config.configHash}`) && record.assetVersions.includes(`ledger:${ledgerAudit.stateHash}`));
 	if (reportRecords.length !== 1) throw new Error("real canary requires exactly one report/human/ledger evidence index");
 	const retainedReport = JSON.parse(store.get(reportRecords[0]).toString("utf8"));
-	if (retainedReport?.report?.reportHash !== report.reportHash || retainedReport?.humanReview?.recordId !== "PPE-001-I4-INDEPENDENT-REVIEW-PENDING" || retainedReport?.humanReview?.decision !== "pending" || retainedReport?.humanReview?.resultHash !== report.reportHash || retainedReport?.configHash !== config.configHash || retainedReport?.manifestHash !== manifest.manifestHash || retainedReport?.spendLedgerRef !== ledgerAudit.retrievalRef || retainedReport?.spendLedgerHash !== ledgerAudit.stateHash || retainedReport?.cumulativeSpendUsd !== ledgerAudit.totalUsd) throw new Error("pending human/report/provenance/spend evidence is unavailable or mismatched");
+	if (retainedReport?.report?.reportHash !== report.reportHash || retainedReport?.humanReview?.recordId !== "PPE-001-I4-INDEPENDENT-REVIEW-PENDING" || retainedReport?.humanReview?.decision !== "pending" || retainedReport?.humanReview?.resultHash !== report.reportHash || retainedReport?.configHash !== config.configHash || retainedReport?.manifestHash !== manifest.manifestHash || retainedReport?.spendLedgerRef !== ledgerAudit.retrievalRef || retainedReport?.spendLedgerHash !== ledgerAudit.stateHash || retainedReport?.cumulativeSpendUsd !== ledgerAudit.totalUsd || hashObject(retainedReport?.cost) !== hashObject(report.cost)) throw new Error("pending human/report/provenance/spend evidence is unavailable or mismatched");
 	const rawRoot = path.resolve(ROOT, "../agent-quality/artifacts/raw");
 	if (fs.existsSync(rawRoot) && fs.readdirSync(rawRoot).length > 0) throw new Error("raw canary artifacts were not cleaned");
 	const repository = path.resolve(ROOT, "../../../..");
@@ -387,9 +387,18 @@ export function auditRealCanary(): { reportHash: string; evidenceObjects: number
 	return { reportHash: report.reportHash, evidenceObjects: evidence.objects, evidenceIndexes: evidence.indexes, gitClean: status === "" };
 }
 
-function spendUsageForResult(result: NormalizedResult, participant: string): SpendUsage {
-	const usage = aggregateResultUsage(result);
-	return { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached, costUsd: usage.childCost + usage.outerCost, wallTimeMs: Math.max(0, Date.parse(result.finishedAt) - Date.parse(result.startedAt)), participant };
+function spendRecord(usage: UsageRecord | undefined, participant: string, wallTimeMs: number): SpendUsage {
+	return { inputTokens: Number(usage?.inputTokens ?? 0), outputTokens: Number(usage?.outputTokens ?? 0), cachedTokens: Number(usage?.cacheReadTokens ?? 0) + Number(usage?.cacheWriteTokens ?? 0), costUsd: Number(usage?.costUsd ?? 0), wallTimeMs, participant };
+}
+function spendUsageForResult(result: NormalizedResult, participant: string, outer: string): SpendUsage[] {
+	const wall = Math.max(0, Date.parse(result.finishedAt) - Date.parse(result.startedAt));
+	const attempts = result.harness?.attempts;
+	if (attempts?.length) return attempts.flatMap((attempt) => [spendRecord(attempt.child?.usage, participant, wall), spendRecord(attempt.outer.usage, outer, 0)]);
+	return [spendRecord(result.child?.usage, participant, wall), spendRecord(result.outer.usage, outer, 0)];
+}
+function emitCostVisibility(ledger: SpendLedger, currentRunIds: readonly string[]): void {
+	const cost = ledger.summary(currentRunIds);
+	console.error(`[PPE-001 cost] current=$${cost.currentRunUsd.toFixed(6)} imported=$${cost.importedUsd.toFixed(6)} accepted=$${cost.acceptedUsd.toFixed(6)} rejected=$${cost.rejectedUsd.toFixed(6)} cumulative=$${cost.cumulativeUsd.toFixed(6)}/$${cost.ceilingUsd.toFixed(2)} warnings=${cost.triggeredWarningsUsd.join(",") || "none"} next=${cost.nextWarningUsd ?? "none"}`);
 }
 
 export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<InfrastructureReport> {
@@ -403,14 +412,14 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 		const legacy = fs.existsSync(path.join(config.evidence.root, "spend-ledger.json")) ? readJson<any>(path.join(config.evidence.root, "spend-ledger.json")) : { entries: [] };
 		ledger.migrateLegacy(config.evidence.priorSpendUsd, [{ source: "retained-v1/v2 reports and rejected-attempt ledger", minimumUsd: config.evidence.priorSpendUsd, legacyEntries: legacy.entries ?? [] }]);
 	}
-	const started = Date.now(); const deadline = started + config.limits.totalTimeoutMs; const slots: NormalizedSlotResult[] = [];
+	const started = Date.now(); const deadline = started + config.limits.totalTimeoutMs; const slots: NormalizedSlotResult[] = []; const currentRunIds: string[] = [];
 	const registry = new Map(loadRegistry().items.map((item) => [`${item.id}@${item.version}`, item]));
 	const rows = mode === "e2e" ? manifest.rows.filter((row) => row.phase === "E2E") : manifest.rows;
 	for (const row of rows) {
 		if (Date.now() >= deadline) throw new Error("approved total canary timeout exhausted");
 		const item = registry.get(`${row.itemId}@${row.itemVersion}`); if (!item) throw new Error(`registry item unavailable: ${row.itemId}@${row.itemVersion}`);
 		const runId = `${config.id}-v${config.version}-${row.slotId}-${Date.now()}-${randomUUID()}`;
-		ledger.begin(runId, row.slotId, row.budgetUsd);
+		ledger.begin(runId, row.slotId, row.budgetUsd); currentRunIds.push(runId); emitCostVisibility(ledger, currentRunIds);
 		const coordinator = new EvidenceAdmissionCoordinator(path.join(config.evidence.root, "admission-v3", row.slotId), store, { id: item.id, version: item.version, itemHash: item.publicAssetHash, catalogHash: manifest.manifestHash }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
 		const selection = coordinator.authorize("selection"), dispatch = coordinator.authorize("dispatch");
 		const phases = row.phase === "REVIEW" ? ["REVIEW", "REVIEW"] : [row.phase];
@@ -428,7 +437,7 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 					results.push(result); artifacts.push(artifact(result)); if (result.status !== "PASS") break;
 				}
 			}
-			for (const result of results) ledger.record(runId, spendUsageForResult(result, `${config.participant.provider}/${config.participant.model}+${config.outer.provider}/${config.outer.model}`));
+			for (const result of results) for (const usage of spendUsageForResult(result, `${config.participant.provider}/${config.participant.model}`, `${config.outer.provider}/${config.outer.model}`)) ledger.record(runId, usage);
 			let judge: Awaited<ReturnType<typeof judgePhase>> | undefined;
 			if (row.judge && results.every((result) => result.status === "PASS")) {
 				judge = await judgePhase(config, row, artifacts.join("\n\n---\n\n"), rowDeadline);
@@ -446,18 +455,19 @@ export async function runRealCanary(mode: "all" | "e2e" = "all"): Promise<Infras
 			const slot = slotFromResults(row, results, resultUse.evidenceRef, config, admission, handoffs, judge); const rowCost = slot.childCostUsd + slot.outerCostUsd;
 			for (const result of results) disposeRaw(result); journeyCleanup?.(); journeyCleanup = undefined;
 			if (rowCost > row.budgetUsd + Number.EPSILON) throw new Error(`${row.slotId} exceeded approved cost ceiling: ${rowCost} > ${row.budgetUsd}`);
-			ledger.finish(runId, "settled", "accepted row completed with exact participant/outer/judge telemetry"); spendFinished = true;
+			ledger.finish(runId, "settled", "accepted row completed with exact participant/outer/judge telemetry"); spendFinished = true; emitCostVisibility(ledger, currentRunIds);
 			slots.push(slot); if (slot.status !== "PASS") throw new Error(`${row.slotId} did not pass: ${slot.status}`);
 		} catch (error) {
 			for (const result of results) disposeRaw(result); journeyCleanup?.();
-			if (!spendFinished) { try { ledger.finish(runId, "failed", error instanceof Error ? error.message : String(error)); } catch (ledgerError) { throw new AggregateError([error, ledgerError], "canary and spend-ledger failure"); } }
+			if (!spendFinished) { try { ledger.finish(runId, "failed", error instanceof Error ? error.message : String(error)); emitCostVisibility(ledger, currentRunIds); } catch (ledgerError) { throw new AggregateError([error, ledgerError], "canary and spend-ledger failure"); } }
 			throw error;
 		}
 	}
-	const report = buildInfrastructureReport({ manifestHash: manifest.manifestHash, slots });
+	const cost = ledger.summary(currentRunIds);
+	const report = buildInfrastructureReport({ manifestHash: manifest.manifestHash, slots, cost });
 	const human = validateHumanReview({ recordId: "PPE-001-I4-INDEPENDENT-REVIEW-PENDING", itemId: "BOOT-E2E", itemVersion: 1, resultHash: report.reportHash, decision: "pending", reason: "independent VERIFY/REVIEW follows IMPLEMENT", timestamp: report.generatedAt });
 	const ledgerAudit = ledger.audit(config.evidence.priorSpendUsd);
-	store.put({ value: { report, humanReview: human, configHash: config.configHash, manifestHash: manifest.manifestHash, cumulativeSpendUsd: ledgerAudit.totalUsd, spendLedgerRef: ledgerAudit.retrievalRef, spendLedgerHash: ledgerAudit.stateHash }, schemaVersionRef: "model-quality-real-canary-report-v3", assetVersions: [`manifest:${manifest.manifestHash}`, `config:${config.configHash}`, `ledger:${ledgerAudit.stateHash}`], participantProvenance: ["PPE-001-I4", ...participantProvenance], retentionUntil: new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString(), indexId: `accepted-report:${report.reportHash}` });
+	store.put({ value: { report, humanReview: human, configHash: config.configHash, manifestHash: manifest.manifestHash, cost, cumulativeSpendUsd: ledgerAudit.totalUsd, spendLedgerRef: ledgerAudit.retrievalRef, spendLedgerHash: ledgerAudit.stateHash }, schemaVersionRef: "model-quality-real-canary-report-v3", assetVersions: [`manifest:${manifest.manifestHash}`, `config:${config.configHash}`, `ledger:${ledgerAudit.stateHash}`], participantProvenance: ["PPE-001-I4", ...participantProvenance], retentionUntil: new Date(Date.now() + config.evidence.retentionDays * 86400000).toISOString(), indexId: `accepted-report:${report.reportHash}` });
 	store.audit(); fs.writeFileSync(REPORT_FILE, `${JSON.stringify(report, null, 2)}\n`); return report;
 }
 

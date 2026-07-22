@@ -144,6 +144,9 @@ export interface NormalizedSlotResult {
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_ID = /^[A-Z][A-Z0-9-]{2,63}$/;
+function evidenceReferenceMatches(reference: string, hash: string): boolean {
+	return reference === `sha256:${hash}` || new RegExp(`^sha256:${hash}#index:[a-f0-9-]{36,64}$`).test(reference);
+}
 
 function object(value: unknown, field: string): Record<string, unknown> {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} must be an object`);
@@ -313,7 +316,7 @@ export function validateSlotResult(value: NormalizedSlotResult, row: ManifestRow
 	if (canonicalJson(value.judgeIdentity) !== canonicalJson(row.judge)) throw new Error("judge identity mismatch");
 	for (const [field, metric] of Object.entries(value.judgeUsage)) if (typeof metric !== "number" || !Number.isFinite(metric) || metric < 0) throw new Error(`judgeUsage.${field} is invalid`);
 	if (![value.admission.itemHash, value.admission.catalogHash].every((entry) => SHA256.test(entry)) || !Number.isInteger(value.admission.selectionSequence) || !Number.isInteger(value.admission.dispatchSequence) || value.admission.selectionSequence < 0 || value.admission.dispatchSequence < value.admission.selectionSequence) throw new Error("admission identity/authorization is invalid");
-	if (value.admission.publications.length < 2 || !value.admission.publications.some((entry) => entry.kind === "result-use") || !value.admission.publications.some((entry) => entry.kind === "report") || value.admission.publications.some((entry) => entry.eligibility !== "eligible" || !SHA256.test(entry.evidenceHash) || entry.evidenceRef !== `sha256:${entry.evidenceHash}`)) throw new Error("admission publication linkage is incomplete or tainted");
+	if (value.admission.publications.length < 2 || !value.admission.publications.some((entry) => entry.kind === "result-use") || !value.admission.publications.some((entry) => entry.kind === "report") || value.admission.publications.some((entry) => entry.eligibility !== "eligible" || !SHA256.test(entry.evidenceHash) || !evidenceReferenceMatches(entry.evidenceRef, entry.evidenceHash))) throw new Error("admission publication linkage is incomplete or tainted");
 	if (value.phase === "E2E" && value.admission.publications.filter((entry) => entry.kind === "join").length !== 4) throw new Error("E2E admission join publications are incomplete");
 	if (value.attempts < row.minimumPlannedAttempts) throw new Error("attempt denominator is below the mandatory route count");
 	if (value.infrastructureAttempts > row.maxInfrastructureAttempts - 1 || value.attempts > row.minimumPlannedAttempts + row.maxInfrastructureAttempts - 1) throw new Error("row-wide infrastructure retry bound exceeded");

@@ -62,7 +62,13 @@ export class EvidenceAdmissionCoordinator {
 		const initialization = new OwnedFileLock(path.join(root, "coordinator-init.lock"), "coordinator initialization");
 		const initializationOwner = acquireWaiting(initialization);
 		try {
-			this.guard = new AdmissionGuard(path.join(root, "guard"), item, policy, serviceAllowlist, humanAuthorizer, (hash) => store.hasContentHash(hash));
+			let guard: AdmissionGuard | undefined;
+			for (let attempt = 0; attempt < 1000; attempt++) {
+				try { guard = new AdmissionGuard(path.join(root, "guard"), item, policy, serviceAllowlist, humanAuthorizer, (hash) => store.hasContentHash(hash)); break; }
+				catch (error: any) { if (!/admission guard is locked by live owner/.test(String(error?.message))) throw error; sleep(5); }
+			}
+			if (!guard) throw new Error("admission guard timed out waiting for coordinator initialization");
+			this.guard = guard;
 			this.discardUncommittedJournals();
 			this.reconcile();
 		} finally { initialization.release(initializationOwner); }

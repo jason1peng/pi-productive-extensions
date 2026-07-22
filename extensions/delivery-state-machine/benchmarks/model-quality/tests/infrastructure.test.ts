@@ -335,15 +335,27 @@ const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-eviden
 try {
 	const store = new EvidenceStore(evidenceRoot);
 	const secret = "secret-value-12345678";
-	const record = store.put({ value: { api_key: secret, rawTranscript: "private", safe: "retained" }, schemaVersionRef: "v1", assetVersions: ["asset-v1"], participantProvenance: ["fake/model@v1"], retentionUntil: "2099-01-01T00:00:00.000Z", explicitSecrets: [secret] });
+	const record = store.put({ value: { api_key: secret, rawTranscript: "private", safe: "retained" }, schemaVersionRef: "v1", assetVersions: ["asset-v1"], participantProvenance: ["fake/model@v1"], retentionUntil: "2099-01-01T00:00:00.000Z", explicitSecrets: [secret], indexId: "redaction-primary" });
 	const retained = store.get(record).toString("utf8");
 	assert.doesNotMatch(retained, /secret-value|private/);
 	assert.match(retained, /REDACTED|OMITTED/);
 	assert.deepEqual(store.audit(), { objects: 1, indexes: 1 });
+	assert.match(record.retrievalRef, new RegExp(`^sha256:${record.contentHash}#index:`));
 	assert.equal(store.getByRef(record.retrievalRef, { schemaVersionRef: "v1", assetVersions: ["asset-v1"], participantProvenance: ["fake/model@v1"] }).record.contentHash, record.contentHash);
+	const duplicateContent = store.put({ value: { api_key: secret, rawTranscript: "private", safe: "retained" }, schemaVersionRef: "v1", assetVersions: ["asset-v2"], participantProvenance: ["fake/model@v2"], retentionUntil: "2099-01-01T00:00:00.000Z", explicitSecrets: [secret], indexId: "same-content-distinct-provenance" });
+	assert.equal(duplicateContent.contentHash, record.contentHash); assert.notEqual(duplicateContent.retrievalRef, record.retrievalRef);
+	assert.equal(store.getByRef(record.retrievalRef, { assetVersions: ["asset-v1"], participantProvenance: ["fake/model@v1"] }).record.indexHash, record.indexHash);
+	assert.equal(store.getByRef(duplicateContent.retrievalRef, { assetVersions: ["asset-v2"], participantProvenance: ["fake/model@v2"] }).record.indexHash, duplicateContent.indexHash);
+	assert.deepEqual(store.audit(), { objects: 1, indexes: 2 }, "content must deduplicate while exact provenance indexes remain distinct");
 	const originalIndex = fs.readdirSync(store.indexRoot)[0]; const originalIndexPath = path.join(store.indexRoot, originalIndex); const originalIndexText = fs.readFileSync(originalIndexPath, "utf8"); const tamperedIndex = JSON.parse(originalIndexText); tamperedIndex.participantProvenance = ["attacker/model@v9"]; fs.writeFileSync(originalIndexPath, JSON.stringify(tamperedIndex)); assert.throws(() => store.indexes(), /authentication/); fs.writeFileSync(originalIndexPath, originalIndexText);
-	fs.copyFileSync(originalIndexPath, path.join(store.indexRoot, "duplicate.json"));
-	assert.throws(() => store.getByRef(record.retrievalRef), /exactly one/); fs.rmSync(path.join(store.indexRoot, "duplicate.json"));
+	fs.copyFileSync(originalIndexPath, path.join(store.indexRoot, "00000000-0000-0000-0000-000000000000.json"));
+	assert.throws(() => store.indexes(), /retrieval/); fs.rmSync(path.join(store.indexRoot, "00000000-0000-0000-0000-000000000000.json"));
+	const legacyStore = new EvidenceStore(path.join(evidenceRoot, "legacy"));
+	const exactLegacy = legacyStore.put({ value: { legacy: true }, schemaVersionRef: "legacy-v2", assetVersions: ["legacy-asset"], participantProvenance: ["legacy/model"], retentionUntil: "2099-01-01T00:00:00.000Z", indexId: "legacy-index" });
+	const legacyFile = fs.readdirSync(legacyStore.indexRoot).find((entry) => entry.endsWith(".json"))!; const legacyPath = path.join(legacyStore.indexRoot, legacyFile);
+	const legacyRecord: any = { ...exactLegacy, retrievalRef: `sha256:${exactLegacy.contentHash}` }; const { indexHash: _legacyHash, ...legacyBody } = legacyRecord; legacyRecord.indexHash = hashObject(legacyBody); fs.writeFileSync(legacyPath, `${JSON.stringify(legacyRecord, null, 2)}\n`);
+	assert.equal(legacyStore.getByRef(legacyRecord.retrievalRef).record.indexHash, legacyRecord.indexHash, "single-index retained v3 references remain readable");
+	fs.copyFileSync(legacyPath, path.join(legacyStore.indexRoot, "duplicate.json")); assert.throws(() => legacyStore.getByRef(legacyRecord.retrievalRef), /exactly one/, "ambiguous legacy hash-only references must fail closed");
 	fs.writeFileSync(path.join(store.objectRoot, HASH_B), "orphan", { mode: 0o600 }); assert.throws(() => store.audit(), /orphan/); fs.rmSync(path.join(store.objectRoot, HASH_B));
 	fs.rmSync(path.join(store.objectRoot, record.contentHash));
 	assert.throws(() => store.get(record), /unavailable/);
@@ -665,6 +677,51 @@ try {
 	waitForFile(readyA); waitForFile(readyB); fs.writeFileSync(resume, "resume"); waitForFile(doneA); waitForFile(doneB);
 	if (a.pid) { try { process.kill(a.pid, 0); } catch {} } if (b.pid) { try { process.kill(b.pid, 0); } catch {} }
 } finally { fs.rmSync(coordinatorParallelRoot, { recursive: true, force: true }); }
+
+// REVIEW #8: distinct operations may retain identical content. The object is
+// deduplicated, but every operation keeps an authenticated exact provenance index.
+const identicalContentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-identical-content-"));
+try {
+	const evidenceRoot = path.join(identicalContentRoot, "evidence"); const admissionRoot = path.join(identicalContentRoot, "admission");
+	const store = new EvidenceStore(evidenceRoot);
+	let coordinator = new EvidenceAdmissionCoordinator(admissionRoot, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const expectedSequence = coordinator.authorize("dispatch").sequence; const value = { identical: "retained-content" }; const retentionUntil = "2099-01-01T00:00:00.000Z";
+	const references: string[] = [];
+	for (const publicationKind of ["result-use", "join", "report"] as const) references.push(coordinator.publish({ id: `identical-${publicationKind}`, publicationKind, expectedSequence, value, schemaVersionRef: "identical-content-v1", assetVersions: ["asset-identical-v1"], participantProvenance: ["bootstrap/identical"], retentionUntil }).evidenceRef);
+	const { evidenceHash: _identicalHash, ...incidentReport } = report("identical-incident", "untrusted-report");
+	const incidentResult = coordinator.incident({ report: incidentReport, value, schemaVersionRef: "identical-content-v1", assetVersions: ["asset-identical-v1"], participantProvenance: ["bootstrap/identical"], retentionUntil });
+	references.push(incidentResult.evidenceRef); assert.equal(incidentResult.acknowledged, false);
+	assert.equal(new Set(references).size, 4, "each operation must retain its exact index reference");
+	assert.deepEqual(store.audit(), { objects: 1, indexes: 4 }, "identical content must deduplicate to one object with distinct operation indexes");
+	for (const reference of references) assert.equal(store.getByRef(reference, { schemaVersionRef: "identical-content-v1", assetVersions: ["asset-identical-v1"], participantProvenance: ["bootstrap/identical"] }).content.toString("utf8"), `${JSON.stringify(value, null, 2)}\n`);
+	coordinator = new EvidenceAdmissionCoordinator(admissionRoot, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	for (const publicationKind of ["result-use", "join", "report"] as const) assert.match(coordinator.publish({ id: `identical-${publicationKind}`, publicationKind, expectedSequence, value, schemaVersionRef: "identical-content-v1", assetVersions: ["asset-identical-v1"], participantProvenance: ["bootstrap/identical"], retentionUntil }).evidenceRef, /#index:/);
+	assert.deepEqual(coordinator.incident({ report: incidentReport, value, schemaVersionRef: "identical-content-v1", assetVersions: ["asset-identical-v1"], participantProvenance: ["bootstrap/identical"], retentionUntil }), incidentResult, "identical-content incident replay must survive restart");
+	assert.throws(() => coordinator.publish({ id: "identical-report", publicationKind: "report", expectedSequence, value, schemaVersionRef: "identical-content-v1", assetVersions: ["changed-provenance"], participantProvenance: ["bootstrap/identical"], retentionUntil }), /original exact operation input/);
+} finally { fs.rmSync(identicalContentRoot, { recursive: true, force: true }); }
+
+const concurrentIdenticalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-concurrent-identical-content-"));
+try {
+	const evidenceRoot = path.join(concurrentIdenticalRoot, "evidence"); const admissionRoot = path.join(concurrentIdenticalRoot, "admission");
+	const coordinatorModule = path.resolve(ROOT, "admission-coordinator.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts"); const admissionModule = path.resolve(ROOT, "admission.ts");
+	new EvidenceAdmissionCoordinator(admissionRoot, new EvidenceStore(evidenceRoot), { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const common = { value: { identical: "concurrent-content" }, schemaVersionRef: "concurrent-identical-v1", assetVersions: ["asset-identical-v1"], participantProvenance: ["bootstrap/identical"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	const operations: Array<{ name: string; method: "publish" | "incident"; input: any }> = [
+		...(["result-use", "join", "report"] as const).map((publicationKind) => ({ name: publicationKind, method: "publish" as const, input: { id: `concurrent-identical-${publicationKind}`, publicationKind, expectedSequence: 0, ...common } })),
+		{ name: "incident", method: "incident", input: { report: (() => { const { evidenceHash: _, ...value } = report("concurrent-identical-incident", "untrusted-report"); return value; })(), ...common } },
+	];
+	const children = operations.map((operation) => {
+		const done = path.join(concurrentIdenticalRoot, `${operation.name}.done`);
+		const script = `import * as fs from "node:fs"; import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; try{const c=new EvidenceAdmissionCoordinator(${JSON.stringify(admissionRoot)},new EvidenceStore(${JSON.stringify(evidenceRoot)}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST);fs.writeFileSync(${JSON.stringify(done)},JSON.stringify(c.${operation.method}(${JSON.stringify(operation.input)})));}catch(error){fs.writeFileSync(${JSON.stringify(done)},String(error));}`;
+		return { done, child: spawn(process.execPath, ["-e", script], { stdio: "ignore" }) };
+	});
+	for (const entry of children) waitForFile(entry.done);
+	for (const entry of children) { assert.doesNotMatch(fs.readFileSync(entry.done, "utf8"), /Error:/); if (entry.child.pid) { try { process.kill(entry.child.pid, 0); } catch {} } }
+	const store = new EvidenceStore(evidenceRoot); assert.deepEqual(store.audit(), { objects: 1, indexes: 4 }, "concurrent identical content must retain four exact indexes without duplicate objects");
+	const restarted = new EvidenceAdmissionCoordinator(admissionRoot, store, { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	assert.doesNotThrow(() => restarted.snapshot(), "identical-content indexes must never poison restart reconciliation");
+	for (const operation of operations) assert.doesNotThrow(() => operation.method === "publish" ? restarted.publish(operation.input) : restarted.incident(operation.input));
+} finally { fs.rmSync(concurrentIdenticalRoot, { recursive: true, force: true }); }
 
 const baseRow = manifest.rows[0];
 const slot = (overrides: Partial<NormalizedSlotResult> = {}): NormalizedSlotResult => ({ slotId: "S", itemId: "BOOT-X", itemVersion: 1, phase: "IMPLEMENT", datasetClass: "bootstrap", qualificationEligible: false, requested: structuredClone(baseRow.candidate), effective: structuredClone(baseRow.candidate), nonTargetRoutes: structuredClone(baseRow.nonTargetRoutes), judgeIdentity: structuredClone(baseRow.judge), judgeUsage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0, costUsd: 0.1, wallTimeMs: 10 }, admission: { itemHash: HASH_A, catalogHash: manifest.manifestHash, selectionSequence: 0, dispatchSequence: 0, publications: [{ id: "result", kind: "result-use", sequence: 0, eligibility: "eligible", evidenceHash: HASH_A, evidenceRef: `sha256:${HASH_A}` }, { id: "report", kind: "report", sequence: 0, eligibility: "eligible", evidenceHash: HASH_B, evidenceRef: `sha256:${HASH_B}` }] }, isolation: { repository: "disposable://repo", piHome: "disposable://home", artifactRoot: "disposable://artifact", resultNamespace: "slot:S", processGroup: "isolated:S", credentialBoundary: "allowlisted-ephemeral", remotePolicy: "none" }, cleanupPassed: true, redactionPassed: true, status: "PASS", slotState: "JUDGED", deterministicPassed: true, qualitativeEligible: true, attempts: 2, infrastructureAttempts: 1, inputTokens: 10, outputTokens: 5, cachedTokens: 2, childCostUsd: 2, outerCostUsd: 1, wallTimeMs: 200, firstPlannedPassCostUsd: 2, defaultFirstPlannedPassWallTimeMs: 100, minimumPlannedAttempts: 1, handoffs: ["a->b"], evidenceRefs: ["sha256:x"], ...overrides });

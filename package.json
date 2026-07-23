@@ -21,7 +21,13 @@
     "typebox": "*"
   },
   "scripts": {
-    "test": "NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/delivery-state-machine/tests/delivery-state-machine.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/delivery-state-machine/benchmarks/agent-quality/tests/framework.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/session-usage/tests/session-usage.test.ts && NODE_PATH=${NODE_PATH:-$HOME/.pi/agent/npm/node_modules} bun extensions/git-cleanup/tests/git-cleanup.test.ts",
+    "test": "bash scripts/test-with-host-modules.sh",
+    "eval:models:validate": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts validate",
+    "eval:models:fake-full": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts fake-full",
+    "eval:models:audit": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts audit",
+    "eval:models:audit-real": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts audit-real",
+    "eval:models:bootstrap:canary": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts bootstrap-canary",
+    "eval:models:bootstrap:e2e": "bun extensions/delivery-state-machine/benchmarks/model-quality/run.ts bootstrap-e2e",
     "eval:dsm-agents:validate": "bun extensions/delivery-state-machine/benchmarks/agent-quality/run.ts validate && promptfoo validate -c extensions/delivery-state-machine/benchmarks/agent-quality/promptfooconfig.yaml",
     "eval:dsm-agents:canary": "bun extensions/delivery-state-machine/benchmarks/agent-quality/canary.ts",
     "eval:dsm-agents": "promptfoo eval -c extensions/delivery-state-machine/benchmarks/agent-quality/promptfooconfig.yaml --no-cache",

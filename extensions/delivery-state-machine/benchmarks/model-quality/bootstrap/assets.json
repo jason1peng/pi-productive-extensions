@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "source": "frozen Stage 7 agent-quality scenarios",
+  "assets": [
+    {
+      "itemId": "BOOT-IMPLEMENT",
+      "itemVersion": 1,
+      "phase": "IMPLEMENT",
+      "stage7Scenarios": [
+        {
+          "id": "IMP-01",
+          "path": "scenarios/imp-01.json",
+          "sha256": "b7463258ccf9df2f270e831351d847b935efc63b2b3eaae54b83016fe26ca1d5"
+        },
+        {
+          "id": "IMP-02",
+          "path": "scenarios/imp-02.json",
+          "sha256": "1e48c0fb2ff6d3d0ad39953c057a5cd439ad9ed1c01ffc4e25bfa45b294d08a8"
+        }
+      ],
+      "handoffs": []
+    },
+    {
+      "itemId": "BOOT-VERIFY",
+      "itemVersion": 1,
+      "phase": "VERIFY",
+      "stage7Scenarios": [
+        {
+          "id": "VER-01",
+          "path": "scenarios/ver-01.json",
+          "sha256": "684e33e1ded2695dfaeb2c4cb7eab31e4e60bdf626089a22b3bfc1081296e67a"
+        },
+        {
+          "id": "VER-02",
+          "path": "scenarios/ver-02.json",
+          "sha256": "e721288099b2dfcf4c640d83755b2ef24e787fd158167fb3cd132444fd01a53b"
+        }
+      ],
+      "handoffs": []
+    },
+    {
+      "itemId": "BOOT-REVIEW",
+      "itemVersion": 1,
+      "phase": "REVIEW",
+      "stage7Scenarios": [
+        {
+          "id": "REV-01",
+          "path": "scenarios/rev-01.json",
+          "sha256": "7d6fd1b02d05cb09b8bdaca41c8c32b4376049b5f1c0eae9f07bf71fcd6f0e37"
+        },
+        {
+          "id": "REV-02",
+          "path": "scenarios/rev-02.json",
+          "sha256": "237f40ffb7e191dfef7b1634237382b7b0a959e4c3d293539d6dd87837d16a55"
+        }
+      ],
+      "handoffs": []
+    },
+    {
+      "itemId": "BOOT-CLOSE",
+      "itemVersion": 1,
+      "phase": "CLOSE",
+      "stage7Scenarios": [
+        {
+          "id": "CLO-01",
+          "path": "scenarios/clo-01.json",
+          "sha256": "f1c35e6b4cb9f6b3586571545132054cf7e5c9d2dbd46dfad6736e41cef05834"
+        },
+        {
+          "id": "CLO-02",
+          "path": "scenarios/clo-02.json",
+          "sha256": "187f3496df21597786225a4e9c9ca4c6ad90465f050ae963ba03a27148444235"
+        }
+      ],
+      "handoffs": []
+    },
+    {
+      "itemId": "BOOT-RETRO",
+      "itemVersion": 1,
+      "phase": "RETRO",
+      "stage7Scenarios": [
+        {
+          "id": "RET-01",
+          "path": "scenarios/ret-01.json",
+          "sha256": "bafc29b768a4b22fbbe9033dea434b20d28275cde8f3b34b9b504bd1e96f23ee"
+        },
+        {
+          "id": "RET-02",
+          "path": "scenarios/ret-02.json",
+          "sha256": "ca3c9493138e8d57f5ff81637b434a5c3392f9054653e322d013e3850ce2d46f"
+        }
+      ],
+      "handoffs": []
+    },
+    {
+      "itemId": "BOOT-E2E",
+      "itemVersion": 1,
+      "phase": "E2E",
+      "stage7Scenarios": [
+        {
+          "id": "IMP-01",
+          "path": "scenarios/imp-01.json",
+          "sha256": "b7463258ccf9df2f270e831351d847b935efc63b2b3eaae54b83016fe26ca1d5"
+        },
+        {
+          "id": "VER-01",
+          "path": "scenarios/ver-01.json",
+          "sha256": "684e33e1ded2695dfaeb2c4cb7eab31e4e60bdf626089a22b3bfc1081296e67a"
+        },
+        {
+          "id": "REV-01",
+          "path": "scenarios/rev-01.json",
+          "sha256": "7d6fd1b02d05cb09b8bdaca41c8c32b4376049b5f1c0eae9f07bf71fcd6f0e37"
+        },
+        {
+          "id": "CLO-01",
+          "path": "scenarios/clo-01.json",
+          "sha256": "f1c35e6b4cb9f6b3586571545132054cf7e5c9d2dbd46dfad6736e41cef05834"
+        },
+        {
+          "id": "RET-01",
+          "path": "scenarios/ret-01.json",
+          "sha256": "bafc29b768a4b22fbbe9033dea434b20d28275cde8f3b34b9b504bd1e96f23ee"
+        }
+      ],
+      "handoffs": [
+        "IMPLEMENT->VERIFY",
+        "VERIFY->REVIEW",
+        "REVIEW->CLOSE",
+        "CLOSE->RETRO"
+      ]
+    }
+  ]
+}

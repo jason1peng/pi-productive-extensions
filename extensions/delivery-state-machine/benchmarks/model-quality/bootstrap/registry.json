@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "schemaVersion": 1,
+      "id": "BOOT-IMPLEMENT",
+      "version": 1,
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "scope": "IMPLEMENT",
+      "tags": [
+        "bootstrap",
+        "infrastructure",
+        "implement"
+      ],
+      "lifecycle": "active",
+      "admissionState": "admitted",
+      "holdState": "clear",
+      "executionPromptVersion": "stage7-or-bootstrap-v1",
+      "scenarioVersion": "bootstrap-implement-v1",
+      "oracleVersion": "synthetic-oracle-v1",
+      "judgeRubricVersion": "implement-supplemental-v1",
+      "publicAssetHash": "bd3f2dde136dd81d0714ade56ef13715a439ed838fb9ca96adcdcfdf39921a5b",
+      "restrictedOracleHash": "b6b73bc0c0ebeaa1766f9f4a550d849563be1166bdec7125ff2d99acc199b391",
+      "fixtureHash": "53c1a76f1c3c726bc920dc94d71d8d80effec5dc974ea1d30bf477e24607e46c",
+      "scorerVersion": "model-quality-scorer-v1",
+      "provenance": "PPE-001 bootstrap infrastructure fixture references frozen Stage 7 scenario contracts in bootstrap/assets.json",
+      "approvalRecordRefs": [
+        "PPE-001-I3-bootstrap-review"
+      ],
+      "cleanRoomExportPolicy": "public task and synthetic hashes only; no restricted payload or raw transcript"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "BOOT-VERIFY",
+      "version": 1,
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "scope": "VERIFY",
+      "tags": [
+        "bootstrap",
+        "infrastructure",
+        "verify"
+      ],
+      "lifecycle": "active",
+      "admissionState": "admitted",
+      "holdState": "clear",
+      "executionPromptVersion": "stage7-or-bootstrap-v1",
+      "scenarioVersion": "bootstrap-verify-v1",
+      "oracleVersion": "synthetic-oracle-v1",
+      "judgeRubricVersion": "verify-supplemental-v1",
+      "publicAssetHash": "8a097ecb593f59f3517b33f1226fcb4e62c4f551cd5181f3a0cb7ad1e45ab361",
+      "restrictedOracleHash": "f756e7408b575996134a559468daa1a0c247c9ee981b6aa1028715dd4a8f2227",
+      "fixtureHash": "c58c3bc172e6f180ae1f6178524f9f008b622ed15ba88a99238c1b565bf44eca",
+      "scorerVersion": "model-quality-scorer-v1",
+      "provenance": "PPE-001 bootstrap infrastructure fixture references frozen Stage 7 scenario contracts in bootstrap/assets.json",
+      "approvalRecordRefs": [
+        "PPE-001-I3-bootstrap-review"
+      ],
+      "cleanRoomExportPolicy": "public task and synthetic hashes only; no restricted payload or raw transcript"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "BOOT-REVIEW",
+      "version": 1,
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "scope": "REVIEW",
+      "tags": [
+        "bootstrap",
+        "infrastructure",
+        "review"
+      ],
+      "lifecycle": "active",
+      "admissionState": "admitted",
+      "holdState": "clear",
+      "executionPromptVersion": "stage7-or-bootstrap-v1",
+      "scenarioVersion": "bootstrap-review-v1",
+      "oracleVersion": "synthetic-oracle-v1",
+      "judgeRubricVersion": "review-supplemental-v1",
+      "publicAssetHash": "bedf830dd3547ae64c4a018f97514a6581330f6b3641157f196e6c66ae91362f",
+      "restrictedOracleHash": "760aac32a6dba96b08cdaed235f38e654db5d5d0dd9ead29c6278eb73ddc59e0",
+      "fixtureHash": "97f3682e6a59ca210a1fa3e8f14d4cbb2dcb391df420ae6680a9f54e6d84004b",
+      "scorerVersion": "model-quality-scorer-v1",
+      "provenance": "PPE-001 bootstrap infrastructure fixture references frozen Stage 7 scenario contracts in bootstrap/assets.json",
+      "approvalRecordRefs": [
+        "PPE-001-I3-bootstrap-review"
+      ],
+      "cleanRoomExportPolicy": "public task and synthetic hashes only; no restricted payload or raw transcript"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "BOOT-CLOSE",
+      "version": 1,
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "scope": "CLOSE",
+      "tags": [
+        "bootstrap",
+        "infrastructure",
+        "close"
+      ],
+      "lifecycle": "active",
+      "admissionState": "admitted",
+      "holdState": "clear",
+      "executionPromptVersion": "stage7-or-bootstrap-v1",
+      "scenarioVersion": "bootstrap-close-v1",
+      "oracleVersion": "synthetic-oracle-v1",
+      "judgeRubricVersion": "no-default-judge-v1",
+      "publicAssetHash": "ef0b07cf83a39faa27e866861ea5608123c61e7bcc2025314163c4250724b20f",
+      "restrictedOracleHash": "d0df3deb72f28260ad3bccb14a7c408f9aa461c03a4b4dcd13a2c07632519ee1",
+      "fixtureHash": "1ec2d4d3046d19c01c66f76d846bb14b90e7c873f88db85a3efc860fe6be2441",
+      "scorerVersion": "model-quality-scorer-v1",
+      "provenance": "PPE-001 bootstrap infrastructure fixture references frozen Stage 7 scenario contracts in bootstrap/assets.json",
+      "approvalRecordRefs": [
+        "PPE-001-I3-bootstrap-review"
+      ],
+      "cleanRoomExportPolicy": "public task and synthetic hashes only; no restricted payload or raw transcript"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "BOOT-RETRO",
+      "version": 1,
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "scope": "RETRO",
+      "tags": [
+        "bootstrap",
+        "infrastructure",
+        "retro"
+      ],
+      "lifecycle": "active",
+      "admissionState": "admitted",
+      "holdState": "clear",
+      "executionPromptVersion": "stage7-or-bootstrap-v1",
+      "scenarioVersion": "bootstrap-retro-v1",
+      "oracleVersion": "synthetic-oracle-v1",
+      "judgeRubricVersion": "retro-supplemental-v1",
+      "publicAssetHash": "d6ce0d7ba1ff068ea5c6bead193b06fc3186531a1673add1055c806683df07d1",
+      "restrictedOracleHash": "49a650a0de335cabab7c94b46f8bcaa400d1ef9968f65b71314d2a6713a892b8",
+      "fixtureHash": "f1134cb7167b9b1c0184be38b5953dc60c02d8a62e5af6e7b368a8dcdbb260dd",
+      "scorerVersion": "model-quality-scorer-v1",
+      "provenance": "PPE-001 bootstrap infrastructure fixture references frozen Stage 7 scenario contracts in bootstrap/assets.json",
+      "approvalRecordRefs": [
+        "PPE-001-I3-bootstrap-review"
+      ],
+      "cleanRoomExportPolicy": "public task and synthetic hashes only; no restricted payload or raw transcript"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "BOOT-E2E",
+      "version": 1,
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "scope": "E2E",
+      "tags": [
+        "bootstrap",
+        "infrastructure",
+        "e2e"
+      ],
+      "lifecycle": "active",
+      "admissionState": "admitted",
+      "holdState": "clear",
+      "executionPromptVersion": "stage7-or-bootstrap-v1",
+      "scenarioVersion": "bootstrap-e2e-v1",
+      "oracleVersion": "synthetic-oracle-v1",
+      "judgeRubricVersion": "no-default-judge-v1",
+      "publicAssetHash": "690e84cff38141f4ead8ce4e838a894ccf5ff99a0ae9f286235a39b6b1b05472",
+      "restrictedOracleHash": "fa636b0ba7d982b8df39ec1ce3f7f9a39c84ff971bcc3fc4d6b18e9eda497a91",
+      "fixtureHash": "beff5e15c93077aff89274aee671df0e4d696f7f9d652bbc80b5c2d4dd7ae8e2",
+      "scorerVersion": "model-quality-scorer-v1",
+      "provenance": "PPE-001 bootstrap infrastructure fixture references frozen Stage 7 scenario contracts in bootstrap/assets.json",
+      "approvalRecordRefs": [
+        "PPE-001-I3-bootstrap-review"
+      ],
+      "cleanRoomExportPolicy": "public task and synthetic hashes only; no restricted payload or raw transcript"
+    }
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "id": "PPE-001-REAL-CANARY",
+  "version": 3,
+  "frozenAt": "2026-07-21T18:00:00.000Z",
+  "expectedRows": 6,
+  "maxRows": 6,
+  "maxCostUsd": 100,
+  "serial": true,
+  "rows": [
+    {
+      "slotId": "BOOT-REAL-01",
+      "itemId": "BOOT-IMPLEMENT",
+      "itemVersion": 1,
+      "phase": "IMPLEMENT",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "candidate": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "worker",
+        "promptVersion": "sha256:334161f8c69cd3e16b408800b301ad66c26cced0d8bdb46b70305d2d437f2116",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "maxInfrastructureAttempts": 2,
+      "budgetUsd": 2,
+      "minimumPlannedAttempts": 1,
+      "judge": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "implement-supplemental-v1"
+      }
+    },
+    {
+      "slotId": "BOOT-REAL-02",
+      "itemId": "BOOT-VERIFY",
+      "itemVersion": 1,
+      "phase": "VERIFY",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "candidate": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "fresh-verifier",
+        "promptVersion": "sha256:e7b26467252939f2e5ad00b49f10f6b7e4b6c4363b9a9d8f4ffbbdd7f8e64543",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "maxInfrastructureAttempts": 2,
+      "budgetUsd": 2,
+      "minimumPlannedAttempts": 1,
+      "judge": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "verify-supplemental-v1"
+      }
+    },
+    {
+      "slotId": "BOOT-REAL-03",
+      "itemId": "BOOT-REVIEW",
+      "itemVersion": 1,
+      "phase": "REVIEW",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "candidate": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "reviewer",
+        "promptVersion": "sha256:4b11446eb9bf74edbc4d3ddee1031db20c1bd8b9a03ffc2273189cdebf18b083",
+        "toolsHash": "a5325888cb38fcd0c84e3577cc3869e2c79943acf4eed9c435813e12b7784b33",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "maxInfrastructureAttempts": 2,
+      "budgetUsd": 2,
+      "minimumPlannedAttempts": 2,
+      "judge": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "review-supplemental-v1"
+      }
+    },
+    {
+      "slotId": "BOOT-REAL-04",
+      "itemId": "BOOT-CLOSE",
+      "itemVersion": 1,
+      "phase": "CLOSE",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "candidate": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delegate",
+        "promptVersion": "sha256:a081d3d32389e41565357ce694df71a56a9cd1c8b1d49d42344a94f01b0ab257",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "maxInfrastructureAttempts": 2,
+      "budgetUsd": 2,
+      "minimumPlannedAttempts": 1
+    },
+    {
+      "slotId": "BOOT-REAL-05",
+      "itemId": "BOOT-RETRO",
+      "itemVersion": 1,
+      "phase": "RETRO",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "candidate": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delegate",
+        "promptVersion": "sha256:cd81f96f973906bdd167f0acb3e45fb96314c9ff3d488048dd0929c54fdfca13",
+        "toolsHash": "b36507f73791ea61001b7ce94e0abc9aaaac6b48974a6590dd310c4e621e1508",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "maxInfrastructureAttempts": 2,
+      "budgetUsd": 2,
+      "minimumPlannedAttempts": 1,
+      "judge": {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "version": "gpt-5.5",
+        "family": "gpt-5.5",
+        "rubricVersion": "retro-supplemental-v1"
+      }
+    },
+    {
+      "slotId": "BOOT-REAL-06",
+      "itemId": "BOOT-E2E",
+      "itemVersion": 1,
+      "phase": "E2E",
+      "datasetClass": "bootstrap",
+      "qualificationEligible": false,
+      "candidate": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "version": "gpt-5.6-sol",
+        "family": "gpt-5.6",
+        "agent": "delivery-state-machine",
+        "promptVersion": "sha256:e6e1b536a9ccfeed7a0dbe699777d00457ec474c9cd820907749f3f7e4142834",
+        "toolsHash": "8847a45471b1cf33f2ad0c364216b747d50c91aba21f0140ecbdec4c04090d8e",
+        "thinking": "low",
+        "context": "fresh"
+      },
+      "nonTargetRoutes": {
+        "IMPLEMENT": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:worker",
+        "VERIFY": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:fresh-verifier",
+        "REVIEW": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:reviewer+reviewer",
+        "CLOSE": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate",
+        "RETRO": "openai-codex/gpt-5.6-sol@gpt-5.6-sol:delegate"
+      },
+      "maxInfrastructureAttempts": 2,
+      "budgetUsd": 8,
+      "minimumPlannedAttempts": 6
+    }
+  ],
+  "manifestHash": "4c54eee3d93f34790ec7a869fc41ed23977a6f36a594416990384adb54fa0c9a"
+}

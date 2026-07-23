@@ -225,6 +225,7 @@ await runTest("package manifest exposes exactly five package-qualified DSM agent
 await runTest("pi-subagents discovers DSM roles from the package in an isolated project when the host package is available", async () => {
 	const moduleRoot = (process.env.NODE_PATH ?? "").split(path.delimiter).find((entry) => fs.existsSync(path.join(entry, "pi-subagents", "src", "agents", "agents.ts")));
 	if (!moduleRoot) {
+		if (process.env.PPE_HOST_DISCOVERY_REQUIRED === "1") throw new Error("required host discovery smoke did not execute: pi-subagents is absent from NODE_PATH");
 		console.log("  SKIP host discovery smoke: pi-subagents is not installed in NODE_PATH");
 		return;
 	}

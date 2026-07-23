@@ -46,5 +46,8 @@
   },
   "dependencies": {
     "promptfoo": "0.121.19"
+  },
+  "devDependencies": {
+    "pi-subagents": "0.35.1"
   }
 }

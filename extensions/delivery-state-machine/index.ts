@@ -765,10 +765,51 @@ function worktreePolicyInstruction(state: DeliveryState): string | undefined {
 	return "A planning-only MR on a plan/<slug> branch may be created and submitted directly from the stable primary checkout without a dedicated planning worktree. After that plan is approved or merged, implementation and delivery must use a dedicated git worktree created from the latest fetched main, never from the planning branch. Otherwise, before launching implementation, ensure repository work happens in a dedicated git worktree created from the latest fetched main unless this delivery is continuing the same task or an amended requirement. If the current cwd/branch is not that worktree, create/switch to one or launch the child with that worktree cwd when supported. For non-git or non-repo tasks, record why this policy is not applicable.";
 }
 
+function acceptedRiskOutcome(pending: PendingIssue): string {
+	// A nested IMPLEMENT failure preserves its originating source, so phase takes precedence.
+	if (pending.phase === "IMPLEMENT") return "record the risk, but stop delivery because a failed implementation cannot become a verified candidate";
+	if (pending.source === "verify") return "record the risk, bypass the failed VERIFY gate, and advance to REVIEW";
+	if (pending.source === "review") return "record the risk, bypass the failed REVIEW gate, and advance to CLOSE";
+	return "record the risk, bypass the failed CLOSE gate, and advance to RETRO";
+}
+
+function decisionPrompt(state: DeliveryState): string {
+	const pending = state.pendingIssue;
+	const capacity = [
+		`IMPLEMENT completed ${completedImplementationReports(state)}/${maxRoundsForPhase(state, "IMPLEMENT")}`,
+		`VERIFY round ${state.verifyRound}/${maxRoundsForPhase(state, "VERIFY")}`,
+		`REVIEW round ${state.reviewRound}/${maxRoundsForPhase(state, "REVIEW")}`,
+	].join(", ");
+	const repairOutcome = pending
+		? "retry IMPLEMENT and, if it succeeds, run VERIFY, REVIEW, CLOSE, then RETRO; exhausted limits are extended only as needed for that cycle"
+		: "record the decision, but make no transition; delivery remains WAITING_DECISION because no pending issue was restored";
+	const riskOutcome = pending
+		? acceptedRiskOutcome(pending)
+		: "record the decision, but make no transition or accept any risk; delivery remains WAITING_DECISION because no pending issue was restored";
+	return `Decision required before delivery can advance.
+
+Task: ${state.task ?? "<missing task>"}
+Gate result: ${pending?.phase ?? "<missing phase>"} reported ${pending?.verdict ?? "<missing verdict>"}
+Issue source: ${pending?.source ?? "<missing source>"}
+Finding: ${pending?.summary ?? "<none recorded>"}
+Evidence artifact: ${pending?.artifact ?? "<none recorded>"}
+Recommendation: ${pending?.recommendedDecision ?? "<none>"}
+Round capacity (current/max): ${capacity}
+
+Choose: repair / accept_risk / stop.
+
+Options and consequences:
+- repair — ${repairOutcome}.
+- accept_risk — ${riskOutcome}.
+- stop — terminate this delivery without further implementation or gates.
+
+Present this context to the user/parent. Inspect the evidence artifact first when it is accessible and add any material details needed to judge the finding. Ask the user/parent to choose one option and provide a rationale, then call delivery_decide. Do not choose accept_risk on their behalf.`;
+}
+
 function fallbackNextPrompt(state: DeliveryState): string {
 	switch (state.phase) {
 		case "WAITING_DECISION":
-			return `Ask the user/parent for a decision on pending ${state.pendingIssue?.source} issue: repair / accept_risk / stop. Then call delivery_decide.`;
+			return decisionPrompt(state);
 		case "DONE":
 			return "Delivery state machine is complete.";
 		case "STOPPED":

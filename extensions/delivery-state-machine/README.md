@@ -97,7 +97,7 @@ Push and PR/MR creation remain blocked until verification passes and review has 
 
 ### Repair decisions
 
-Supported defects can route back to implementation. Exhausted budgets or contract decisions pause the run for an explicit `repair`, `accept_risk`, or `stop` choice.
+Supported defects can route back to implementation. Exhausted budgets or contract decisions pause the run for an explicit `repair`, `accept_risk`, or `stop` choice. The waiting-decision output includes the original task, failed gate and finding, evidence artifact, recommendation, current/max round capacity, and the workflow consequence of each option so the user can make the decision without reconstructing prior phase context.
 
 ### Delivery reports
 

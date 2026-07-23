@@ -869,6 +869,7 @@ await runTest("IMPLEMENT FAIL waits for an explicit decision instead of advancin
 	assert.equal(result.details.state.phase, "WAITING_DECISION");
 	assert.equal(result.details.state.pendingIssue.source, "implement");
 	assert.equal(result.details.state.pendingIssue.verdict, "FAIL");
+	assert.match(result.details.next.prompt, /accept_risk.*stop delivery because a failed implementation cannot become a verified candidate/is);
 });
 
 await runTest("decision prompts expose only repair, accept_risk, and stop", async () => {
@@ -884,6 +885,74 @@ await runTest("decision prompts expose only repair, accept_risk, and stop", asyn
 	assert.equal(failed.details.state.phase, "WAITING_DECISION");
 	assert.match(failed.details.next.prompt, /repair \/ accept_risk \/ stop/);
 	assert.doesNotMatch(failed.details.next.prompt, /continue|defer/);
+});
+
+await runTest("waiting decisions include enough context and consequences for the user", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", { task: "preserve checkout sessions", maxRounds: { VERIFY: 1 } });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "checkout session persistence implemented" });
+	const failed = await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: "Reloading the checkout loses the authenticated session; reproduced with the session restore test, which expected the account page but received the login page.",
+		recommendedDecision: "repair",
+	});
+	const prompt = failed.details.next.orchestratorInstruction;
+	assert.match(prompt, /Task:\s*preserve checkout sessions/);
+	assert.match(prompt, /Gate result:\s*VERIFY reported FAIL/);
+	assert.match(prompt, /Issue source:\s*verify/);
+	assert.match(prompt, /Reloading the checkout loses the authenticated session/);
+	assert.match(prompt, /Evidence artifact:\s*\S+/);
+	assert.match(prompt, /Recommendation:\s*repair/);
+	assert.match(prompt, /Round capacity \(current\/max\):.*IMPLEMENT.*VERIFY.*REVIEW/s);
+	assert.match(prompt, /repair.*retry IMPLEMENT.*VERIFY.*REVIEW.*CLOSE.*RETRO/is);
+	assert.match(prompt, /accept_risk.*bypass.*advance to REVIEW/is);
+	assert.match(prompt, /stop.*terminate/is);
+	assert.match(prompt, /Ask the user\/parent to choose one option/);
+});
+
+await runTest("restored waiting decisions without a pending issue expose degraded context and exact no-op consequences", async () => {
+	const original = createHarness();
+	const started = await original.tool("delivery_start", {
+		task: "recover a schema-compatible interrupted decision",
+		maxRounds: { IMPLEMENT: 2, VERIFY: 3, REVIEW: 4 },
+	});
+	const degraded = structuredClone(started.details.state);
+	degraded.phase = "WAITING_DECISION";
+	delete degraded.pendingIssue;
+
+	const restore = async () => {
+		const harness = createHarness({ branchEntries: [{ type: "custom", customType: "delivery-state-machine", data: degraded }] });
+		await harness.emit("session_start");
+		return harness;
+	};
+	const restored = await restore();
+	const next = await restored.tool("delivery_next");
+	const prompt = next.details.next.orchestratorInstruction;
+	assert.match(prompt, /Task:\s*recover a schema-compatible interrupted decision/);
+	assert.match(prompt, /Gate result:\s*<missing phase> reported <missing verdict>/);
+	assert.match(prompt, /Issue source:\s*<missing source>/);
+	assert.match(prompt, /Finding:\s*<none recorded>/);
+	assert.match(prompt, /Evidence artifact:\s*<none recorded>/);
+	assert.match(prompt, /Recommendation:\s*<none>/);
+	assert.match(prompt, /Round capacity \(current\/max\): IMPLEMENT completed 0\/2, VERIFY round 1\/3, REVIEW round 1\/4/);
+	assert.match(prompt, /repair.*make no transition.*remains WAITING_DECISION.*no pending issue was restored/is);
+	assert.match(prompt, /accept_risk.*make no transition or accept any risk.*remains WAITING_DECISION.*no pending issue was restored/is);
+	assert.match(prompt, /stop.*terminate this delivery without further implementation or gates/is);
+	assert.match(next.content[0].text, /Task:\s*recover a schema-compatible interrupted decision/);
+	assert.match(next.content[0].text, /Gate result:\s*<missing phase> reported <missing verdict>/);
+
+	for (const decision of ["repair", "accept_risk"] as const) {
+		const harness = await restore();
+		const result = await harness.tool("delivery_decide", { decision, rationale: `confirm degraded ${decision}` });
+		assert.equal(result.details.state.phase, "WAITING_DECISION");
+		assert.equal(result.details.state.active, true);
+		assert.equal(result.details.state.pendingIssue, undefined);
+	}
+	const stopped = await restore();
+	const stopResult = await stopped.tool("delivery_decide", { decision: "stop", rationale: "cannot safely restore the missing issue" });
+	assert.equal(stopResult.details.state.phase, "STOPPED");
+	assert.equal(stopResult.details.state.active, false);
 });
 
 await runTest("artifact-less FAIL and INCONCLUSIVE non-parallel reports are rejected without side effects", async () => {

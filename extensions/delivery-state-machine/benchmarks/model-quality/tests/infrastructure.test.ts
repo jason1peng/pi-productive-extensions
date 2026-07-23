@@ -736,6 +736,42 @@ try {
 	assert.equal(new EvidenceAdmissionCoordinator(path.join(fallbackMultiRootRoot, "root-a"), store, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST).publish({ ...common, participantProvenance: ["bootstrap/root-a"] }).evidenceRef, firstRef);
 } finally { fs.rmSync(fallbackMultiRootRoot, { recursive: true, force: true }); }
 
+// REVIEW #10: rejected namespace transitions must be observationally read-only.
+const namespaceTransitionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-namespace-transition-"));
+try {
+	const item = { id: "BOOT-VERIFY", version: 1, itemHash: HASH_A, catalogHash: HASH_B }; const scope = "catalog:item:1:explicit";
+	const admissionRoot = path.join(namespaceTransitionRoot, "explicit"); const store = new EvidenceStore(path.join(namespaceTransitionRoot, "evidence"));
+	const coordinator = new EvidenceAdmissionCoordinator(admissionRoot, store, { ...item, coordinatorScope: scope }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const namespaceFile = path.join(admissionRoot, "coordinator-namespace.json"); assert.ok(fs.existsSync(namespaceFile), "explicit scope must be durably bound at initialization");
+	const input = { id: "namespace-transition", publicationKind: "report" as const, expectedSequence: 0, value: { stable: true }, schemaVersionRef: "namespace-transition-v1", assetVersions: ["asset-v1"], participantProvenance: ["bootstrap/namespace"], retentionUntil: "2099-01-01T00:00:00.000Z" };
+	const original = coordinator.publish(input); const journalFile = path.join(admissionRoot, "coordinator-journal", `${hashObject("publication:namespace-transition")}.json`);
+	const beforeNamespace = fs.readFileSync(namespaceFile); const beforeJournal = fs.readFileSync(journalFile); const beforeEntries = fs.readdirSync(admissionRoot).sort();
+	assert.throws(() => new EvidenceAdmissionCoordinator(admissionRoot, store, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /scope mismatch/, "omitted scope must reject before fallback publication");
+	assert.throws(() => new EvidenceAdmissionCoordinator(admissionRoot, store, { ...item, coordinatorScope: "wrong" }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /scope mismatch/);
+	assert.deepEqual(fs.readFileSync(namespaceFile), beforeNamespace); assert.deepEqual(fs.readFileSync(journalFile), beforeJournal); assert.deepEqual(fs.readdirSync(admissionRoot).sort(), beforeEntries, "rejected initialization must leave no temp or lock residue");
+	assert.equal(new EvidenceAdmissionCoordinator(admissionRoot, store, { ...item, coordinatorScope: scope }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST).publish(input).evidenceRef, original.evidenceRef, "correct explicit scope must remain restartable");
+	const coordinatorModule = path.resolve(ROOT, "admission-coordinator.ts"); const evidenceModule = path.resolve(ROOT, "evidence.ts"); const admissionModule = path.resolve(ROOT, "admission.ts");
+	for (const supplied of [undefined, "wrong-concurrent"]) {
+		const script = `import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; new EvidenceAdmissionCoordinator(${JSON.stringify(admissionRoot)},new EvidenceStore(${JSON.stringify(path.join(namespaceTransitionRoot, "evidence"))}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)}${supplied === undefined ? "" : `,coordinatorScope:${JSON.stringify(supplied)}`}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST);`;
+		const child = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" }); assert.notEqual(child.status, 0); assert.match(`${child.stdout}${child.stderr}`, /scope mismatch/);
+	}
+	assert.deepEqual(fs.readFileSync(namespaceFile), beforeNamespace); assert.deepEqual(fs.readFileSync(journalFile), beforeJournal);
+
+	const fallbackRoot = path.join(namespaceTransitionRoot, "fallback"); const fallbackStore = new EvidenceStore(path.join(namespaceTransitionRoot, "fallback-evidence"));
+	new EvidenceAdmissionCoordinator(fallbackRoot, fallbackStore, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
+	const fallbackNamespace = fs.readFileSync(path.join(fallbackRoot, "coordinator-namespace.json"));
+	assert.throws(() => new EvidenceAdmissionCoordinator(fallbackRoot, fallbackStore, { ...item, coordinatorScope: scope }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /scope mismatch/);
+	assert.deepEqual(fs.readFileSync(path.join(fallbackRoot, "coordinator-namespace.json")), fallbackNamespace); assert.doesNotThrow(() => new EvidenceAdmissionCoordinator(fallbackRoot, fallbackStore, item, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST));
+
+	for (const crashPoint of ["before-namespace-publish", "after-namespace-publish"] as const) {
+		const crashRoot = path.join(namespaceTransitionRoot, crashPoint); const crashEvidence = path.join(namespaceTransitionRoot, `${crashPoint}-evidence`);
+		const script = `import {EvidenceAdmissionCoordinator} from ${JSON.stringify(coordinatorModule)}; import {EvidenceStore} from ${JSON.stringify(evidenceModule)}; import {SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST} from ${JSON.stringify(admissionModule)}; new EvidenceAdmissionCoordinator(${JSON.stringify(crashRoot)},new EvidenceStore(${JSON.stringify(crashEvidence)}),{id:"BOOT-VERIFY",version:1,itemHash:${JSON.stringify(HASH_A)},catalogHash:${JSON.stringify(HASH_B)},coordinatorScope:${JSON.stringify(scope)}},SYNTHETIC_INCIDENT_POLICY,SYNTHETIC_SERVICE_ALLOWLIST,undefined,undefined,${JSON.stringify(crashPoint)});`;
+		const child = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" }); assert.equal(child.signal, "SIGKILL");
+		assert.doesNotThrow(() => new EvidenceAdmissionCoordinator(crashRoot, new EvidenceStore(crashEvidence), { ...item, coordinatorScope: scope }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST));
+		assert.equal(fs.readdirSync(crashRoot).filter((entry) => entry.includes("coordinator-namespace.json.")).length, 0, "restart must remove uncommitted namespace temporaries");
+	}
+} finally { fs.rmSync(namespaceTransitionRoot, { recursive: true, force: true }); }
+
 const multiRootScopeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "model-quality-coordinator-multi-root-scope-"));
 try {
 	const evidenceRoot = path.join(multiRootScopeRoot, "evidence"); const store = new EvidenceStore(evidenceRoot);
@@ -757,7 +793,7 @@ try {
 		const restarted = new EvidenceAdmissionCoordinator(roots[scopeIndex]!, store, { ...item, coordinatorScope: scopes[scopeIndex]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST);
 		assert.doesNotThrow(() => restarted.snapshot());
 		assert.match(restarted.publish({ id: "local-report", publicationKind: "report", expectedSequence: 0, participantProvenance: [`bootstrap/scope-${scopeIndex}`], ...common }).evidenceRef, /#index:/);
-		assert.throws(() => new EvidenceAdmissionCoordinator(roots[scopeIndex]!, store, { ...item, coordinatorScope: "wrong-scope" }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /journal namespace mismatch/);
+		assert.throws(() => new EvidenceAdmissionCoordinator(roots[scopeIndex]!, store, { ...item, coordinatorScope: "wrong-scope" }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST), /namespace.*mismatch/);
 	}
 	const relocatedRoot = path.join(multiRootScopeRoot, "scope-b-relocated"); fs.renameSync(roots[1]!, relocatedRoot);
 	assert.doesNotThrow(() => new EvidenceAdmissionCoordinator(relocatedRoot, store, { ...item, coordinatorScope: scopes[1]! }, SYNTHETIC_INCIDENT_POLICY, SYNTHETIC_SERVICE_ALLOWLIST).snapshot(), "logical namespace must survive workspace relocation");

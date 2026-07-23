@@ -30,6 +30,7 @@ interface IncidentJournal extends BaseJournal {
 type Journal = PublicationJournal | IncidentJournal;
 type JournalBody = Omit<Journal, "journalHash">;
 export type CoordinatorFault = "after-prepare" | "after-evidence" | "after-guard";
+export type CoordinatorNamespaceCrashPoint = "before-namespace-publish" | "after-namespace-publish";
 export type CoordinatorLockHooks = OwnedLockHooks;
 
 function jsonClone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
@@ -61,6 +62,7 @@ export class EvidenceAdmissionCoordinator {
 		serviceAllowlist: ReadonlySet<string>,
 		humanAuthorizer: HumanAuthorizer = SYNTHETIC_HUMAN_AUTHORIZER,
 		readonly testLockHooks?: CoordinatorLockHooks,
+		readonly testNamespaceCrashPoint?: CoordinatorNamespaceCrashPoint,
 	) {
 		this.journalRoot = path.join(root, "coordinator-journal");
 		this.lockRoot = path.join(this.journalRoot, "locks");
@@ -68,6 +70,7 @@ export class EvidenceAdmissionCoordinator {
 		const initialization = new OwnedFileLock(path.join(root, "coordinator-init.lock"), "coordinator initialization");
 		const initializationOwner = acquireWaiting(initialization);
 		try {
+			this.discardUncommittedNamespaceRecords();
 			this.coordinatorNamespace = this.loadOrCreateNamespace(item);
 			let guard: AdmissionGuard | undefined;
 			for (let attempt = 0; attempt < 1000; attempt++) {
@@ -81,24 +84,52 @@ export class EvidenceAdmissionCoordinator {
 		} finally { initialization.release(initializationOwner); }
 	}
 	private namespaceFile(): string { return path.join(this.root, "coordinator-namespace.json"); }
-	private loadOrCreateNamespace(item: CoordinatorItem): string {
-		const file = this.namespaceFile();
-		const stableItem = { id: item.id, version: item.version, itemHash: item.itemHash, catalogHash: item.catalogHash };
-		if (fs.existsSync(file)) {
-			const record = JSON.parse(fs.readFileSync(file, "utf8")) as CoordinatorNamespaceRecord;
-			if (record.schemaVersion !== 1 || record.recordHash !== hashObject(withoutRecordHash(record)) || record.namespace !== hashObject({ item: record.item, logicalScope: record.logicalScope, instanceId: record.instanceId })) throw new Error("fail-closed: coordinator namespace authentication failed");
-			if (hashObject(record.item) !== hashObject(stableItem) || (item.coordinatorScope !== undefined && record.logicalScope !== item.coordinatorScope)) throw new Error("fail-closed: coordinator namespace scope mismatch");
-			return record.namespace;
+	private discardUncommittedNamespaceRecords(): void {
+		for (const entry of fs.readdirSync(this.root)) if (/^coordinator-namespace\.json\.[^.]+\.tmp$/.test(entry)) fs.rmSync(path.join(this.root, entry), { force: true });
+		this.syncDirectory(this.root);
+	}
+	private authenticatedJournalNamespaces(): Set<string> {
+		const namespaces = new Set<string>();
+		for (const entry of fs.readdirSync(this.journalRoot).filter((value) => value.endsWith(".json"))) {
+			const parsed = JSON.parse(fs.readFileSync(path.join(this.journalRoot, entry), "utf8")) as any;
+			const { journalHash: _, ...body } = parsed;
+			if (![2, 3].includes(parsed.schemaVersion) || typeof parsed.operationId !== "string" || entry !== `${hashObject(parsed.operationId)}.json` || !["incident", "publication"].includes(parsed.kind) || parsed.inputHash !== hashObject(parsed.input) || parsed.journalHash !== hashObject(body)) throw new Error("fail-closed: coordinator journal authentication failed before namespace initialization");
+			if ((parsed.kind === "incident" && parsed.operationId !== `incident:${parsed.input?.report?.idempotencyKey}`) || (parsed.kind === "publication" && parsed.operationId !== `publication:${parsed.input?.id}`)) throw new Error("fail-closed: coordinator journal operation identity mismatch before namespace initialization");
+			if (parsed.schemaVersion === 3) {
+				if (typeof parsed.coordinatorNamespace !== "string" || !/^[a-f0-9]{64}$/.test(parsed.coordinatorNamespace)) throw new Error("fail-closed: coordinator journal namespace is invalid");
+				namespaces.add(parsed.coordinatorNamespace);
+			}
 		}
-		if (item.coordinatorScope !== undefined) return hashObject({ item: stableItem, logicalScope: item.coordinatorScope, instanceId: `logical:${item.coordinatorScope}` });
-		const logicalScope = "root-instance";
-		const instanceId = randomUUID();
-		const body = { schemaVersion: 1 as const, item: stableItem, logicalScope, instanceId, namespace: hashObject({ item: stableItem, logicalScope, instanceId }) };
-		const record: CoordinatorNamespaceRecord = { ...body, recordHash: hashObject(body) };
+		return namespaces;
+	}
+	private persistNamespace(record: CoordinatorNamespaceRecord): void {
+		const file = this.namespaceFile();
 		const temporary = `${file}.${randomUUID()}.tmp`;
 		const descriptor = fs.openSync(temporary, "wx", 0o600);
 		try { fs.writeFileSync(descriptor, `${JSON.stringify(record, null, 2)}\n`); fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+		if (this.testNamespaceCrashPoint === "before-namespace-publish") process.kill(process.pid, "SIGKILL");
 		fs.renameSync(temporary, file); this.syncDirectory(this.root);
+		if (this.testNamespaceCrashPoint === "after-namespace-publish") process.kill(process.pid, "SIGKILL");
+	}
+	private loadOrCreateNamespace(item: CoordinatorItem): string {
+		const file = this.namespaceFile();
+		const stableItem = { id: item.id, version: item.version, itemHash: item.itemHash, catalogHash: item.catalogHash };
+		const requestedScope = item.coordinatorScope ?? "root-instance";
+		if (fs.existsSync(file)) {
+			const record = JSON.parse(fs.readFileSync(file, "utf8")) as CoordinatorNamespaceRecord;
+			if (record.schemaVersion !== 1 || record.recordHash !== hashObject(withoutRecordHash(record)) || record.namespace !== hashObject({ item: record.item, logicalScope: record.logicalScope, instanceId: record.instanceId })) throw new Error("fail-closed: coordinator namespace authentication failed");
+			if (hashObject(record.item) !== hashObject(stableItem) || record.logicalScope !== requestedScope) throw new Error("fail-closed: coordinator namespace scope mismatch");
+			return record.namespace;
+		}
+		const journalNamespaces = this.authenticatedJournalNamespaces();
+		if (journalNamespaces.size > 1) throw new Error("fail-closed: coordinator journals contain conflicting namespaces");
+		if (item.coordinatorScope === undefined && journalNamespaces.size > 0) throw new Error("fail-closed: coordinator scope is required for a populated namespaced root");
+		const logicalScope = requestedScope;
+		const instanceId = item.coordinatorScope === undefined ? randomUUID() : `logical:${item.coordinatorScope}`;
+		const body = { schemaVersion: 1 as const, item: stableItem, logicalScope, instanceId, namespace: hashObject({ item: stableItem, logicalScope, instanceId }) };
+		if (journalNamespaces.size === 1 && !journalNamespaces.has(body.namespace)) throw new Error("fail-closed: coordinator journal namespace mismatch");
+		const record: CoordinatorNamespaceRecord = { ...body, recordHash: hashObject(body) };
+		this.persistNamespace(record);
 		return record.namespace;
 	}
 	authorize(boundary: "selection" | "dispatch") { return this.guard.authorize(boundary); }

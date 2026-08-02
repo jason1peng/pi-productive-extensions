@@ -6,9 +6,9 @@ REPO_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 PI_BIN=${PI_BIN:-pi}
 MODEL=${DSM_SMOKE_MODEL:-openai-codex/gpt-5.6-sol}
 SUBAGENTS_ROOT=${PI_SUBAGENTS_ROOT:-${HOME}/.pi/agent/npm/node_modules/pi-subagents}
-EVIDENCE_DIR=${DSM_SMOKE_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dsm-isolated-host-smoke.XXXXXX")}
+EVIDENCE_DIR=${DSM_SMOKE_EVIDENCE_DIR:-$(mktemp -d "/tmp/dsm-isolated-host-smoke.XXXXXX")}
 TIMEOUT_SECONDS=${DSM_SMOKE_TIMEOUT_SECONDS:-720}
-TEMP_AGENT_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/dsm-isolated-host-agent.XXXXXX")
+TEMP_AGENT_ROOT=$(mktemp -d "/tmp/dsm-isolated-host-agent.XXXXXX")
 AGENT_DIR="$TEMP_AGENT_ROOT/agent"
 PROJECT_DIR="$EVIDENCE_DIR/project"
 RESULTS_DIR="$EVIDENCE_DIR/results"
@@ -117,7 +117,6 @@ export DSM_SMOKE_RESULTS_DIR="$RESULTS_DIR"
 export DSM_SMOKE_DELIVERY_ROOT="$DELIVERY_ROOT"
 export DSM_SMOKE_ORCHESTRATOR_PROMPT="$(cat "$RESULTS_DIR/orchestrator-prompt.txt")"
 export DSM_SMOKE_ORCHESTRATOR_MODEL="$MODEL"
-export DSM_SMOKE_SUBAGENTS_EXTENSION="$SUBAGENTS_ROOT/src/extension/index.ts"
 export DSM_SMOKE_TIMEOUT_SECONDS="$TIMEOUT_SECONDS"
 export DSM_SMOKE_ENV_HELPER_DIR="$REPO_ROOT/extensions/delivery-state-machine/scripts"
 # The helper is imported from the source worktree; forbid Python from creating
@@ -143,7 +142,6 @@ if timeout < 60:
     raise SystemExit("DSM_SMOKE_TIMEOUT_SECONDS must be at least 60")
 command = [
     os.environ["DSM_SMOKE_PI_BIN"], "--approve", "--print",
-    "--extension", os.environ["DSM_SMOKE_SUBAGENTS_EXTENSION"],
     "--model", os.environ["DSM_SMOKE_ORCHESTRATOR_MODEL"],
     os.environ["DSM_SMOKE_ORCHESTRATOR_PROMPT"],
 ]
@@ -192,6 +190,14 @@ PY
 SMOKE_HOST_PID=$!
 wait "$SMOKE_HOST_PID"
 SMOKE_HOST_PID=
+
+# Opt-in: retain orchestrator + child session transcripts in the evidence dir so
+# scripts/measure-delivery-tokens.py can measure delivery tool-response bytes.
+# Transcripts carry no credential files; the temporary agent home (with
+# auth.json) is still removed by the EXIT trap.
+if [[ "${DSM_SMOKE_KEEP_SESSIONS:-0}" == "1" ]]; then
+	cp -R "$AGENT_DIR/sessions" "$RESULTS_DIR/sessions"
+fi
 
 # Extract requested tool arguments and the corresponding child-session headers.
 # This keeps both sides of launch evidence when an inherited model or configured

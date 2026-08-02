@@ -2,9 +2,21 @@
 set -euo pipefail
 
 # Opt-in, model-backed Stage 6 smoke. It intentionally is not part of npm run verify.
+#
+# Env knobs:
+#   DSM_SMOKE_MODEL              orchestrator + child model (default openai-codex/gpt-5.6-sol)
+#   DSM_SMOKE_EXTRA_PACKAGES     space-separated extra package paths for the isolated
+#                                host settings (e.g. a provider plugin the model needs)
+#   DSM_SMOKE_PROMPT_FILE        orchestrator prompt override (default: embedded happy path)
+#   DSM_SMOKE_EXPECT             DONE (default) or STOPPED (fault-injection run)
+#   DSM_SMOKE_EXPECT_FAIL_PHASE  VERIFY or REVIEW; required when EXPECT=STOPPED
 REPO_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 PI_BIN=${PI_BIN:-pi}
 MODEL=${DSM_SMOKE_MODEL:-openai-codex/gpt-5.6-sol}
+EXTRA_PACKAGES=${DSM_SMOKE_EXTRA_PACKAGES:-}
+PROMPT_FILE=${DSM_SMOKE_PROMPT_FILE:-}
+EXPECT=${DSM_SMOKE_EXPECT:-DONE}
+EXPECT_FAIL_PHASE=${DSM_SMOKE_EXPECT_FAIL_PHASE:-}
 SUBAGENTS_ROOT=${PI_SUBAGENTS_ROOT:-${HOME}/.pi/agent/npm/node_modules/pi-subagents}
 EVIDENCE_DIR=${DSM_SMOKE_EVIDENCE_DIR:-$(mktemp -d "/tmp/dsm-isolated-host-smoke.XXXXXX")}
 TIMEOUT_SECONDS=${DSM_SMOKE_TIMEOUT_SECONDS:-720}
@@ -14,6 +26,38 @@ PROJECT_DIR="$EVIDENCE_DIR/project"
 RESULTS_DIR="$EVIDENCE_DIR/results"
 PACKAGE_DIR="$EVIDENCE_DIR/package"
 DELIVERY_ROOT="$RESULTS_DIR/delivery-artifacts"
+
+case "$EXPECT" in
+	DONE) ;;
+	STOPPED)
+		case "$EXPECT_FAIL_PHASE" in
+			VERIFY | REVIEW) ;;
+			*)
+				echo "DSM_SMOKE_EXPECT_FAIL_PHASE must be VERIFY or REVIEW when DSM_SMOKE_EXPECT=STOPPED" >&2
+				exit 2
+				;;
+		esac
+		;;
+	*)
+		echo "DSM_SMOKE_EXPECT must be DONE or STOPPED" >&2
+		exit 2
+		;;
+esac
+# Phases the delivery is expected to reach; a fault-injection run stops on the
+# injected failure, so later phases must not launch or produce artifacts.
+if [[ "$EXPECT" == "DONE" ]]; then
+	EXPECTED_PHASES="IMPLEMENT VERIFY REVIEW CLOSE RETRO"
+	EXPECTED_ROLES=(implementer verifier reviewer closer retrospective)
+	EXPECTED_STEMS=(implementation verification review close retrospective)
+elif [[ "$EXPECT_FAIL_PHASE" == "VERIFY" ]]; then
+	EXPECTED_PHASES="IMPLEMENT VERIFY"
+	EXPECTED_ROLES=(implementer verifier)
+	EXPECTED_STEMS=(implementation verification)
+else
+	EXPECTED_PHASES="IMPLEMENT VERIFY REVIEW"
+	EXPECTED_ROLES=(implementer verifier reviewer)
+	EXPECTED_STEMS=(implementation verification review)
+fi
 
 SMOKE_HOST_PID=
 cleanup_agent_home() {
@@ -44,16 +88,17 @@ mkdir "$PACKAGE_DIR/.git"
 if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
 	cp "${HOME}/.pi/agent/auth.json" "$AGENT_DIR/auth.json"
 fi
+# Extra packages are absolute paths (e.g. a provider plugin such as
+# pi-clinepass-provider) that the isolated host cannot resolve via npm: names.
+PACKAGES_JSON=$(python3 -c 'import json, sys; print(json.dumps([p for p in sys.argv[1:] if p]))' \
+	"$SUBAGENTS_ROOT" "$PACKAGE_DIR" $EXTRA_PACKAGES)
 cat > "$AGENT_DIR/settings.json" <<JSON
 {
   "defaultModel": "$MODEL",
   "subagents": {
     "defaultModel": "$MODEL"
   },
-  "packages": [
-    "$SUBAGENTS_ROOT",
-    "$PACKAGE_DIR"
-  ]
+  "packages": $PACKAGES_JSON
 }
 JSON
 # Preserve the exact bundled launch configuration used by this run. Do not
@@ -70,6 +115,9 @@ printf '# Isolated DSM host smoke\n' > "$PROJECT_DIR/README.md"
 printf '.pi-subagents/\n' > "$PROJECT_DIR/.gitignore"
 git -C "$PROJECT_DIR" add README.md .gitignore
 git -C "$PROJECT_DIR" -c user.name=Smoke -c user.email=smoke@example.invalid commit -qm init
+# Fault-injection tasks ask the implementer to commit the broken candidate.
+git -C "$PROJECT_DIR" config user.name Smoke
+git -C "$PROJECT_DIR" config user.email smoke@example.invalid
 if find "$AGENT_DIR" "$PROJECT_DIR" -type f \( -path '*/agents/*.md' -o -path '*/.agents/*.md' \) | grep -q .; then
 	echo "unexpected user/project agent definition in isolated roots" >&2
 	exit 1
@@ -89,7 +137,10 @@ await Bun.write(output, JSON.stringify(found, null, 2) + "\n");
 if (found.length !== 5 || found.some((agent) => agent.source !== "package" || agent.packageName !== "dsm")) process.exit(1);
 ' "$SUBAGENTS_ROOT/src/agents/agents.ts" "$PACKAGE_DIR" "$RESULTS_DIR/discovery.json"
 
-cat > "$RESULTS_DIR/orchestrator-prompt.txt" <<'PROMPT'
+if [[ -n "$PROMPT_FILE" ]]; then
+	cp "$PROMPT_FILE" "$RESULTS_DIR/orchestrator-prompt.txt"
+else
+	cat > "$RESULTS_DIR/orchestrator-prompt.txt" <<'PROMPT'
 Run one complete representative delivery using the delivery-state-machine tools and the configured dsm-candidate profile. The task is: "Verify the committed README accurately identifies this as an isolated DSM host smoke; no source change is expected."
 
 Use this exact bounded loop:
@@ -102,6 +153,7 @@ Use this exact bounded loop:
 
 Never create a worktree or replace a requested child with your own work. Do not inspect pi-subagents implementation or skills, skip/simulate a child launch, push, create a branch, create an MR, or make source changes. This clean fixture needs only the phase-specific checks requested by each child prompt. The outer harness owns the overall timeout.
 PROMPT
+fi
 
 # Run the quota-backed workflow under an internal deadline shorter than the
 # external verification window. progress.log is updated while Pi is running so
@@ -119,6 +171,9 @@ export DSM_SMOKE_ORCHESTRATOR_PROMPT="$(cat "$RESULTS_DIR/orchestrator-prompt.tx
 export DSM_SMOKE_ORCHESTRATOR_MODEL="$MODEL"
 export DSM_SMOKE_TIMEOUT_SECONDS="$TIMEOUT_SECONDS"
 export DSM_SMOKE_ENV_HELPER_DIR="$REPO_ROOT/extensions/delivery-state-machine/scripts"
+export DSM_SMOKE_EXPECT="$EXPECT"
+export DSM_SMOKE_EXPECT_FAIL_PHASE="$EXPECT_FAIL_PHASE"
+export DSM_SMOKE_EXPECTED_PHASES="$EXPECTED_PHASES"
 # The helper is imported from the source worktree; forbid Python from creating
 # scripts/__pycache__ there, even if interpreter flags are changed later.
 export PYTHONDONTWRITEBYTECODE=1
@@ -214,17 +269,30 @@ from pathlib import Path
 
 sys.path.insert(0, os.environ["DSM_SMOKE_ENV_HELPER_DIR"])
 from isolated_host_launch_evidence import resolve_child_session
-from isolated_host_smoke_evidence import assert_delivery_done, assert_effective_model
+from isolated_host_smoke_evidence import (
+    assert_delivery_done,
+    assert_delivery_failed_at,
+    assert_effective_model,
+)
 
 sessions_root = Path(os.environ["DSM_SMOKE_SESSIONS_DIR"])
 metadata_root = Path(os.environ["DSM_SMOKE_SUBAGENT_METADATA_DIR"])
 results = Path(os.environ["DSM_SMOKE_RESULTS_DIR"])
-completion = assert_delivery_done(Path(os.environ["DSM_SMOKE_DELIVERY_ROOT"]))
+expected_outcome = os.environ.get("DSM_SMOKE_EXPECT", "DONE")
+if expected_outcome == "STOPPED":
+    completion = assert_delivery_failed_at(
+        Path(os.environ["DSM_SMOKE_DELIVERY_ROOT"]), os.environ["DSM_SMOKE_EXPECT_FAIL_PHASE"]
+    )
+else:
+    completion = assert_delivery_done(Path(os.environ["DSM_SMOKE_DELIVERY_ROOT"]))
 (results / "completion-state.json").write_text(json.dumps(completion, indent=2) + "\n")
 with open(os.environ["DSM_SMOKE_BUNDLED_LAUNCHES"]) as handle:
     candidate = json.load(handle)["profiles"]["dsm-candidate"]
+expected_phases = set(os.environ.get("DSM_SMOKE_EXPECTED_PHASES", "").split())
 expected = []
 for phase in ("IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"):
+    if expected_phases and phase not in expected_phases:
+        continue
     entries = candidate[phase] if isinstance(candidate[phase], list) else [candidate[phase]]
     expected.extend({"phase": phase, **entry} for entry in entries)
 
@@ -301,21 +369,25 @@ for launch in requested:
 PY
 
 # Preserve machine-checkable evidence that the workflow, rather than standalone
-# role probes, launched every package role and produced every phase artifact.
-roles=(implementer verifier reviewer closer retrospective)
-for role in "${roles[@]}"; do
+# role probes, launched every expected package role and produced every expected
+# phase artifact. Fault-injection runs expect only the phases up to the failure.
+for role in "${EXPECTED_ROLES[@]}"; do
 	grep -RFl --include='*.jsonl' "dsm.${role}" "$AGENT_DIR/sessions" > "$RESULTS_DIR/dsm.${role}.identity-files.txt"
 	# One parent transcript records the planned launch and a separate child
 	# transcript records execution, so each role must occur in at least two files.
 	[[ "$(wc -l < "$RESULTS_DIR/dsm.${role}.identity-files.txt")" -ge 2 ]]
 done
-for stem in implementation verification review close retrospective; do
+for stem in "${EXPECTED_STEMS[@]}"; do
 	find "$DELIVERY_ROOT" -type f -name "*${stem}*.md" -print > "$RESULTS_DIR/${stem}-artifacts.txt"
 	[[ -s "$RESULTS_DIR/${stem}-artifacts.txt" ]]
 done
 find "$DELIVERY_ROOT" -type f -print | sort > "$RESULTS_DIR/artifact-manifest.txt"
 git -C "$PROJECT_DIR" status --short > "$RESULTS_DIR/project-status.txt"
-[[ ! -s "$RESULTS_DIR/project-status.txt" ]]
+# Fault-injection tasks intentionally change the fixture, so only the happy
+# path asserts the project stayed clean.
+if [[ "$EXPECT" == "DONE" ]]; then
+	[[ ! -s "$RESULTS_DIR/project-status.txt" ]]
+fi
 git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all > "$RESULTS_DIR/source-status-after.txt"
 if ! cmp -s "$RESULTS_DIR/source-status-before.txt" "$RESULTS_DIR/source-status-after.txt"; then
 	diff -u "$RESULTS_DIR/source-status-before.txt" "$RESULTS_DIR/source-status-after.txt" > "$RESULTS_DIR/source-status-diff.txt" || true
@@ -328,5 +400,5 @@ if find "$EVIDENCE_DIR" -type f \( -name 'auth.json' -o -name 'credentials.json'
 	echo "isolated host smoke found credential files in retained evidence" >&2
 	exit 1
 fi
-printf 'PASS\nevidence=%s\norchestrator_model=%s\nprofile=dsm-candidate\nrequested_launches=%s\nactual_launches=%s\n' \
-	"$EVIDENCE_DIR" "$MODEL" "$RESULTS_DIR/requested-launches.json" "$RESULTS_DIR/actual-launches.json" | tee "$RESULTS_DIR/summary.txt"
+printf 'PASS\nevidence=%s\norchestrator_model=%s\nprofile=dsm-candidate\nexpect=%s\nrequested_launches=%s\nactual_launches=%s\n' \
+	"$EVIDENCE_DIR" "$MODEL" "$EXPECT" "$RESULTS_DIR/requested-launches.json" "$RESULTS_DIR/actual-launches.json" | tee "$RESULTS_DIR/summary.txt"

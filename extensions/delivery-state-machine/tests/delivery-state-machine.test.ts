@@ -128,8 +128,12 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 			callParams.artifact = artifact;
 		}
 		const result = await registered.execute(`test-${name}`, callParams, undefined, undefined, ctx);
-		const artifactDir = result?.details?.state?.artifactDir;
-		currentPlannedArtifact = result?.details?.next?.artifact ?? result?.details?.state?.steps?.findLast((step: any) => step.status === "planned" && step.childIndex === undefined)?.artifact;
+		const statusResult = !result?.details?.next && name === "delivery_report"
+			? await tools.get("delivery_status")?.execute("test-delivery_status", {}, undefined, undefined, ctx)
+			: undefined;
+		const source = statusResult ?? result;
+		const artifactDir = source?.details?.state?.artifactDir;
+		currentPlannedArtifact = source?.details?.next?.artifact ?? source?.details?.state?.steps?.findLast((step: any) => step.status === "planned" && step.childIndex === undefined)?.artifact;
 		if (artifactDir) {
 			currentArtifactDir = artifactDir;
 			artifactDirs.add(artifactDir);
@@ -540,7 +544,8 @@ await runTest("DSM dynamic prompts allow only runtime-owned contracts plus task/
 				}
 				if (phase === "RETRO") break;
 				if (phase === "REVIEW") for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
-				result = await harness.tool("delivery_report", { phase, verdict: phase === "CLOSE" ? "DONE" : "PASS", summary: `${phase} passed` });
+				await harness.tool("delivery_report", { phase, verdict: phase === "CLOSE" ? "DONE" : "PASS", summary: `${phase} passed` });
+				result = await harness.tool("delivery_next");
 			}
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
@@ -566,7 +571,8 @@ await runTest("cross-phase and arbitrary dsm names retain full compatibility pro
 		assert.match(result.details.next.childPrompt, /Instruction authority:/);
 		assert.doesNotMatch(result.details.next.childPrompt, /Project harness artifact contract:/);
 
-		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		result = await harness.tool("delivery_next");
 		assert.equal(result.details.next.agent, "dsm.custom");
 		assert.match(result.details.next.childPrompt, /Independently verify this task/);
 		assert.match(result.details.next.childPrompt, /Project harness discovery \(bounded, best effort\)/);
@@ -677,7 +683,8 @@ await runTest("default child prompts keep stable instructions ahead of run-speci
 				for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
 			}
 			const verdict = phase === "CLOSE" ? "DONE" : "PASS";
-			result = await harness.tool("delivery_report", { phase, verdict, summary: `${phase} passed` });
+			await harness.tool("delivery_report", { phase, verdict, summary: `${phase} passed` });
+			result = await harness.tool("delivery_next");
 		}
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
@@ -751,7 +758,8 @@ await runTest("every runnable child prompt includes bounded project harness disc
 				for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
 			}
 			const verdict = phase === "CLOSE" ? "DONE" : "PASS";
-			result = await harness.tool("delivery_report", { phase, verdict, summary: `${phase} passed` });
+			await harness.tool("delivery_report", { phase, verdict, summary: `${phase} passed` });
+			result = await harness.tool("delivery_next");
 		}
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
@@ -762,8 +770,8 @@ await runTest("delivery child prompts include central RESULT artifact guidance",
 	const harness = createHarness();
 	const result = await harness.tool("delivery_start", { task: "artifact guidance smoke" });
 	assert.equal(result.details.next.acceptance, false);
-	assert.match(result.details.next.childPrompt, /Start the artifact with exactly one result line: RESULT:/);
-	assert.match(result.details.next.childPrompt, /Use the phase-specific headings/);
+	assert.match(result.details.next.childPrompt, /Start with exactly one result line: RESULT:/);
+	assert.match(result.details.next.childPrompt, /Artifact guidance:/);
 });
 
 await runTest("single-child next actions expose exact file-only output fields", async () => {
@@ -776,6 +784,31 @@ await runTest("single-child next actions expose exact file-only output fields", 
 	assert.match(action.childPrompt, new RegExp(action.artifact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+await runTest("next/report responses carry slim state, no prompt mirror, and no report-side next package", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", { task: "slim response contract" });
+
+	const next = await harness.tool("delivery_next");
+	assert.equal("prompt" in next.details.next, false, "details.next.prompt mirror must stay deleted");
+	assert.equal(typeof next.details.next.childPrompt, "string");
+	assert.equal(next.details.state.phase, "IMPLEMENT");
+	assert.equal("history" in next.details.state, false, "delivery_next must not attach full history");
+	assert.equal("steps" in next.details.state, false, "delivery_next must not attach step records");
+	assert.equal("launchProfile" in next.details.state, false, "delivery_next must not attach launch config");
+	assert.ok(
+		!next.content[0].text.includes(next.details.next.childPrompt),
+		"content text must point at details.next.childPrompt instead of embedding it",
+	);
+	const status = await harness.tool("delivery_status");
+	assert.ok(Array.isArray(status.details.state.history), "delivery_status keeps full state");
+
+	const reported = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	assert.equal("next" in reported.details, false, "delivery_report must not return the next-action package");
+	assert.match(reported.content[0].text, /IMPLEMENT recorded: PASS\. Next phase: VERIFY\./);
+	assert.equal(reported.details.state.phase, "VERIFY");
+	assert.equal("history" in reported.details.state, false, "delivery_report must not attach full history");
+});
+
 await runTest("planning may use the stable primary checkout but implementation requires a fresh main worktree", async () => {
 	const harness = createHarness();
 	const deliver = harness.commands.get("deliver");
@@ -786,11 +819,11 @@ await runTest("planning may use the stable primary checkout but implementation r
 	const orchestratorInstruction = result.details.next.orchestratorInstruction;
 	const toolGuidelines = harness.tools.get("delivery_start")?.promptGuidelines?.join(" ") ?? "";
 
-	for (const policySurface of [bootstrapPrompt, orchestratorInstruction, toolGuidelines]) {
-		assert.match(policySurface, /planning-only MR on a (?:`plan\/<slug>`|plan\/<slug>) branch may be created and submitted directly from the stable primary checkout/i);
-		assert.match(policySurface, /latest fetched (?:`main`|main)/i);
-		assert.match(policySurface, /never from the planning branch/i);
-	}
+	assert.match(bootstrapPrompt, /planning-only MR on a (?:`plan\/<slug>`|plan\/<slug>) branch may be created and submitted directly from the stable primary checkout/i);
+	assert.match(bootstrapPrompt, /latest fetched (?:`main`|main)/i);
+	assert.match(bootstrapPrompt, /never from the planning branch/i);
+	assert.match(toolGuidelines, /delivery playbook/i);
+	assert.equal(orchestratorInstruction, "Launch the configured implementation subagent as sole writer for implementation.");
 });
 
 await runTest("reports reject wrong, duplicate, missing, and phase-invalid verdicts without side effects", async () => {
@@ -869,7 +902,8 @@ await runTest("IMPLEMENT FAIL waits for an explicit decision instead of advancin
 	assert.equal(result.details.state.phase, "WAITING_DECISION");
 	assert.equal(result.details.state.pendingIssue.source, "implement");
 	assert.equal(result.details.state.pendingIssue.verdict, "FAIL");
-	assert.match(result.details.next.prompt, /accept_risk.*stop delivery because a failed implementation cannot become a verified candidate/is);
+	const next = await harness.tool("delivery_next");
+	assert.match(next.details.next.orchestratorInstruction, /accept_risk.*stop delivery because a failed implementation cannot become a verified candidate/is);
 });
 
 await runTest("decision prompts expose only repair, accept_risk, and stop", async () => {
@@ -883,21 +917,22 @@ await runTest("decision prompts expose only repair, accept_risk, and stop", asyn
 		recommendedDecision: "repair",
 	});
 	assert.equal(failed.details.state.phase, "WAITING_DECISION");
-	assert.match(failed.details.next.prompt, /repair \/ accept_risk \/ stop/);
-	assert.doesNotMatch(failed.details.next.prompt, /continue|defer/);
+	const next = await harness.tool("delivery_next");
+	assert.match(next.details.next.orchestratorInstruction, /repair \/ accept_risk \/ stop/);
+	assert.doesNotMatch(next.details.next.orchestratorInstruction, /continue|defer/);
 });
 
 await runTest("waiting decisions include enough context and consequences for the user", async () => {
 	const harness = createHarness();
 	await harness.tool("delivery_start", { task: "preserve checkout sessions", maxRounds: { VERIFY: 1 } });
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "checkout session persistence implemented" });
-	const failed = await harness.tool("delivery_report", {
+	await harness.tool("delivery_report", {
 		phase: "VERIFY",
 		verdict: "FAIL",
 		summary: "Reloading the checkout loses the authenticated session; reproduced with the session restore test, which expected the account page but received the login page.",
 		recommendedDecision: "repair",
 	});
-	const prompt = failed.details.next.orchestratorInstruction;
+	const prompt = (await harness.tool("delivery_next")).details.next.orchestratorInstruction;
 	assert.match(prompt, /Task:\s*preserve checkout sessions/);
 	assert.match(prompt, /Gate result:\s*VERIFY reported FAIL/);
 	assert.match(prompt, /Issue source:\s*verify/);
@@ -978,7 +1013,8 @@ await runTest("artifact-less successful non-parallel reports are rejected across
 	for (const phase of ["IMPLEMENT", "VERIFY", "CLOSE", "RETRO"] as const) {
 		if (phase === "CLOSE") {
 			for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
-			result = await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "review passed" });
+			await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "review passed" });
+			result = await harness.tool("delivery_next");
 		}
 		const verdict = phase === "CLOSE" || phase === "RETRO" ? "DONE" : "PASS";
 		await assert.rejects(
@@ -988,6 +1024,7 @@ await runTest("artifact-less successful non-parallel reports are rejected across
 		const artifact = result.details.next.artifact as string;
 		fs.writeFileSync(artifact, phaseArtifactContents(phase, verdict, `${phase} passed`), "utf8");
 		result = await harness.tool("delivery_report", { phase, verdict, summary: `${phase} passed`, artifact });
+		if (phase !== "RETRO") result = await harness.tool("delivery_next");
 	}
 });
 
@@ -1084,6 +1121,7 @@ await runTest("successful IMPLEMENT and VERIFY reports reject blocked harness ou
 	fs.writeFileSync(artifact, phaseArtifactContents("IMPLEMENT", "PASS", "valid"), "utf8");
 	let result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "valid", artifact });
 	assert.equal(result.details.state.phase, "VERIFY");
+	result = await harness.tool("delivery_next");
 	const verifyArtifact = result.details.next.artifact as string;
 	fs.writeFileSync(verifyArtifact, phaseArtifactContents("VERIFY", "PASS", "blocked").replace("Outcome: none discovered", "Outcome: blocked"), "utf8");
 	await assert.rejects(
@@ -1095,8 +1133,9 @@ await runTest("successful IMPLEMENT and VERIFY reports reject blocked harness ou
 await runTest("pre-existing parallel aggregate harness status is regenerated from child evidence", async () => {
 	const harness = createHarness();
 	let result = await harness.tool("delivery_start", { task: "regenerate caller-controlled aggregate" });
-	result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-	result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	result = await harness.tool("delivery_next");
 	for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
 
 	const aggregate = path.join(result.details.state.artifactDir as string, "03-review.md");
@@ -1114,8 +1153,9 @@ await runTest("pre-existing parallel aggregate harness status is regenerated fro
 await runTest("unsuccessful parallel artifacts require harness evidence before aggregate generation", async () => {
 	const harness = createHarness();
 	let result = await harness.tool("delivery_start", { task: "failed parallel review harness evidence" });
-	result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-	result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	result = await harness.tool("delivery_next");
 	const [missingEvidence, validEvidence] = result.details.next.parallel;
 	fs.writeFileSync(missingEvidence.artifact, phaseArtifactContents("REVIEW", "FAIL", "review failure").replace(/\n\n## Project harness discovery[\s\S]*$/, "\n"), "utf8");
 	writeReviewArtifact(validEvidence.artifact, "PASS", "review passed");
@@ -1143,8 +1183,9 @@ await runTest("successful single-phase report rejects a failing artifact RESULT"
 await runTest("parallel review rejects PASS when any child RESULT fails without generating a PASS aggregate", async () => {
 	const harness = createHarness();
 	let result = await harness.tool("delivery_start", { task: "parallel child verdict consistency" });
-	result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-	result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	result = await harness.tool("delivery_next");
 	writeReviewArtifact(result.details.next.parallel[0].artifact, "FAIL", "review blocker");
 	writeReviewArtifact(result.details.next.parallel[1].artifact, "PASS", "no blocker");
 	const aggregate = path.join(result.details.state.artifactDir as string, "03-review.md");
@@ -1172,7 +1213,8 @@ await runTest("parallel VERIFY rejects a parent verdict more optimistic than its
 	await withTemporaryUserExtensionFile("phase-launches.json", launchConfig, async () => {
 		const harness = createHarness();
 		let result = await harness.tool("delivery_start", { task: "parallel verify verdict dominance" });
-		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		result = await harness.tool("delivery_next");
 		const verifySteps = result.details.next.parallel;
 		fs.writeFileSync(verifySteps[0].artifact, phaseArtifactContents("VERIFY", "FAIL", "verification failed"), "utf8");
 		fs.writeFileSync(verifySteps[1].artifact, phaseArtifactContents("VERIFY", "PASS", "verification passed"), "utf8");
@@ -1211,8 +1253,9 @@ await runTest("parallel review rejects phase-unsupported child RESULT verdicts",
 	for (const unsupported of ["INCONCLUSIVE", "DONE", "MR_CREATED"]) {
 		const harness = createHarness();
 		let result = await harness.tool("delivery_start", { task: `unsupported review verdict ${unsupported}` });
-		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-		result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+		result = await harness.tool("delivery_next");
 		fs.writeFileSync(result.details.next.parallel[0].artifact, phaseArtifactContents("REVIEW", unsupported, "unsupported review result"), "utf8");
 		writeReviewArtifact(result.details.next.parallel[1].artifact, "PASS", "review passed");
 		await assert.rejects(
@@ -1235,7 +1278,8 @@ await runTest("supplied single-artifact RESULT must equal FAIL and INCONCLUSIVE 
 
 	const verifyHarness = createHarness();
 	let result = await verifyHarness.tool("delivery_start", { task: "inconclusive verdict equality" });
-	result = await verifyHarness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await verifyHarness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	result = await verifyHarness.tool("delivery_next");
 	const verifyArtifact = result.details.next.artifact as string;
 	fs.writeFileSync(verifyArtifact, phaseArtifactContents("VERIFY", "FAIL", "contradictory result"), "utf8");
 	await assert.rejects(
@@ -1358,7 +1402,8 @@ await runTest("global profile config can force GPT-only models", async () => {
 		await harness.tool("delivery_start", { task: "gpt-only launch override smoke" });
 		let next = await harness.tool("delivery_next");
 		assert.equal(next.details.next.model, "openai/gpt-5.5");
-		assert.equal(next.details.state.launchProfile.selectedProfile, "gpt-only");
+		// delivery_next returns a slim state snapshot; full launchProfile is readable via delivery_status.
+		assert.equal((await harness.tool("delivery_status")).details.state.launchProfile.selectedProfile, "gpt-only");
 
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
@@ -1418,7 +1463,8 @@ await runTest("delivery run pins profile selected at start", async () => {
 			const next = await harness.tool("delivery_next");
 			assert.equal(next.details.next.phase, "VERIFY");
 			assert.equal(next.details.next.model, "alpha/verify");
-			assert.equal(next.details.state.launchProfile.selectedProfile, "alpha");
+			// delivery_next returns a slim state snapshot; full launchProfile is readable via delivery_status.
+			assert.equal((await harness.tool("delivery_status")).details.state.launchProfile.selectedProfile, "alpha");
 		});
 	});
 });
@@ -1783,6 +1829,7 @@ await runTest("verify and review failures with recommendedDecision=repair route 
 
 	assert.equal(result.details.state.phase, "IMPLEMENT");
 	assert.equal(result.details.state.pendingIssue.source, "verify");
+	result = await harness.tool("delivery_next");
 	assert.match(result.details.next.childPrompt, /Pending verify issue/);
 
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "fixed verification blocker" });
@@ -1799,6 +1846,7 @@ await runTest("verify and review failures with recommendedDecision=repair route 
 
 	assert.equal(result.details.state.phase, "IMPLEMENT");
 	assert.equal(result.details.state.pendingIssue.source, "review");
+	result = await harness.tool("delivery_next");
 	assert.match(result.details.next.childPrompt, /Pending review issue/);
 });
 
@@ -1845,9 +1893,10 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	assert.equal(structuredReport.status, "DONE");
 	assert.equal(structuredReport.artifactDir, artifactDir);
 	assert.equal(structuredReport.summaryMarkdownPath, reportPath);
-	assert.equal(structuredReport.project.projectId, result.details.state.project.projectId);
-	assert.equal(structuredReport.project.name, result.details.state.project.name);
-	assert.equal(structuredReport.launchProfile.selectedProfile, result.details.state.launchProfile.selectedProfile);
+	const fullState = (await harness.tool("delivery_status")).details.state;
+	assert.equal(structuredReport.project.projectId, fullState.project.projectId);
+	assert.equal(structuredReport.project.name, fullState.project.name);
+	assert.equal(structuredReport.launchProfile.selectedProfile, fullState.launchProfile.selectedProfile);
 	assert.ok(Array.isArray(structuredReport.steps));
 	assert.ok(structuredReport.steps.some((step: any) => step.phase === "VERIFY" && step.verdict === "FAIL"));
 	assert.ok(Array.isArray(structuredReport.history));
@@ -1911,7 +1960,7 @@ await runTest("explicit subagent usage is preferred and parent overhead is repor
 			subagentRunId: "child-run-1",
 			subagentSessionFile: "/tmp/child-run-1.jsonl",
 		});
-		const step = result.details.state.steps.find((item: any) => item.phase === "IMPLEMENT");
+		const step = (await harness.tool("delivery_status")).details.state.steps.find((item: any) => item.phase === "IMPLEMENT");
 		assert.equal(step.usageAttribution, "subagent-reported");
 		assert.equal(step.usageSource, "subagent");
 		assert.equal(step.subagentRunId, "child-run-1");
@@ -1949,7 +1998,7 @@ await runTest("subagent session file can populate single-step usage", async () =
 			subagentRunId: "child-run-1",
 			subagentSessionFile: childSessionFile,
 		});
-		const step = result.details.state.steps.find((item: any) => item.phase === "IMPLEMENT");
+		const step = (await harness.tool("delivery_status")).details.state.steps.find((item: any) => item.phase === "IMPLEMENT");
 		assert.equal(step.usageAttribution, "subagent-reported");
 		assert.equal(step.usageSource, "subagent");
 		assert.equal(step.subagentRunId, "child-run-1");
@@ -1981,7 +2030,7 @@ await runTest("parallel stepUsage can resolve usage from subagent run ids", asyn
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
 		result = await harness.tool("delivery_next");
-		const plannedReviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
+		const plannedReviewSteps = (await harness.tool("delivery_status")).details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
 		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
 		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
 		appendAssistantUsage(sessionFile, { input: 100, output: 20, totalTokens: 120, cost: { total: 0.012 } });
@@ -1996,7 +2045,7 @@ await runTest("parallel stepUsage can resolve usage from subagent run ids", asyn
 				{ childIndex: 1, subagentRunId: "review-run-2" },
 			],
 		});
-		const childSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
+		const childSteps = (await harness.tool("delivery_status")).details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
 		assert.deepEqual(childSteps.map((step: any) => step.usageDelta.totalTokens), [25, 35]);
 		assert.deepEqual(childSteps.map((step: any) => step.usageSource), ["subagent", "subagent"]);
 		await harness.tool("delivery_summary");
@@ -2032,7 +2081,7 @@ await runTest("pi-subagents meta scan attributes single-step usage without deliv
 		let result = await harness.tool("delivery_start", { task: "meta scan single step smoke" });
 		const artifactDir = result.details.state.artifactDir as string;
 		result = await harness.tool("delivery_next");
-		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const plannedStep = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
 		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
 		writePiSubagentMeta(artifactsDir, {
 			runId: "aabbccdd",
@@ -2044,7 +2093,7 @@ await runTest("pi-subagents meta scan attributes single-step usage without deliv
 		});
 		appendAssistantUsage(sessionFile, { input: 80, output: 20, totalTokens: 100, cost: { total: 0.01 } });
 		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		const step = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
 		assert.equal(step.usageAttribution, "exact");
 		assert.equal(step.usageSource, "subagent");
 		assert.equal(step.subagentRunId, "aabbccdd");
@@ -2071,7 +2120,7 @@ await runTest("planned unresolved child keeps usage totals and overhead unavaila
 		const harness = createHarness({ cwd, sessionFile });
 		let result = await harness.tool("delivery_start", { task: "planned child usage completeness" });
 		result = await harness.tool("delivery_next");
-		const implementStep = result.details.state.steps.find((step: any) => step.phase === "IMPLEMENT" && step.status === "planned");
+		const implementStep = (await harness.tool("delivery_status")).details.state.steps.find((step: any) => step.phase === "IMPLEMENT" && step.status === "planned");
 		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
 		writePiSubagentMeta(artifactsDir, {
 			runId: "implemented-child",
@@ -2084,7 +2133,7 @@ await runTest("planned unresolved child keeps usage totals and overhead unavaila
 		appendAssistantUsage(sessionFile, { input: 80, output: 20, totalTokens: 100, cost: { total: 0.01 } });
 		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		result = await harness.tool("delivery_next");
-		assert.ok(result.details.state.steps.some((step: any) => step.phase === "VERIFY" && step.status === "planned"));
+		assert.ok((await harness.tool("delivery_status")).details.state.steps.some((step: any) => step.phase === "VERIFY" && step.status === "planned"));
 		appendAssistantUsage(sessionFile, { input: 20, output: 5, totalTokens: 25, cost: { total: 0.0025 } });
 
 		await harness.tool("delivery_summary");
@@ -2111,7 +2160,7 @@ await runTest("pi-subagents meta scan discovers metadata in git worktrees", asyn
 		const harness = createHarness({ cwd: root, sessionFile });
 		let result = await harness.tool("delivery_start", { task: "meta scan worktree smoke" });
 		result = await harness.tool("delivery_next");
-		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const plannedStep = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
 		const artifactsDir = path.join(worktree, ".pi-subagents", "artifacts");
 		writePiSubagentMeta(artifactsDir, {
 			runId: "worktree1",
@@ -2122,7 +2171,7 @@ await runTest("pi-subagents meta scan discovers metadata in git worktrees", asyn
 			timestamp: Date.now() + 1000,
 		});
 		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		const step = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
 		assert.equal(step.usageAttribution, "exact");
 		assert.equal(step.subagentRunId, "worktree1");
 		assert.equal(step.usageDelta.totalTokens, 40);
@@ -2143,7 +2192,7 @@ await runTest("pi-subagents meta scan attributes parallel child usage and skips 
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
 		result = await harness.tool("delivery_next");
-		const plannedReviewSteps = result.details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.status === "planned");
+		const plannedReviewSteps = (await harness.tool("delivery_status")).details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.status === "planned");
 		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
 		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
 		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
@@ -2172,7 +2221,7 @@ await runTest("pi-subagents meta scan attributes parallel child usage and skips 
 			verdict: "PASS",
 			summary: "both passed",
 		});
-		const childSteps = result.details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.childIndex !== undefined);
+		const childSteps = (await harness.tool("delivery_status")).details.state.steps.filter((s: any) => s.phase === "REVIEW" && s.childIndex !== undefined);
 		assert.equal(childSteps[0].usageAttribution, "exact");
 		assert.equal(childSteps[0].usageDelta.totalTokens, 25);
 		assert.equal(childSteps[0].subagentRunId, "review11");
@@ -2180,7 +2229,7 @@ await runTest("pi-subagents meta scan attributes parallel child usage and skips 
 		assert.equal(childSteps[1].usageDelta.totalTokens, 35);
 		assert.equal(childSteps[1].subagentRunId, "review22");
 		// aggregate row must NOT get meta usage
-		const aggregate = result.details.state.steps.find((s: any) => s.phase === "REVIEW" && s.agent === "aggregate");
+		const aggregate = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "REVIEW" && s.agent === "aggregate");
 		assert.ok(!aggregate.usageDelta || aggregate.usageAttribution !== "exact", "aggregate should not get meta usage");
 		await harness.tool("delivery_summary");
 		const structuredReport = JSON.parse(fs.readFileSync(path.join(artifactDir, "delivery-report.json"), "utf8"));
@@ -2199,7 +2248,7 @@ await runTest("exact pi-subagents metadata overrides deprecated caller usage", a
 		const harness = createHarness({ cwd, sessionFile });
 		let result = await harness.tool("delivery_start", { task: "explicit wins over meta scan" });
 		result = await harness.tool("delivery_next");
-		const plannedStep = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
+		const plannedStep = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
 		const artifactsDir = path.join(cwd, ".pi-subagents", "artifacts");
 		writePiSubagentMeta(artifactsDir, {
 			runId: "metarunid",
@@ -2217,7 +2266,7 @@ await runTest("exact pi-subagents metadata overrides deprecated caller usage", a
 			usageDelta: { input: 30, output: 10, totalTokens: 40, cost: 0.004, assistantMessages: 2, sessionFiles: 1 },
 			usageAttribution: "subagent-reported",
 		});
-		const step = result.details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
+		const step = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "IMPLEMENT");
 		assert.equal(step.usageDelta.totalTokens, 70, "exact metadata wins over deprecated caller usage");
 		assert.equal(step.usageAttribution, "exact");
 		assert.equal(step.subagentRunId, "metarunid");
@@ -2237,7 +2286,7 @@ await runTest("parallel stepUsage records child usage without aggregate double c
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
 		result = await harness.tool("delivery_next");
-		const plannedReviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
+		const plannedReviewSteps = (await harness.tool("delivery_status")).details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.status === "planned");
 		writeReviewArtifact(plannedReviewSteps[0].artifact, "PASS", "reviewer 1 passed");
 		writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "reviewer 2 passed");
 		appendAssistantUsage(sessionFile, { input: 100, output: 20, totalTokens: 120, cost: { total: 0.012 } });
@@ -2250,7 +2299,7 @@ await runTest("parallel stepUsage records child usage without aggregate double c
 				{ childIndex: 1, usageDelta: { input: 30, output: 5, totalTokens: 35, cost: 0.0035, assistantMessages: 1, sessionFiles: 1 }, usageAttribution: "subagent-reported", usageSource: "subagent", subagentRunId: "review-2" },
 			],
 		});
-		const childSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
+		const childSteps = (await harness.tool("delivery_status")).details.state.steps.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined);
 		assert.deepEqual(childSteps.map((step: any) => step.usageDelta.totalTokens), [25, 35]);
 		assert.deepEqual(childSteps.map((step: any) => step.subagentRunId), ["review-1", "review-2"]);
 		await harness.tool("delivery_summary");
@@ -2270,7 +2319,7 @@ await runTest("status and summary do not mutate unresolved usage state", async (
 		const harness = createHarness({ cwd, sessionFile });
 		let result = await harness.tool("delivery_start", { task: "immutable usage rendering" });
 		result = await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-		const before = JSON.stringify(result.details.state);
+		const before = JSON.stringify((await harness.tool("delivery_status")).details.state);
 		appendAssistantUsage(sessionFile, { input: 30, output: 7, totalTokens: 37, cost: { total: 0.0037 } });
 		const status = await harness.tool("delivery_status");
 		assert.equal(JSON.stringify(status.details.state), before);
@@ -2351,7 +2400,7 @@ await runTest("parallel reviewer aggregate report preserves child verdict artifa
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
 	const next = await harness.tool("delivery_next");
-	const plannedReviewSteps = next.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+	const plannedReviewSteps = (await harness.tool("delivery_status")).details.state.steps.filter((step: any) => step.phase === "REVIEW");
 	assert.equal(plannedReviewSteps.length, 2);
 	writeReviewArtifact(plannedReviewSteps[0].artifact, "FAIL", "Reviewer 1 found a blocker.");
 	writeReviewArtifact(plannedReviewSteps[1].artifact, "PASS", "Reviewer 2 found no blockers.");
@@ -2364,7 +2413,7 @@ await runTest("parallel reviewer aggregate report preserves child verdict artifa
 	});
 	const summary = await harness.tool("delivery_summary");
 	const text = summary.content[0].text as string;
-	const reviewSteps = result.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+	const reviewSteps = (await harness.tool("delivery_status")).details.state.steps.filter((step: any) => step.phase === "REVIEW");
 	const childSteps = reviewSteps.filter((step: any) => step.childIndex !== undefined);
 	const aggregateStep = reviewSteps.find((step: any) => step.id === "REVIEW-1-aggregate");
 
@@ -2412,14 +2461,14 @@ await runTest("CLOSE repair preserves lineage through nested IMPLEMENT failure a
 	assert.equal(result.details.state.verifyRound, 2);
 	assert.equal(result.details.state.reviewRound, 2);
 	result = await harness.tool("delivery_next");
-	const plannedVerify = result.details.state.steps.find((step: any) => step.phase === "VERIFY" && step.attempt === 2 && step.status === "planned");
+	const plannedVerify = (await harness.tool("delivery_status")).details.state.steps.find((step: any) => step.phase === "VERIFY" && step.attempt === 2 && step.status === "planned");
 	assert.ok(plannedVerify);
 	assert.match(plannedVerify.artifact, /02-verification-2/);
 
 	result = await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "reverified close repair" });
 	result = await harness.tool("delivery_next");
 	assert.equal(result.details.state.phase, "REVIEW");
-	assert.ok(result.details.state.steps.some((step: any) => step.phase === "REVIEW" && step.attempt === 2 && step.status === "planned"));
+	assert.ok((await harness.tool("delivery_status")).details.state.steps.some((step: any) => step.phase === "REVIEW" && step.attempt === 2 && step.status === "planned"));
 	for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "close repair reviewed");
 	result = await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "close repair reviewed" });
 	assert.equal(result.details.state.phase, "CLOSE");
@@ -2460,7 +2509,7 @@ await runTest("parallel review report rejects missing child artifacts before rec
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
 	const next = await harness.tool("delivery_next");
-	const plannedReviewSteps = next.details.state.steps.filter((step: any) => step.phase === "REVIEW");
+	const plannedReviewSteps = (await harness.tool("delivery_status")).details.state.steps.filter((step: any) => step.phase === "REVIEW");
 
 	await assert.rejects(
 		() => harness.tool("delivery_report", {
@@ -2537,7 +2586,9 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 	result = await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
 
 	assert.equal(result.details.state.phase, "DONE");
-	const reviewChildArtifacts = result.details.state.steps
+	// delivery_report returns slim state; full step records are readable via delivery_status.
+	const finalState = (await harness.tool("delivery_status")).details.state;
+	const reviewChildArtifacts = finalState.steps
 		.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined)
 		.map((step: any) => path.relative(artifactDir, step.artifact));
 	assert.deepEqual(reviewChildArtifacts, [
@@ -2783,7 +2834,7 @@ await runTest("CLOSE guard uses canonical phase state and detects wrapped close 
 await runTest("summary extraction prefers canonical Critical fixes and retains legacy fallback", async () => {
 	const harness = createHarness();
 	let result = await advanceHarnessToPhase(harness, "DONE");
-	const retro = result.details.state.steps.find((step: any) => step.phase === "RETRO");
+	const retro = (await harness.tool("delivery_status")).details.state.steps.find((step: any) => step.phase === "RETRO");
 	const canonicalRetro = phaseArtifactContents("RETRO", "DONE", "retro").replace(/## Critical fixes\n+none/, "## Critical fixes\n\ncanonical-marker");
 	fs.writeFileSync(retro.artifact, canonicalRetro, "utf8");
 	let summary = await harness.tool("delivery_summary");
@@ -2798,7 +2849,7 @@ await runTest("summary extraction prefers canonical Critical fixes and retains l
 await runTest("derived summary write failures warn without changing completed workflow state", async () => {
 	const harness = createHarness();
 	const result = await advanceHarnessToPhase(harness, "DONE");
-	const stateBefore = JSON.stringify(result.details.state);
+	const stateBefore = JSON.stringify((await harness.tool("delivery_status")).details.state);
 	const artifactDir = result.details.state.artifactDir as string;
 	const markdownPath = path.join(artifactDir, "00-delivery-summary.md");
 	const jsonPath = path.join(artifactDir, "delivery-report.json");
@@ -2842,7 +2893,8 @@ await runTest("derived summary write failures warn without changing completed wo
 await runTest("delivery tool content is bounded while full reports and structured details remain complete", async () => {
 	const harness = createHarness();
 	const result = await advanceHarnessToPhase(harness, "DONE");
-	const retro = result.details.state.steps.find((step: any) => step.phase === "RETRO");
+	const fullState = (await harness.tool("delivery_status")).details.state;
+	const retro = fullState.steps.find((step: any) => step.phase === "RETRO");
 	const largeSection = Array.from({ length: 2600 }, (_, index) => `row-${index}-${"x".repeat(40)}`).join("\n");
 	const largeRetro = phaseArtifactContents("RETRO", "DONE", "retro").replace(/## Critical fixes\n+none/, `## Critical fixes\n\n${largeSection}`);
 	fs.writeFileSync(retro.artifact, largeRetro, "utf8");
@@ -2851,7 +2903,7 @@ await runTest("delivery tool content is bounded while full reports and structure
 	assert.ok(Buffer.byteLength(text, "utf8") <= 50 * 1024, "tool content must stay within 50KB");
 	assert.ok(text.split("\n").length <= 2000, "tool content must stay within 2,000 lines");
 	assert.match(text, /Output truncated to 2000 lines or 50(?:\.0)?KB/);
-	assert.equal(summary.details.state.steps.length, result.details.state.steps.length, "structured state must remain complete");
+	assert.equal(summary.details.state.steps.length, fullState.steps.length, "structured state must remain complete");
 	const fullReport = fs.readFileSync(path.join(result.details.state.artifactDir, "00-delivery-summary.md"), "utf8");
 	assert.match(fullReport, /row-2599-/);
 });

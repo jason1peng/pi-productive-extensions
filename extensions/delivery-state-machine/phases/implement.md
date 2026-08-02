@@ -11,7 +11,6 @@ Launch the configured implementation subagent as sole writer for implementation.
 Implement this delivery phase as the sole writer.
 
 Instructions:
-- Inspect repository instructions before editing.
 - Make minimal code/test changes for the task or pending verify/review issue.
 - Run focused tests and relevant fast checks.
 - Do not push, create a branch for review, or create an MR/PR.

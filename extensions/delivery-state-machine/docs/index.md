@@ -5,6 +5,7 @@ Extension-specific documentation for `extensions/delivery-state-machine`.
 ## Guides
 
 - [Prompt construction](prompt-construction.md) — understand prompt layering, user overrides, central artifact contracts, and report-time enforcement.
+- [Phase data flow](phase-data-flow.md) — what data passes between orchestrator, state machine, and children per phase; current design vs the token-efficient simplification.
 - [User-space overrides](user-space-overrides.md) — configure user/global delivery phase launch, model, profile, and prompt overrides without changing package defaults.
 
 ## Related extension files

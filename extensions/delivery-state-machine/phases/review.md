@@ -32,6 +32,7 @@ Finding classification rules:
 - Do not label something as a suggestion if you believe it should be fixed in this delivery.
 
 The Must-fix findings section must include the failure reason and suggested repair when failing; write `none` when not failing.
+The `## Project harness discovery and compliance` section is mandatory and must be a top-level section with its required bullets directly below it, never nested under `## Evidence reviewed` or another heading.
 The Evidence reviewed and Risk checks sections must include:
 - Requirements matched by code/tests: yes/no
 - Candidate completeness/trackedness checked: yes/no/not a git repo; blockers listed or none
@@ -45,7 +46,7 @@ The Evidence reviewed and Risk checks sections must include:
 - If no findings: strongest potential objections and why they are not blockers
 - Verdict follows classification rules: yes/no
 
-Use `none` for empty Must-fix findings, Non-blocking notes, or Recommendation. Parallel child artifacts and aggregate review artifacts must use the same headings.
+Use the exact contract headings at level 2, including `## Risk checks`; do not substitute headings such as `## Risk checks / evidence` or omit an empty section. Use `none` for empty Must-fix findings, Non-blocking notes, or Recommendation. Parallel child artifacts and aggregate review artifacts must use the same headings.
 
 Task:
 {{task}}

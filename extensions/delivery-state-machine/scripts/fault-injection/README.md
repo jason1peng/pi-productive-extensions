@@ -7,23 +7,25 @@ against `../isolated-host-smoke.sh` in its `STOPPED` expectation mode.
 
 | Prompt | Injected fault | Expected outcome |
 | --- | --- | --- |
-| `verify-fail-orchestrator-prompt.txt` | `calc.py` implements `add` as subtraction while the task's acceptance requirement says `add(2, 3) == 5` | IMPLEMENT passes; VERIFY FAILs on the violated acceptance requirement; delivery stops |
+| `verify-fail-orchestrator-prompt.txt` | `calc.py` is an explicitly seeded VERIFY-gate fixture: the accepted IMPLEMENT deliverable is the exact subtraction file, while the downstream verification invariant requires `add(2, 3) == 5` | IMPLEMENT passes the exact fixture deliverable; VERIFY FAILs on the downstream behavioral invariant; delivery stops |
 | `review-fail-orchestrator-prompt.txt` | `deploy_keys.py` commits live-shaped cloud credentials while satisfying its stated acceptance behavior | IMPLEMENT and VERIFY pass; REVIEW FAILs on the committed-credential must-fix; delivery stops |
 
 The faults are embedded in the task text so the model-backed implementer
 delivers them deterministically. Each fault sits in exactly one gate's lane:
-the verifier adjudicates stated acceptance behavior, so the behavioral fault
-must fail there; the reviewer owns holistic risk judgment (security,
-maintainability, evidence challenge), so the credential fault passes behavior
-verification but must fail review.
+the verifier adjudicates the downstream behavioral invariant for the seeded
+fixture, so the behavioral fault must fail there; the reviewer owns holistic
+risk judgment (security, maintainability, evidence challenge), so the
+credential fault passes behavior verification but must fail review.
 
 ## Running
 
 ```bash
 # VERIFY fault injection
 PI_DELIVERY_PROFILE=default \
-DSM_SMOKE_MODEL=clinepass/cline-pass/kimi-k3 \
-DSM_SMOKE_EXTRA_PACKAGES="$HOME/.pi/agent/npm/node_modules/pi-clinepass-provider" \
+DSM_SMOKE_PROFILE_CONFIG=package \
+DSM_SMOKE_MODEL=openai-codex/gpt-5.6-luna \
+DSM_SMOKE_CHILD_MODEL=openai-codex/gpt-5.6-luna \
+DSM_SMOKE_EXPOSE_CHILD_PROMPTS=0 \
 DSM_SMOKE_PROMPT_FILE=extensions/delivery-state-machine/scripts/fault-injection/verify-fail-orchestrator-prompt.txt \
 DSM_SMOKE_EXPECT=STOPPED DSM_SMOKE_EXPECT_FAIL_PHASE=VERIFY \
 DSM_SMOKE_KEEP_SESSIONS=1 \
@@ -31,8 +33,10 @@ extensions/delivery-state-machine/scripts/isolated-host-smoke.sh
 
 # REVIEW fault injection
 PI_DELIVERY_PROFILE=default \
-DSM_SMOKE_MODEL=clinepass/cline-pass/kimi-k3 \
-DSM_SMOKE_EXTRA_PACKAGES="$HOME/.pi/agent/npm/node_modules/pi-clinepass-provider" \
+DSM_SMOKE_PROFILE_CONFIG=package \
+DSM_SMOKE_MODEL=openai-codex/gpt-5.6-luna \
+DSM_SMOKE_CHILD_MODEL=openai-codex/gpt-5.6-luna \
+DSM_SMOKE_EXPOSE_CHILD_PROMPTS=0 \
 DSM_SMOKE_PROMPT_FILE=extensions/delivery-state-machine/scripts/fault-injection/review-fail-orchestrator-prompt.txt \
 DSM_SMOKE_EXPECT=STOPPED DSM_SMOKE_EXPECT_FAIL_PHASE=REVIEW \
 DSM_SMOKE_KEEP_SESSIONS=1 \

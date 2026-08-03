@@ -10,12 +10,13 @@ set -euo pipefail
 #                               otherwise the smoke package's phase-launches.json
 #   DSM_SMOKE_AGENT_SOURCE_DIR  optional user-agent directory to stage in the
 #                               isolated host for non-packaged profiles
-#   DSM_SMOKE_MODEL             orchestrator model (default openai-codex/gpt-5.6-sol)
+#   DSM_SMOKE_MODEL             orchestrator model (default openai-codex/gpt-5.6-luna)
 #   DSM_SMOKE_CHILD_MODEL       fallback model for profile launches without an explicit
 #                               model (default: DSM_SMOKE_MODEL)
 #   DSM_SMOKE_EXTRA_PACKAGES    space-separated extra package paths for the isolated
 #                               host settings (e.g. a provider plugin the model needs)
 #   DSM_SMOKE_PROMPT_FILE       orchestrator prompt override (default: embedded happy path)
+#   DSM_SMOKE_EXPOSE_CHILD_PROMPTS 1 (default) exposes canonical prompts for hash evidence; 0 measures pointer-only production responses
 #   DSM_SMOKE_EXPECT             DONE (default) or STOPPED (fault-injection run)
 #   DSM_SMOKE_EXPECT_FAIL_PHASE  VERIFY or REVIEW; required when EXPECT=STOPPED
 REPO_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -24,11 +25,12 @@ PROFILE_ENV_SET=${PI_DELIVERY_PROFILE+x}
 PROFILE=${PI_DELIVERY_PROFILE:-default}
 PROFILE_CONFIG_REQUEST=${DSM_SMOKE_PROFILE_CONFIG:-}
 AGENT_SOURCE_DIR=${DSM_SMOKE_AGENT_SOURCE_DIR:-}
-MODEL=${DSM_SMOKE_MODEL:-openai-codex/gpt-5.6-sol}
+MODEL=${DSM_SMOKE_MODEL:-openai-codex/gpt-5.6-luna}
 CHILD_MODEL=${DSM_SMOKE_CHILD_MODEL:-$MODEL}
 EXTRA_PACKAGES=${DSM_SMOKE_EXTRA_PACKAGES:-}
 PROMPT_FILE=${DSM_SMOKE_PROMPT_FILE:-}
 EXPECT=${DSM_SMOKE_EXPECT:-DONE}
+EXPOSE_CHILD_PROMPTS=${DSM_SMOKE_EXPOSE_CHILD_PROMPTS:-1}
 EXPECT_FAIL_PHASE=${DSM_SMOKE_EXPECT_FAIL_PHASE:-}
 SUBAGENTS_ROOT=${PI_SUBAGENTS_ROOT:-${HOME}/.pi/agent/npm/node_modules/pi-subagents}
 EVIDENCE_DIR=${DSM_SMOKE_EVIDENCE_DIR:-$(mktemp -d "/tmp/dsm-isolated-host-smoke.XXXXXX")}
@@ -40,6 +42,13 @@ RESULTS_DIR="$EVIDENCE_DIR/results"
 PACKAGE_DIR="$EVIDENCE_DIR/package"
 DELIVERY_ROOT="$RESULTS_DIR/delivery-artifacts"
 
+case "$EXPOSE_CHILD_PROMPTS" in
+	0 | 1) ;;
+	*)
+		echo "DSM_SMOKE_EXPOSE_CHILD_PROMPTS must be 0 or 1" >&2
+		exit 2
+		;;
+esac
 case "$EXPECT" in
 	DONE) ;;
 	STOPPED)
@@ -94,6 +103,13 @@ mkdir -p "$AGENT_DIR" "$PROJECT_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"
 git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all > "$RESULTS_DIR/source-status-before.txt"
 cp "$REPO_ROOT/package.json" "$PACKAGE_DIR/package.json"
 cp -R "$REPO_ROOT/extensions" "$REPO_ROOT/shared" "$PACKAGE_DIR/"
+# Keep the isolated host's agent namespace scoped to the selected profile. The
+# package also ships dsm.* compatibility agents; leaving those alongside the
+# generic default reviewer/worker makes pi-subagents reject an unqualified
+# default launch as ambiguous (for example reviewer vs dsm.reviewer).
+if [[ "$PROFILE" != "dsm-candidate" ]]; then
+	rm -f "$PACKAGE_DIR/extensions/delivery-state-machine/agents/dsm/"*.md
+fi
 mkdir "$PACKAGE_DIR/.git"
 if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
 	cp "${HOME}/.pi/agent/auth.json" "$AGENT_DIR/auth.json"
@@ -195,6 +211,14 @@ while IFS= read -r agent; do
 		candidate="$source_dir/$agent.md"
 		if [[ -f "$candidate" ]]; then
 			cp "$candidate" "$AGENT_DIR/agents/$agent.md"
+			# The isolated host intentionally has no web-provider extension. Keep
+			# the selected profile launch unchanged, but make the bundled verifier
+			# executable in this bounded smoke by restricting its optional tools to
+			# the host-native read/bash pair.
+			if [[ "$agent" == "fresh-verifier" ]]; then
+				sed -i.bak -E 's/^tools:.*/tools: read, bash/' "$AGENT_DIR/agents/$agent.md"
+				rm -f "$AGENT_DIR/agents/$agent.md.bak"
+			fi
 			printf '%s\t%s\n' "$agent" "$candidate" >> "$RESULTS_DIR/profile-agent-sources.txt"
 			copied=1
 			break
@@ -272,7 +296,7 @@ Run one complete representative delivery using the delivery-state-machine tools 
 Use this exact bounded loop:
 1. Call delivery_start once with every maxRounds value set to 1.
 2. Call delivery_next once for the current phase.
-3. Call the subagent tool synchronously with the exact agent, thinking, context, cwd, childPrompt, and output path returned by delivery_next, plus model only when delivery_next supplies one. When delivery_next returns parallel launches, launch every parallel entry with its own exact settings and output path. Do not add or substitute model fields, collapse parallel launches, investigate alternatives, or retry a launch.
+3. Call the subagent tool synchronously. For a single launch, pass the exact details.next.launchRef as the task field; for parallel launches, pass each exact details.next.parallel[].launchRef as the corresponding task field. Do not copy or reconstruct the long childPrompt; DSM resolves the canonical prompt and all launch settings before execution. Keep the launch references one-to-one and in the planned phase/attempt. Do not add or substitute model fields, collapse parallel launches, investigate alternatives, or retry a launch.
 4. Read every resulting artifact, then call delivery_report with its phase and aggregate verdict.
 5. Repeat steps 2-4 through IMPLEMENT, VERIFY, REVIEW, CLOSE, and RETRO. If a phase does not pass, report the real result and stop rather than attempting repair.
 6. Call delivery_status. End with exactly DSM_DELIVERY_SMOKE_DONE only when status is DONE.
@@ -297,6 +321,9 @@ export DSM_SMOKE_ORCHESTRATOR_PROMPT="$(cat "$RESULTS_DIR/orchestrator-prompt.tx
 export DSM_SMOKE_ORCHESTRATOR_MODEL="$MODEL"
 export DSM_SMOKE_TIMEOUT_SECONDS="$TIMEOUT_SECONDS"
 export DSM_SMOKE_ENV_HELPER_DIR="$REPO_ROOT/extensions/delivery-state-machine/scripts"
+# The smoke evidence parser can hash canonical prompts in opt-in mode; pointer-only
+# mode validates that the launch hook restores them without exposing them upstream.
+export DSM_SMOKE_EXPOSE_CHILD_PROMPTS="$EXPOSE_CHILD_PROMPTS"
 export DSM_SMOKE_EXPECT="$EXPECT"
 export DSM_SMOKE_EXPECT_FAIL_PHASE="$EXPECT_FAIL_PHASE"
 export DSM_SMOKE_EXPECTED_PHASES="$EXPECTED_PHASES"
@@ -446,7 +473,7 @@ for transcript in sessions_root.rglob("*.jsonl"):
     for record in records:
         message = record.get("message", {})
         if message.get("role") == "toolResult":
-            if message.get("toolName") == "delivery_next":
+            if message.get("toolName") in {"delivery_start", "delivery_next"}:
                 details = message.get("details")
                 next_action = details.get("next") if isinstance(details, dict) else None
                 if isinstance(next_action, dict):
@@ -468,25 +495,45 @@ for transcript in sessions_root.rglob("*.jsonl"):
                 if str(launch.get("agent", "")) not in expected_agents:
                     continue
                 output = launch.get("output")
-                plan = next((candidate for candidate in planned if output and candidate.get("output") == output), None)
+                task = launch.get("task")
+                launch_ref = task if isinstance(task, str) and task.startswith("DSM_LAUNCH_REF:") else None
+                plan = next((candidate for candidate in planned if launch_ref and candidate.get("launchRef") == launch_ref), None)
+                if plan is None:
+                    plan = next((candidate for candidate in planned if output and candidate.get("output") == output), None)
                 if plan is None and len(planned) == 1 and launch.get("agent") == planned[0].get("agent"):
                     plan = planned[0]
                 if plan is None:
                     raise SystemExit(f"profile launch has no matching delivery_next plan: {launch}")
-                task = launch.get("task")
                 child_prompt = plan.get("childPrompt")
-                if not isinstance(task, str) or task != child_prompt:
+                if launch_ref:
+                    if plan.get("launchRef") != launch_ref:
+                        raise SystemExit(f"launch reference did not match delivery_next for {launch.get('agent')}: {launch_ref}")
+                    # The DSM tool_call hook resolves this short reference to the
+                    # canonical launch before execution. Record the resolved fields
+                    # rather than requiring the LLM to duplicate the long prompt.
+                    for key in ("agent", "model", "thinking", "context", "output"):
+                        if key in plan:
+                            launch[key] = plan[key]
+                    launch["cwd"] = os.environ["DSM_SMOKE_PROJECT_DIR"]
+                    launch["_launchRef"] = launch_ref
+                elif not isinstance(task, str) or task != child_prompt:
                     raise SystemExit(
                         f"child prompt was not forwarded verbatim for {launch.get('agent')}: "
                         f"taskSha256={hashlib.sha256(task.encode()).hexdigest() if isinstance(task, str) else 'missing'} "
                         f"plannedSha256={hashlib.sha256(child_prompt.encode()).hexdigest() if isinstance(child_prompt, str) else 'missing'}"
                     )
-                if plan.get("output") and output != plan["output"]:
-                    raise SystemExit(f"child output path did not match delivery_next for {launch.get('agent')}: {output}")
-                launch["_taskSha256"] = hashlib.sha256(task.encode()).hexdigest()
-                launch["_plannedPromptSha256"] = hashlib.sha256(child_prompt.encode()).hexdigest()
+                if plan.get("output") and launch.get("output") != plan["output"]:
+                    raise SystemExit(f"child output path did not match delivery_next for {launch.get('agent')}: {launch.get('output')}")
+                if launch_ref:
+                    if isinstance(child_prompt, str):
+                        launch["_resolvedPromptSha256"] = hashlib.sha256(child_prompt.encode()).hexdigest()
+                else:
+                    if isinstance(task, str):
+                        launch["_taskSha256"] = hashlib.sha256(task.encode()).hexdigest()
+                    if isinstance(child_prompt, str):
+                        launch["_plannedPromptSha256"] = hashlib.sha256(child_prompt.encode()).hexdigest()
                 launch["_promptForwarded"] = True
-                requested.append({key: launch[key] for key in ("agent", "model", "thinking", "context", "cwd", "output", "_taskSha256", "_plannedPromptSha256", "_promptForwarded") if key in launch})
+                requested.append({key: launch[key] for key in ("agent", "model", "thinking", "context", "cwd", "output", "_launchRef", "_taskSha256", "_plannedPromptSha256", "_resolvedPromptSha256", "_promptForwarded") if key in launch})
 
 if len(requested) != len(expected):
     raise SystemExit(f"expected {len(expected)} {expectations['profile']} launches, found {len(requested)}")

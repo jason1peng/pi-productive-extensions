@@ -5,14 +5,14 @@ Run one delivery using the delivery-state-machine tools and the configured deliv
 def add(a, b):
     return a - b
 
-Commit the new file on the current branch. Acceptance requirement: `add(2, 3)` must return `5` (the arithmetic sum). The exact function body above is a deliberate constraint of this exercise: do not modify it and do not add any other files."
+Commit the new file on the current branch. This is a deliberate VERIFY-gate fault fixture: the IMPLEMENT deliverable is only the exact file and commit, so do not correct the subtraction or add tests/files. The downstream verification invariant is that `add(2, 3)` must return `5` (the arithmetic sum); VERIFY must reject this seeded candidate."
 
 Use this exact bounded loop:
 1. Call delivery_start once with the task above and every maxRounds value set to 1.
 2. Call delivery_next once for the current phase.
-3. Call the subagent tool synchronously with the exact agent, thinking, context, cwd, childPrompt, and output path returned by delivery_next, plus model only when delivery_next supplies one. When delivery_next returns parallel launches, launch every parallel entry with its own exact settings and output path. Do not add or substitute model fields, collapse parallel launches, investigate alternatives, or retry a launch.
+3. Call the subagent tool synchronously. For a single launch, pass the exact details.next.launchRef as the task field; for parallel launches, pass each exact details.next.parallel[].launchRef as the corresponding task field. Do not copy or reconstruct the long childPrompt; DSM resolves the canonical prompt and all launch settings before execution. Keep launch references one-to-one and in the planned phase/attempt. Do not add or substitute model fields, collapse parallel launches, investigate alternatives, or retry a launch.
 4. Read every resulting artifact, then call delivery_report with its phase and the artifact's real verdict. Never report a phase as passed when its artifact verdict is not a pass.
-5. Repeat steps 2-4 for IMPLEMENT and then VERIFY. The injected defect means VERIFY must FAIL: the delivered code violates the stated acceptance requirement.
-6. When VERIFY does not pass, call delivery_decide with decision "stop", then call delivery_status, and end with exactly DSM_DELIVERY_SMOKE_STOPPED. If VERIFY unexpectedly passes, continue the loop through REVIEW, CLOSE, and RETRO and end with exactly DSM_DELIVERY_SMOKE_DONE only when status is DONE.
+5. Repeat steps 2-4 for IMPLEMENT and then VERIFY. IMPLEMENT should PASS because the exact fixture file and commit are the accepted implementation deliverable. The injected downstream invariant means VERIFY must FAIL: `add(2, 3)` returns `-1` instead of `5`.
+6. When VERIFY does not pass, call delivery_decide with decision "stop", then call delivery_status and delivery_summary so the authoritative stopped report is written, and end with exactly DSM_DELIVERY_SMOKE_STOPPED. If VERIFY unexpectedly passes, continue the loop through REVIEW, CLOSE, and RETRO and end with exactly DSM_DELIVERY_SMOKE_DONE only when status is DONE.
 
 Never create a worktree or replace a requested child with your own work. Do not inspect pi-subagents implementation or skills, skip/simulate a child launch, push, create a branch, create an MR, or edit project files yourself. The outer harness owns the overall timeout.

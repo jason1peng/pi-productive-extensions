@@ -3,7 +3,7 @@ name: fresh-verifier
 description: Fresh-context independent behavioral verifier that validates a completed worktree diff without relying on implementation claims.
 tools: read, bash, web_search, code_search, fetch_content, get_search_content
 model: openai/gpt-5.5
-thinking: low
+thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true

@@ -142,6 +142,7 @@ interface DeliveryState {
 
 interface ChildLaunch extends LaunchConfig {
 	childPrompt: string;
+	launchRef?: string;
 	acceptance: false;
 	artifact?: string;
 	output?: string;
@@ -150,6 +151,7 @@ interface ChildLaunch extends LaunchConfig {
 
 interface NextAction {
 	phase: Phase;
+	launchRef?: string;
 	agent?: string;
 	artifact?: string;
 	output?: string;
@@ -712,7 +714,7 @@ const PROJECT_HARNESS_PROMPT = `Project harness discovery (bounded, best effort)
 - Missing common entrypoints are normal; a missing explicitly referenced file is a gap. If compliance cannot be established safely, record \`blocked\`.
 - Record Outcome as \`applied\`, \`none discovered\`, or \`blocked\`.
 
-Every artifact must include:
+Every artifact must include the following as a top-level section. Start the heading at column 1; do not nest it under Evidence, Summary, or another section, and place the bullets directly below the heading:
 ${DSM_PROJECT_HARNESS_CONTRACT}`;
 
 function projectHarnessRootContext(state: DeliveryState): string {
@@ -755,6 +757,12 @@ function parallelArtifactPathForLaunch(state: DeliveryState, launch: LaunchConfi
 	const attempt = phaseAttemptForStep(state, state.phase);
 	const artifactName = parallelArtifactName(state.phase, attempt, launch, index);
 	return state.artifactDir ? path.join(state.artifactDir, artifactName) : artifactName;
+}
+
+const DELIVERY_LAUNCH_REF_PREFIX = "DSM_LAUNCH_REF";
+
+function deliveryLaunchRef(state: DeliveryState, phase: RunnablePhase, attempt: number, index: number): string {
+	return `${DELIVERY_LAUNCH_REF_PREFIX}:${phase}:${attempt}:${index}`;
 }
 
 function parallelChildPrompt(basePrompt: string, state: DeliveryState, launch: LaunchConfig, index: number, total: number): string {
@@ -858,8 +866,10 @@ function nextAction(state: DeliveryState): NextAction {
 	const parallel = launches.length > 1
 		? launches.map((launch, index, allLaunches) => {
 			const artifactPath = parallelArtifactPathForLaunch(state, launch, index);
+			const attempt = phaseAttemptForStep(state, state.phase);
 			return {
 				...launch,
+				launchRef: deliveryLaunchRef(state, state.phase, attempt, index),
 				acceptance: false as const,
 				...(artifactPath ? { artifact: artifactPath, output: artifactPath, outputMode: "file-only" as const } : {}),
 				childPrompt: parallelChildPrompt(promptForLaunch(launch), state, launch, index, allLaunches.length),
@@ -872,12 +882,15 @@ function nextAction(state: DeliveryState): NextAction {
 		? plannedArtifactPath(state, state.phase, phaseAttemptForStep(state, state.phase), primaryLaunch, undefined, 1)
 		: undefined;
 	const childPrompt = promptForLaunch(primaryLaunch);
+	const attempt = phaseAttemptForStep(state, state.phase);
+	const launchRef = deliveryLaunchRef(state, state.phase, attempt, 0);
 	const authoritySuffix = isBundledDsmAgentForPhase(state.phase, primaryLaunch.agent) ? "" : CHILD_PROMPT_AUTHORITY_SUFFIX;
 	const singlePrompt = singleArtifact
 		? `${childPrompt}\n\nArtifact contract:\n- Write your result to exactly this path: ${singleArtifact}\n- This exact planned path is required when reporting this phase.${authoritySuffix}`
 		: `${childPrompt}${authoritySuffix}`;
 	return {
 		phase: state.phase,
+		launchRef,
 		agent: primaryLaunch.agent,
 		...(singleArtifact ? { artifact: singleArtifact, output: singleArtifact, outputMode: "file-only" as const } : {}),
 		model: primaryLaunch.model,
@@ -889,6 +902,84 @@ function nextAction(state: DeliveryState): NextAction {
 		orchestratorInstruction,
 		reportInstruction,
 	};
+}
+
+function exposeChildPromptsToCaller(): boolean {
+	return process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS === "1";
+}
+
+function toolNextAction(state: DeliveryState): Record<string, unknown> {
+	const action = nextAction(state);
+	if (exposeChildPromptsToCaller()) return action as unknown as Record<string, unknown>;
+	const { childPrompt: _childPrompt, parallel, ...single } = action;
+	return {
+		...single,
+		...(parallel ? { parallel: parallel.map(({ childPrompt: _parallelPrompt, ...launch }) => launch) } : {}),
+	};
+}
+
+function parseDeliveryLaunchRef(value: unknown): { phase: RunnablePhase; attempt: number; index: number } | { error: string } | undefined {
+	if (typeof value !== "string" || !value.startsWith(`${DELIVERY_LAUNCH_REF_PREFIX}:`)) return undefined;
+	const match = new RegExp(`^${DELIVERY_LAUNCH_REF_PREFIX}:(IMPLEMENT|VERIFY|REVIEW|CLOSE|RETRO):(\\d+):(\\d+)$`).exec(value);
+	if (!match) return { error: `invalid delivery launch reference ${value}; use the exact launchRef returned by delivery_next.` };
+	return { phase: match[1] as RunnablePhase, attempt: Number(match[2]), index: Number(match[3]) };
+}
+
+function canonicalizeSubagentLaunch(target: Record<string, unknown>, launch: ChildLaunch, state: DeliveryState): void {
+	const fields = ["agent", "context", "acceptance", "output", "outputMode"] as const;
+	for (const field of fields) {
+		if (launch[field] === undefined) delete target[field];
+		else target[field] = launch[field];
+	}
+	if (launch.model === undefined) delete target.model;
+	else target.model = launch.thinking ? `${launch.model}:${launch.thinking}` : launch.model;
+	if (launch.thinking === undefined) delete target.thinking;
+	else target.thinking = launch.thinking;
+	target.cwd = state.cwd;
+	target.task = launch.childPrompt;
+}
+
+function materializeDeliveryLaunchRefs(state: DeliveryState, input: unknown): string | undefined {
+	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const inputRecord = input as Record<string, unknown>;
+	if (typeof inputRecord.action === "string") return undefined;
+	const action = nextAction(state);
+	const expected = action.parallel?.length ? action.parallel : [action as ChildLaunch];
+	const rawTasks = Array.isArray(inputRecord.tasks) ? inputRecord.tasks : [inputRecord];
+	const taskRecords = rawTasks.filter((task): task is Record<string, unknown> => Boolean(task) && typeof task === "object" && !Array.isArray(task));
+	const parsed = taskRecords.map((task) => parseDeliveryLaunchRef(task.task));
+	if (!parsed.some(Boolean)) return undefined;
+	if (parsed.some((ref) => !ref || "error" in ref)) {
+		return parsed.find((ref): ref is { error: string } => Boolean(ref && "error" in ref))?.error
+			?? "delivery launch reference is missing from one parallel task; use every launchRef returned by delivery_next exactly once.";
+	}
+	if (taskRecords.length !== expected.length) {
+		return `received ${taskRecords.length} launch references, but delivery_next planned ${expected.length}; use every launchRef exactly once.`;
+	}
+	const contexts = new Set(expected.map((launch) => launch.context ?? null));
+	if (contexts.size > 1) {
+		return "parallel launch references require one shared context; delivery_next returned incompatible context settings.";
+	}
+	if (expected[0]?.context === undefined) delete inputRecord.context;
+	else inputRecord.context = expected[0].context;
+	inputRecord.cwd = state.cwd;
+	const used = new Set<number>();
+	for (let taskIndex = 0; taskIndex < taskRecords.length; taskIndex += 1) {
+		const ref = parsed[taskIndex];
+		if (!ref || "error" in ref) continue;
+		if (ref.phase !== state.phase || ref.attempt !== phaseAttemptForStep(state, state.phase)) {
+			return `stale delivery launch reference ${taskRecords[taskIndex].task}; call delivery_next for the current phase and attempt.`;
+		}
+		if (ref.index < 0 || ref.index >= expected.length || used.has(ref.index)) {
+			return `delivery launch reference ${taskRecords[taskIndex].task} is not a unique planned launch; use each launchRef exactly once.`;
+		}
+		used.add(ref.index);
+		const launch = expected[ref.index];
+		if (!launch) return `delivery launch reference ${taskRecords[taskIndex].task} has no planned launch.`;
+		canonicalizeSubagentLaunch(taskRecords[taskIndex], launch, state);
+	}
+	if (used.size !== expected.length) return "parallel launch references must cover every planned launch exactly once.";
+	return undefined;
 }
 
 function validateSubagentLaunchThinking(state: DeliveryState, input: unknown): string | undefined {
@@ -1556,13 +1647,13 @@ function formatNextAction(state: DeliveryState): string {
 	const launch = action.parallel?.length
 		? `parallel (${action.parallel.length}): ${action.parallel.map(launchOne).join(" | ")}`
 		: launchOne(action);
-	const childPromptPointer = action.parallel?.length
-		? `pass details.next.parallel[].childPrompt verbatim as each subagent task (${action.parallel.length} entries)`
-		: "pass details.next.childPrompt verbatim as the subagent task";
+	const launchReference = action.parallel?.length
+		? action.parallel.map((item, index) => `parallel[${index}].task=${item.launchRef}`).join(" | ")
+		: `task=${action.launchRef}`;
 	return [
 		`orchestrator: ${action.orchestratorInstruction}`,
 		`launch: ${launch}`,
-		`childPrompt: ${childPromptPointer}`,
+		`launchRef: pass the exact ${launchReference} value(s) as the subagent task field; DSM resolves the canonical childPrompt, settings, cwd, and output path before execution`,
 		`parentReport: ${action.reportInstruction}`,
 	].join("\n");
 }
@@ -2374,7 +2465,9 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, _ctx) => {
 		if (event.toolName === "subagent") {
-			const reason = validateSubagentLaunchThinking(state, event.input) ?? validateSubagentLaunchPrompt(state, event.input);
+			const reason = materializeDeliveryLaunchRefs(state, event.input)
+				?? validateSubagentLaunchThinking(state, event.input)
+				?? validateSubagentLaunchPrompt(state, event.input);
 			if (reason) return { block: true, reason };
 			return;
 		}
@@ -2456,7 +2549,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use delivery_start when the user asks to deliver a task through the state-machine workflow.",
 			"Follow the returned delivery playbook for the worktree policy, loop order, and delivery-owned artifact/verdict gates.",
-			"Use delivery_next before launches; pass only details.next.childPrompt plus the exact launch settings and acceptance fields it returns.",
+			"Use delivery_next before launches; prefer each returned launchRef as the subagent task so DSM resolves canonical prompts and settings without LLM rewriting.",
 		],
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2482,7 +2575,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			recordPlannedSteps(state, ctx, action);
 			persist();
 			updateUi(ctx, state);
-			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: action } };
+			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: toolNextAction(state) } };
 		},
 	});
 
@@ -2493,8 +2586,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptSnippet: "Return the next required delivery state-machine action",
 		promptGuidelines: [
 			"Use delivery_next before launching any delivery workflow subagent.",
-			"Launch exactly what details.next returns and pass only details.next.childPrompt for single-child phases; configured thinking is mandatory and mismatched or omitted values are blocked.",
-			"For parallel phases, use each details.next.parallel[] entry's exact agent/model/thinking/context, childPrompt, output/outputMode, and acceptance fields.",
+			"Prefer each details.next.launchRef (or details.next.parallel[].launchRef) as the subagent task; DSM resolves the canonical childPrompt, settings, cwd, and output path before execution.",
+			"Full childPrompt forwarding remains supported for compatibility; configured thinking is mandatory and mismatched or omitted values are blocked.",
 			"Keep details.next.orchestratorInstruction and details.next.reportInstruction with the parent/orchestrator, and do not skip verification/review/close gates.",
 		],
 		parameters: EMPTY_PARAMS,
@@ -2505,7 +2598,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			persist();
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
 			const fullOutputPath = shouldShowSummary(state) && state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
-			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: toolStateSnapshot(state), next: action } };
+			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: toolStateSnapshot(state), next: toolNextAction(state) } };
 		},
 	});
 
@@ -2555,7 +2648,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			synchronizeCloseReadiness(state);
 			persist();
 			updateUi(ctx, state);
-			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: nextAction(state) } };
+			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: toolNextAction(state) } };
 		},
 	});
 
@@ -2570,7 +2663,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			updateUi(ctx, state);
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
 			const fullOutputPath = shouldShowSummary(state) && state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
-			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: cloneState(state), next: nextAction(state) } };
+			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: cloneState(state), next: toolNextAction(state) } };
 		},
 	});
 

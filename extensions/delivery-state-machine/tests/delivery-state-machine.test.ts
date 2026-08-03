@@ -12,6 +12,9 @@ import { readPiSubagentMetadataFiles, resolvePiSubagentChildUsage, usageFromPiSu
 
 const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
 process.env.PI_CODING_AGENT_DIR = testAgentDir;
+// Most unit tests inspect canonical prompts directly; the production-default
+// pointer-only contract is covered by a focused test below.
+process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS = "1";
 
 interface RegisteredTool {
 	promptGuidelines?: string[];
@@ -275,7 +278,7 @@ await runTest("isolated host smoke exercises the selected delivery profile", () 
 	assert.match(smoke, /requested-launches\.json/);
 	assert.match(smoke, /actual-launches\.json/);
 	assert.match(smoke, /"subagents": \{\s*"defaultModel": "\$CHILD_MODEL"/);
-	assert.match(smoke, /When delivery_next returns parallel launches, launch every parallel entry/);
+	assert.match(smoke, /for parallel launches, pass each exact details\.next\.parallel\[\]\.launchRef/);
 	assert.match(smoke, /export PYTHONDONTWRITEBYTECODE=1/);
 	assert.equal((smoke.match(/python3 -B/g) ?? []).length, 3);
 	assert.match(smoke, /source-status-before\.txt/);
@@ -758,6 +761,7 @@ await runTest("every runnable child prompt includes bounded project harness disc
 				assert.match(prompt, new RegExp(`Project harness resolved root for this run: ${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 				assert.match(prompt, /none discovered/);
 				assert.match(prompt, /do not recursively read unrelated documentation/);
+				assert.match(prompt, /top-level section.*do not nest it/i);
 				assert.doesNotMatch(prompt, /docs\/index\.md/);
 			}
 			if (phase === "RETRO") break;
@@ -791,12 +795,13 @@ await runTest("single-child next actions expose exact file-only output fields", 
 	assert.match(action.childPrompt, new RegExp(action.artifact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
-await runTest("next/report responses carry slim state, no prompt mirror, and no report-side next package", async () => {
+await runTest("next/report responses carry slim state, launch references, no prompt mirror, and no report-side next package", async () => {
 	const harness = createHarness();
 	await harness.tool("delivery_start", { task: "slim response contract" });
 
 	const next = await harness.tool("delivery_next");
 	assert.equal("prompt" in next.details.next, false, "details.next.prompt mirror must stay deleted");
+	assert.match(next.details.next.launchRef, /^DSM_LAUNCH_REF:IMPLEMENT:\d+:0$/);
 	assert.equal(typeof next.details.next.childPrompt, "string");
 	assert.equal(next.details.state.phase, "IMPLEMENT");
 	assert.equal("history" in next.details.state, false, "delivery_next must not attach full history");
@@ -804,8 +809,9 @@ await runTest("next/report responses carry slim state, no prompt mirror, and no 
 	assert.equal("launchProfile" in next.details.state, false, "delivery_next must not attach launch config");
 	assert.ok(
 		!next.content[0].text.includes(next.details.next.childPrompt),
-		"content text must point at details.next.childPrompt instead of embedding it",
+		"content text must use the launch reference instead of embedding childPrompt",
 	);
+	assert.match(next.content[0].text, /DSM_LAUNCH_REF:IMPLEMENT:\d+:0/);
 	const status = await harness.tool("delivery_status");
 	assert.ok(Array.isArray(status.details.state.history), "delivery_status keeps full state");
 
@@ -814,6 +820,74 @@ await runTest("next/report responses carry slim state, no prompt mirror, and no 
 	assert.match(reported.content[0].text, /IMPLEMENT recorded: PASS\. Next phase: VERIFY\./);
 	assert.equal(reported.details.state.phase, "VERIFY");
 	assert.equal("history" in reported.details.state, false, "delivery_report must not attach full history");
+});
+
+await runTest("production responses keep canonical child prompts pointer-only", async () => {
+	const previous = process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS;
+	delete process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS;
+	try {
+		const harness = createHarness();
+		const started = await harness.tool("delivery_start", { task: "pointer-only response contract" });
+		assert.equal("childPrompt" in started.details.next, false);
+		assert.match(started.details.next.launchRef, /^DSM_LAUNCH_REF:IMPLEMENT:\d+:0$/);
+		const next = await harness.tool("delivery_next");
+		assert.equal("childPrompt" in next.details.next, false);
+		assert.equal(next.details.next.parallel, undefined);
+		assert.match(next.content[0].text, /launchRef: pass the exact/);
+	} finally {
+		if (previous === undefined) delete process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS;
+		else process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS = previous;
+	}
+});
+
+await runTest("launch references resolve canonical single and parallel subagent inputs", async () => {
+	const single = createHarness();
+	const singleNext = await single.tool("delivery_start", { task: "launch reference single" });
+	const singleInput: any = {
+		agent: "worker",
+		task: singleNext.details.next.launchRef,
+		output: "/tmp/wrong-output.md",
+		outputMode: "inline",
+		model: "wrong/model",
+	};
+	assert.equal(await single.emit("tool_call", { toolName: "subagent", input: singleInput }), undefined);
+	assert.equal(singleInput.task, singleNext.details.next.childPrompt);
+	assert.equal(singleInput.output, singleNext.details.next.output);
+	assert.equal(singleInput.outputMode, "file-only");
+	assert.equal(singleInput.model, singleNext.details.next.thinking ? `${singleNext.details.next.model}:${singleNext.details.next.thinking}` : singleNext.details.next.model);
+	assert.equal(singleInput.cwd, single.ctx.cwd);
+
+	const parallel = createHarness();
+	await advanceHarnessToPhase(parallel, "REVIEW");
+	const reviewNext = await parallel.tool("delivery_next");
+	const parallelInput: any = {
+		tasks: reviewNext.details.next.parallel.map((launch: any) => ({
+			agent: "reviewer",
+			task: launch.launchRef,
+			output: "/tmp/wrong-output.md",
+			outputMode: "inline",
+			model: "wrong/model",
+		})),
+	};
+	assert.equal(await parallel.emit("tool_call", { toolName: "subagent", input: parallelInput }), undefined);
+	for (const [index, task] of parallelInput.tasks.entries()) {
+		const planned = reviewNext.details.next.parallel[index];
+		assert.equal(task.task, planned.childPrompt);
+		assert.equal(task.output, planned.output);
+		assert.equal(task.outputMode, "file-only");
+		assert.equal(task.model, planned.thinking ? `${planned.model}:${planned.thinking}` : planned.model);
+		assert.equal(task.cwd, parallel.ctx.cwd);
+	}
+	assert.equal(parallelInput.context, reviewNext.details.next.parallel[0].context);
+	assert.equal(parallelInput.cwd, parallel.ctx.cwd);
+
+	const staleInput: any = {
+		tasks: reviewNext.details.next.parallel.map((_: any, index: number) => ({ agent: "reviewer", task: `DSM_LAUNCH_REF:REVIEW:999:${index}` })),
+	};
+	assert.match(
+		(await parallel.emit("tool_call", { toolName: "subagent", input: staleInput }))?.reason,
+		/stale delivery launch reference/,
+	);
 });
 
 await runTest("planning may use the stable primary checkout but implementation requires a fresh main worktree", async () => {
@@ -1355,17 +1429,17 @@ await runTest("/deliver reaches review with exactly the configured parallel revi
 	assert.equal(action.phase, "REVIEW");
 	assert.equal(action.parallel.length, 2);
 	assert.equal(action.parallel[0].agent, "reviewer");
-	assert.equal(action.parallel[0].model, undefined);
+	assert.equal(action.parallel[0].model, "openai-codex/gpt-5.6-luna");
 	assert.equal(action.parallel[0].acceptance, false);
-	assert.match(action.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
-	assert.match(action.parallel[0].artifact, /03-review-1-01-reviewer\.md/);
+	assert.match(action.parallel[0].childPrompt, /03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md/);
+	assert.match(action.parallel[0].artifact, /03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md/);
 	assert.equal(action.parallel[0].output, action.parallel[0].artifact);
 	assert.equal(action.parallel[0].outputMode, "file-only");
 	assert.equal(action.parallel[1].agent, "reviewer");
-	assert.equal(action.parallel[1].model, "openai/gpt-5.5");
+	assert.equal(action.parallel[1].model, "openai-codex/gpt-5.6-luna");
 	assert.equal(action.parallel[1].acceptance, false);
-	assert.match(action.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
-	assert.match(action.parallel[1].artifact, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(action.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
+	assert.match(action.parallel[1].artifact, /03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
 	assert.equal(action.parallel[1].output, action.parallel[1].artifact);
 	assert.equal(action.parallel[1].outputMode, "file-only");
 	assert.match(action.reportInstruction, /After all 2 children complete/);
@@ -2441,12 +2515,12 @@ await runTest("parallel reviewer aggregate report preserves child verdict artifa
 	assert.equal(path.basename(aggregateStep?.artifact), "03-review.md");
 	const aggregateText = fs.readFileSync(aggregateStep.artifact, "utf8");
 	assert.match(aggregateText, /^RESULT: FAIL/);
-	assert.match(aggregateText, /Reviewer 1\/2 .*FAIL.*03-review-1-01-reviewer\.md/);
-	assert.match(aggregateText, /Reviewer 2\/2 .*PASS.*03-review-1-02-reviewer-openai-gpt-5-5\.md/);
-	assert.match(text, /03-review-1-01-reviewer\.md/);
-	assert.match(text, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
-	assert.match(text, /\| 3a \| REVIEW \| reviewer \| default \| FAIL \| unavailable \| \[03-review-1-01-reviewer\.md\]/);
-	assert.match(text, /\| 3b \| REVIEW \| reviewer \| openai\/gpt-5\.5 \| PASS \| unavailable \| \[03-review-1-02-reviewer-openai-gpt-5-5\.md\]/);
+	assert.match(aggregateText, /Reviewer 1\/2 .*FAIL.*03-review-1-01-reviewer/);
+	assert.match(aggregateText, /Reviewer 2\/2 .*PASS.*03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
+	assert.match(text, /03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md/);
+	assert.match(text, /03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
+	assert.match(text, /\| 3a \| REVIEW \| reviewer \| openai-codex\/gpt-5.6-luna \| FAIL \| unavailable \| \[03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md\]/);
+	assert.match(text, /\| 3b \| REVIEW \| reviewer \| openai-codex\/gpt-5\.6-luna \| PASS \| unavailable \| \[03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md\]/);
 	assert.match(text, /\| 4 \| REVIEW \| aggregate \| parent \| FAIL \| unavailable \| \[03-review\.md\]/);
 });
 
@@ -2576,8 +2650,8 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented initial change" });
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified initial change" });
 	const firstReview = await harness.tool("delivery_next");
-	assert.match(firstReview.details.next.parallel[0].childPrompt, /03-review-1-01-reviewer\.md/);
-	assert.match(firstReview.details.next.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(firstReview.details.next.parallel[0].childPrompt, /03-review-1-01-reviewer/);
+	assert.match(firstReview.details.next.parallel[1].childPrompt, /03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
 	writeReviewArtifact(firstReview.details.next.parallel[0].artifact, "FAIL", "repeated review artifacts reused");
 	writeReviewArtifact(firstReview.details.next.parallel[1].artifact, "PASS", "reviewer 2 passed");
 
@@ -2591,8 +2665,8 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "added attempt-specific parallel artifact paths" });
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified artifact path repair" });
 	const secondReview = await harness.tool("delivery_next");
-	assert.match(secondReview.details.next.parallel[0].childPrompt, /03-review-2-01-reviewer\.md/);
-	assert.match(secondReview.details.next.parallel[1].childPrompt, /03-review-2-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(secondReview.details.next.parallel[0].childPrompt, /03-review-2-01-reviewer/);
+	assert.match(secondReview.details.next.parallel[1].childPrompt, /03-review-2-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
 	assert.match(secondReview.details.next.reportInstruction, /exact planned aggregate path .*03-review-2\.md/);
 	assert.doesNotMatch(secondReview.details.next.reportInstruction, /exact planned aggregate path 03-review\.md/);
 	writeReviewArtifact(secondReview.details.next.parallel[0].artifact, "PASS", "reviewer 1 passed after repair");
@@ -2609,18 +2683,18 @@ await runTest("parallel review repair journey preserves distinct child artifact 
 		.filter((step: any) => step.phase === "REVIEW" && step.childIndex !== undefined)
 		.map((step: any) => path.relative(artifactDir, step.artifact));
 	assert.deepEqual(reviewChildArtifacts, [
-		"03-review-1-01-reviewer.md",
-		"03-review-1-02-reviewer-openai-gpt-5-5.md",
-		"03-review-2-01-reviewer.md",
-		"03-review-2-02-reviewer-openai-gpt-5-5.md",
+		"03-review-1-01-reviewer-openai-codex-gpt-5-6-luna.md",
+		"03-review-1-02-reviewer-openai-codex-gpt-5-6-luna.md",
+		"03-review-2-01-reviewer-openai-codex-gpt-5-6-luna.md",
+		"03-review-2-02-reviewer-openai-codex-gpt-5-6-luna.md",
 	]);
 	assert.equal(new Set(reviewChildArtifacts).size, reviewChildArtifacts.length);
 
 	const report = fs.readFileSync(path.join(artifactDir, "00-delivery-summary.md"), "utf8");
-	assert.match(report, /03-review-1-01-reviewer\.md/);
-	assert.match(report, /03-review-1-02-reviewer-openai-gpt-5-5\.md/);
-	assert.match(report, /03-review-2-01-reviewer\.md/);
-	assert.match(report, /03-review-2-02-reviewer-openai-gpt-5-5\.md/);
+	assert.match(report, /03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md/);
+	assert.match(report, /03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
+	assert.match(report, /03-review-2-01-reviewer/);
+	assert.match(report, /03-review-2-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
 });
 
 await runTest("delivery summary merges legacy history-only reports with newly recorded steps", async () => {
@@ -2663,7 +2737,7 @@ await runTest("delivery summary merges legacy history-only reports with newly re
 		assert.match(text, /IMPLEMENT \| unknown \| default \| PASS \| unavailable \| legacy initial implementation/);
 		assert.match(text, /VERIFY \| unknown \| default \| FAIL \| unavailable \| legacy verification found missing regression/);
 		assert.match(text, /IMPLEMENT #2 \| unknown \| default \| PASS \| unavailable \| legacy repair implementation/);
-		assert.match(text, /VERIFY #2 \| fresh-verifier \| openai\/gpt-5\.5 \| PASS \| unavailable \| \[02-verification-2\.md\]/);
+		assert.match(text, /VERIFY #2 \| fresh-verifier \| openai-codex\/gpt-5\.6-luna \| PASS \| unavailable \| \[02-verification-2\.md\]/);
 		assert.match(text, /legacy verification found missing regression/);
 		assert.match(text, /legacy repair implementation/);
 	} finally {

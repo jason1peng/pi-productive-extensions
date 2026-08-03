@@ -4,15 +4,28 @@ set -euo pipefail
 # Opt-in, model-backed Stage 6 smoke. It intentionally is not part of npm run verify.
 #
 # Env knobs:
-#   DSM_SMOKE_MODEL              orchestrator + child model (default openai-codex/gpt-5.6-sol)
-#   DSM_SMOKE_EXTRA_PACKAGES     space-separated extra package paths for the isolated
-#                                host settings (e.g. a provider plugin the model needs)
-#   DSM_SMOKE_PROMPT_FILE        orchestrator prompt override (default: embedded happy path)
+#   PI_DELIVERY_PROFILE         profile under test (default: default)
+#   DSM_SMOKE_PROFILE_CONFIG    launch-config JSON path, `package`, or `host`; absent
+#                               uses host config when PI_DELIVERY_PROFILE is set,
+#                               otherwise the smoke package's phase-launches.json
+#   DSM_SMOKE_AGENT_SOURCE_DIR  optional user-agent directory to stage in the
+#                               isolated host for non-packaged profiles
+#   DSM_SMOKE_MODEL             orchestrator model (default openai-codex/gpt-5.6-sol)
+#   DSM_SMOKE_CHILD_MODEL       fallback model for profile launches without an explicit
+#                               model (default: DSM_SMOKE_MODEL)
+#   DSM_SMOKE_EXTRA_PACKAGES    space-separated extra package paths for the isolated
+#                               host settings (e.g. a provider plugin the model needs)
+#   DSM_SMOKE_PROMPT_FILE       orchestrator prompt override (default: embedded happy path)
 #   DSM_SMOKE_EXPECT             DONE (default) or STOPPED (fault-injection run)
 #   DSM_SMOKE_EXPECT_FAIL_PHASE  VERIFY or REVIEW; required when EXPECT=STOPPED
 REPO_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 PI_BIN=${PI_BIN:-pi}
+PROFILE_ENV_SET=${PI_DELIVERY_PROFILE+x}
+PROFILE=${PI_DELIVERY_PROFILE:-default}
+PROFILE_CONFIG_REQUEST=${DSM_SMOKE_PROFILE_CONFIG:-}
+AGENT_SOURCE_DIR=${DSM_SMOKE_AGENT_SOURCE_DIR:-}
 MODEL=${DSM_SMOKE_MODEL:-openai-codex/gpt-5.6-sol}
+CHILD_MODEL=${DSM_SMOKE_CHILD_MODEL:-$MODEL}
 EXTRA_PACKAGES=${DSM_SMOKE_EXTRA_PACKAGES:-}
 PROMPT_FILE=${DSM_SMOKE_PROMPT_FILE:-}
 EXPECT=${DSM_SMOKE_EXPECT:-DONE}
@@ -47,15 +60,12 @@ esac
 # injected failure, so later phases must not launch or produce artifacts.
 if [[ "$EXPECT" == "DONE" ]]; then
 	EXPECTED_PHASES="IMPLEMENT VERIFY REVIEW CLOSE RETRO"
-	EXPECTED_ROLES=(implementer verifier reviewer closer retrospective)
 	EXPECTED_STEMS=(implementation verification review close retrospective)
 elif [[ "$EXPECT_FAIL_PHASE" == "VERIFY" ]]; then
 	EXPECTED_PHASES="IMPLEMENT VERIFY"
-	EXPECTED_ROLES=(implementer verifier)
 	EXPECTED_STEMS=(implementation verification)
 else
 	EXPECTED_PHASES="IMPLEMENT VERIFY REVIEW"
-	EXPECTED_ROLES=(implementer verifier reviewer)
 	EXPECTED_STEMS=(implementation verification review)
 fi
 
@@ -88,6 +98,122 @@ mkdir "$PACKAGE_DIR/.git"
 if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
 	cp "${HOME}/.pi/agent/auth.json" "$AGENT_DIR/auth.json"
 fi
+
+# The isolated host uses the candidate package launch config by default so
+# smoke results are reproducible. A caller can explicitly provide a host/custom
+# launch config when evaluating a user-owned profile.
+# `package` selects the package config explicitly; `host` selects the user's
+# phase-launches.json.
+BUNDLED_PHASE_CONFIG="$PACKAGE_DIR/extensions/delivery-state-machine/phase-launches.json"
+HOST_PHASE_CONFIG="$HOME/.pi/agent/extensions/delivery-state-machine/phase-launches.json"
+if [[ "$PROFILE_CONFIG_REQUEST" == "package" ]]; then
+	PROFILE_CONFIG_SOURCE="$BUNDLED_PHASE_CONFIG"
+elif [[ "$PROFILE_CONFIG_REQUEST" == "host" || ( -z "$PROFILE_CONFIG_REQUEST" && -n "$PROFILE_ENV_SET" ) ]]; then
+	PROFILE_CONFIG_SOURCE="$HOST_PHASE_CONFIG"
+elif [[ -z "$PROFILE_CONFIG_REQUEST" ]]; then
+	PROFILE_CONFIG_SOURCE="$BUNDLED_PHASE_CONFIG"
+else
+	PROFILE_CONFIG_SOURCE="$PROFILE_CONFIG_REQUEST"
+fi
+if [[ ! -f "$PROFILE_CONFIG_SOURCE" ]]; then
+	echo "profile launch config not found: $PROFILE_CONFIG_SOURCE" >&2
+	exit 2
+fi
+mkdir -p "$AGENT_DIR/extensions/delivery-state-machine"
+cp "$PROFILE_CONFIG_SOURCE" "$AGENT_DIR/extensions/delivery-state-machine/phase-launches.json"
+cp "$PROFILE_CONFIG_SOURCE" "$RESULTS_DIR/selected-phase-launches.json"
+
+# Resolve the selected profile once so settings, discovery, and post-run
+# evidence all use the same expected launch set and model allowlist.
+PROFILE_MODELS_JSON=$(python3 -B - "$PROFILE_CONFIG_SOURCE" "$PROFILE" "$EXPECTED_PHASES" \
+	"$RESULTS_DIR/profile-expectations.json" "$RESULTS_DIR/profile-agents.txt" \
+	"$MODEL" "$CHILD_MODEL" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path, profile, expected_phase_text, expectations_path, agents_path, outer_model, child_model = sys.argv[1:]
+config = json.loads(Path(config_path).read_text())
+profiles = config.get("profiles")
+if not isinstance(profiles, dict) or profile not in profiles:
+    raise SystemExit(f"profile {profile!r} is not present in {config_path}")
+expected_phases = set(expected_phase_text.split())
+expected = []
+agent_names = []
+models = []
+for phase in ("IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"):
+    if phase not in expected_phases:
+        continue
+    raw = profiles[profile].get(phase)
+    if raw is None:
+        raise SystemExit(f"profile {profile!r} has no {phase} launch")
+    entries = raw if isinstance(raw, list) else [raw]
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("agent"), str):
+            raise SystemExit(f"profile {profile!r} has invalid {phase} launch: {entry!r}")
+        launch = {"phase": phase, **entry}
+        expected.append(launch)
+        agent_names.append(entry["agent"])
+        if isinstance(entry.get("model"), str) and entry["model"] not in models:
+            models.append(entry["model"])
+for model in (outer_model, child_model):
+    if model and model not in models:
+        models.append(model)
+Path(expectations_path).write_text(json.dumps({
+    "profile": profile,
+    "config": config_path,
+    "expected": expected,
+    "agents": agent_names,
+    "models": models,
+}, indent=2) + "\n")
+Path(agents_path).write_text("\n".join(dict.fromkeys(agent_names)) + "\n")
+print(json.dumps(models))
+PY
+)
+
+# Stage only the selected profile's user agent definitions. Builtins and
+# packaged dsm.* agents remain discovered from their normal scopes; the staged
+# files make default/private-project smoke runs match the real user stack.
+mkdir -p "$AGENT_DIR/agents"
+: > "$RESULTS_DIR/profile-agent-sources.txt"
+if [[ -n "$AGENT_SOURCE_DIR" ]]; then
+	AGENT_SOURCE_DIRS=("$AGENT_SOURCE_DIR")
+else
+	AGENT_SOURCE_DIRS=("$HOME/.pi/agent/agents" "$HOME/.agents")
+fi
+BUILTIN_AGENT_NAMES=" advisor context-builder delegate oracle planner researcher reviewer scout worker "
+while IFS= read -r agent; do
+	[[ -z "$agent" ]] && continue
+	case "$agent" in
+		dsm.*)
+			printf '%s\tpackage\n' "$agent" >> "$RESULTS_DIR/profile-agent-sources.txt"
+			continue
+			;;
+	esac
+	copied=
+	for source_dir in "${AGENT_SOURCE_DIRS[@]}"; do
+		candidate="$source_dir/$agent.md"
+		if [[ -f "$candidate" ]]; then
+			cp "$candidate" "$AGENT_DIR/agents/$agent.md"
+			printf '%s\t%s\n' "$agent" "$candidate" >> "$RESULTS_DIR/profile-agent-sources.txt"
+			copied=1
+			break
+		fi
+	done
+	if [[ -z "$copied" && "$agent" == "fresh-verifier" && -f "$PACKAGE_DIR/extensions/delivery-state-machine/agents/fresh-verifier.md" ]]; then
+		cp "$PACKAGE_DIR/extensions/delivery-state-machine/agents/fresh-verifier.md" "$AGENT_DIR/agents/fresh-verifier.md"
+		printf '%s\t%s\n' "$agent" "$PACKAGE_DIR/extensions/delivery-state-machine/agents/fresh-verifier.md" >> "$RESULTS_DIR/profile-agent-sources.txt"
+		copied=1
+	fi
+	if [[ -z "$copied" && "$BUILTIN_AGENT_NAMES" != *" $agent "* ]]; then
+		echo "selected profile requires agent $agent, but no staged definition was found" >&2
+		exit 2
+	fi
+	if [[ -z "$copied" ]]; then
+		printf '%s\tbuiltin\n' "$agent" >> "$RESULTS_DIR/profile-agent-sources.txt"
+	fi
+done < "$RESULTS_DIR/profile-agents.txt"
+
 # Extra packages are absolute paths (e.g. a provider plugin such as
 # pi-clinepass-provider) that the isolated host cannot resolve via npm: names.
 PACKAGES_JSON=$(python3 -c 'import json, sys; print(json.dumps([p for p in sys.argv[1:] if p]))' \
@@ -95,31 +221,25 @@ PACKAGES_JSON=$(python3 -c 'import json, sys; print(json.dumps([p for p in sys.a
 cat > "$AGENT_DIR/settings.json" <<JSON
 {
   "defaultModel": "$MODEL",
+  "enabledModels": $PROFILE_MODELS_JSON,
   "subagents": {
-    "defaultModel": "$MODEL"
+    "defaultModel": "$CHILD_MODEL"
   },
   "packages": $PACKAGES_JSON
 }
 JSON
-# Preserve the exact bundled launch configuration used by this run. Do not
-# install a profile override: the smoke must exercise the provider-neutral
-# package candidate, including its contexts and parallel REVIEW shape.
-cp "$PACKAGE_DIR/extensions/delivery-state-machine/phase-launches.json" "$RESULTS_DIR/bundled-phase-launches.json"
 
-# A clean project and clean Pi agent-definition scopes prove the roles do not
-# come from user or project agent markdown.
+# The fixture project remains clean; profile agent definitions are intentional
+# isolated-host inputs, not project-local agent injection.
 git -C "$PROJECT_DIR" init -q -b main
 printf '# Isolated DSM host smoke\n' > "$PROJECT_DIR/README.md"
-# pi-subagents writes execution evidence here; ignore it so the candidate's
-# no-source-change task can still prove the isolated fixture is clean.
 printf '.pi-subagents/\n' > "$PROJECT_DIR/.gitignore"
 git -C "$PROJECT_DIR" add README.md .gitignore
 git -C "$PROJECT_DIR" -c user.name=Smoke -c user.email=smoke@example.invalid commit -qm init
-# Fault-injection tasks ask the implementer to commit the broken candidate.
 git -C "$PROJECT_DIR" config user.name Smoke
 git -C "$PROJECT_DIR" config user.email smoke@example.invalid
-if find "$AGENT_DIR" "$PROJECT_DIR" -type f \( -path '*/agents/*.md' -o -path '*/.agents/*.md' \) | grep -q .; then
-	echo "unexpected user/project agent definition in isolated roots" >&2
+if find "$PROJECT_DIR" -type f \( -path '*/agents/*.md' -o -path '*/.agents/*.md' \) | grep -q .; then
+	echo "unexpected project agent definition in isolated smoke fixture" >&2
 	exit 1
 fi
 
@@ -128,20 +248,26 @@ import { pathToFileURL } from "node:url";
 const modulePath = process.argv[1];
 const cwd = process.argv[2];
 const output = process.argv[3];
+const expectations = JSON.parse(await Bun.file(process.argv[4]).text());
 const { discoverAgentsAll } = await import(pathToFileURL(modulePath).href);
-const found = discoverAgentsAll(cwd).package
-  .filter((agent) => agent.name.startsWith("dsm."))
+const discovered = discoverAgentsAll(cwd);
+const all = [...discovered.builtin, ...discovered.package, ...discovered.user, ...discovered.project];
+const selected = all
+  .filter((agent) => expectations.agents.includes(agent.name))
   .map((agent) => ({ name: agent.name, source: agent.source, packageName: agent.packageName }))
-  .sort((a, b) => a.name.localeCompare(b.name));
-await Bun.write(output, JSON.stringify(found, null, 2) + "\n");
-if (found.length !== 5 || found.some((agent) => agent.source !== "package" || agent.packageName !== "dsm")) process.exit(1);
-' "$SUBAGENTS_ROOT/src/agents/agents.ts" "$PACKAGE_DIR" "$RESULTS_DIR/discovery.json"
+  .sort((a, b) => `${a.name}:${a.source}`.localeCompare(`${b.name}:${b.source}`));
+await Bun.write(output, JSON.stringify({ profile: expectations.profile, expectedAgents: expectations.agents, selected }, null, 2) + "\n");
+for (const name of new Set(expectations.agents)) {
+  if (!selected.some((agent) => agent.name === name)) process.exit(1);
+  if (name.startsWith("dsm.") && !selected.some((agent) => agent.name === name && agent.source === "package" && agent.packageName === "dsm")) process.exit(1);
+}
+' "$SUBAGENTS_ROOT/src/agents/agents.ts" "$PACKAGE_DIR" "$RESULTS_DIR/discovery.json" "$RESULTS_DIR/profile-expectations.json"
 
 if [[ -n "$PROMPT_FILE" ]]; then
 	cp "$PROMPT_FILE" "$RESULTS_DIR/orchestrator-prompt.txt"
 else
-	cat > "$RESULTS_DIR/orchestrator-prompt.txt" <<'PROMPT'
-Run one complete representative delivery using the delivery-state-machine tools and the configured dsm-candidate profile. The task is: "Verify the committed README accurately identifies this as an isolated DSM host smoke; no source change is expected."
+	cat > "$RESULTS_DIR/orchestrator-prompt.txt" <<PROMPT
+Run one complete representative delivery using the delivery-state-machine tools and the configured ${PROFILE} profile. The task is: "Verify the committed README accurately identifies this as an isolated DSM host smoke; no source change is expected."
 
 Use this exact bounded loop:
 1. Call delivery_start once with every maxRounds value set to 1.
@@ -161,7 +287,7 @@ fi
 # as an uninstrumented hang. Python is used for portable process-group cleanup
 # because macOS does not ship the GNU timeout command.
 export PI_CODING_AGENT_DIR="$AGENT_DIR"
-export PI_DELIVERY_PROFILE=dsm-candidate
+export PI_DELIVERY_PROFILE="$PROFILE"
 export PI_DELIVERY_ARTIFACT_ROOT="$DELIVERY_ROOT"
 export DSM_SMOKE_PI_BIN="$PI_BIN"
 export DSM_SMOKE_PROJECT_DIR="$PROJECT_DIR"
@@ -174,6 +300,7 @@ export DSM_SMOKE_ENV_HELPER_DIR="$REPO_ROOT/extensions/delivery-state-machine/sc
 export DSM_SMOKE_EXPECT="$EXPECT"
 export DSM_SMOKE_EXPECT_FAIL_PHASE="$EXPECT_FAIL_PHASE"
 export DSM_SMOKE_EXPECTED_PHASES="$EXPECTED_PHASES"
+export DSM_SMOKE_PROFILE="$PROFILE"
 # The helper is imported from the source worktree; forbid Python from creating
 # scripts/__pycache__ there, even if interpreter flags are changed later.
 export PYTHONDONTWRITEBYTECODE=1
@@ -257,11 +384,13 @@ fi
 # Extract requested tool arguments and the corresponding child-session headers.
 # This keeps both sides of launch evidence when an inherited model or configured
 # thinking level, context mode, output path, or parallel entry fails on a future host.
-export DSM_SMOKE_BUNDLED_LAUNCHES="$RESULTS_DIR/bundled-phase-launches.json"
-export DSM_SMOKE_EXPECTED_MODEL="$MODEL"
+export DSM_SMOKE_BUNDLED_LAUNCHES="$RESULTS_DIR/selected-phase-launches.json"
+export DSM_SMOKE_EXPECTATIONS="$RESULTS_DIR/profile-expectations.json"
+export DSM_SMOKE_EXPECTED_MODEL="$CHILD_MODEL"
 export DSM_SMOKE_SESSIONS_DIR="$AGENT_DIR/sessions"
 export DSM_SMOKE_SUBAGENT_METADATA_DIR="$PROJECT_DIR/.pi-subagents/artifacts"
 python3 -B <<'PY'
+import hashlib
 import json
 import os
 import sys
@@ -286,15 +415,10 @@ if expected_outcome == "STOPPED":
 else:
     completion = assert_delivery_done(Path(os.environ["DSM_SMOKE_DELIVERY_ROOT"]))
 (results / "completion-state.json").write_text(json.dumps(completion, indent=2) + "\n")
-with open(os.environ["DSM_SMOKE_BUNDLED_LAUNCHES"]) as handle:
-    candidate = json.load(handle)["profiles"]["dsm-candidate"]
-expected_phases = set(os.environ.get("DSM_SMOKE_EXPECTED_PHASES", "").split())
-expected = []
-for phase in ("IMPLEMENT", "VERIFY", "REVIEW", "CLOSE", "RETRO"):
-    if expected_phases and phase not in expected_phases:
-        continue
-    entries = candidate[phase] if isinstance(candidate[phase], list) else [candidate[phase]]
-    expected.extend({"phase": phase, **entry} for entry in entries)
+with open(os.environ["DSM_SMOKE_EXPECTATIONS"]) as handle:
+    expectations = json.load(handle)
+expected = expectations["expected"]
+expected_agents = set(expectations["agents"])
 
 requested = []
 transcripts = []
@@ -305,12 +429,35 @@ for transcript in sessions_root.rglob("*.jsonl"):
     except (OSError, json.JSONDecodeError):
         continue
     transcripts.append((transcript, records))
+    # Rejected/blocked tool calls never spawned a child, so they must not count
+    # as launches. Collect their ids before joining the ordered plans below.
+    rejected_call_ids = set()
     for record in records:
         message = record.get("message", {})
+        if message.get("role") != "toolResult":
+            continue
+        text = "".join(item.get("text", "") for item in message.get("content", []) if isinstance(item, dict))
+        if text.startswith(("Rejected:", "Delivery launch blocked:")):
+            call_id = message.get("toolCallId")
+            if call_id:
+                rejected_call_ids.add(call_id)
+
+    planned = []
+    for record in records:
+        message = record.get("message", {})
+        if message.get("role") == "toolResult":
+            if message.get("toolName") == "delivery_next":
+                details = message.get("details")
+                next_action = details.get("next") if isinstance(details, dict) else None
+                if isinstance(next_action, dict):
+                    planned = next_action.get("parallel") if isinstance(next_action.get("parallel"), list) else [next_action]
+            continue
         if message.get("role") != "assistant":
             continue
         for item in message.get("content", []):
             if item.get("type") != "toolCall" or item.get("name") != "subagent":
+                continue
+            if item.get("id") in rejected_call_ids:
                 continue
             args = item.get("arguments", {})
             # Parallel subagent calls carry launches under tasks[] with shared
@@ -318,16 +465,36 @@ for transcript in sessions_root.rglob("*.jsonl"):
             entries = args.get("tasks") if isinstance(args.get("tasks"), list) else [args]
             for entry in entries:
                 launch = {**{key: args[key] for key in ("model", "thinking", "context", "cwd") if key in args}, **entry}
-                if str(launch.get("agent", "")).startswith("dsm."):
-                    requested.append({key: launch[key] for key in ("agent", "model", "thinking", "context", "cwd", "output") if key in launch})
+                if str(launch.get("agent", "")) not in expected_agents:
+                    continue
+                output = launch.get("output")
+                plan = next((candidate for candidate in planned if output and candidate.get("output") == output), None)
+                if plan is None and len(planned) == 1 and launch.get("agent") == planned[0].get("agent"):
+                    plan = planned[0]
+                if plan is None:
+                    raise SystemExit(f"profile launch has no matching delivery_next plan: {launch}")
+                task = launch.get("task")
+                child_prompt = plan.get("childPrompt")
+                if not isinstance(task, str) or task != child_prompt:
+                    raise SystemExit(
+                        f"child prompt was not forwarded verbatim for {launch.get('agent')}: "
+                        f"taskSha256={hashlib.sha256(task.encode()).hexdigest() if isinstance(task, str) else 'missing'} "
+                        f"plannedSha256={hashlib.sha256(child_prompt.encode()).hexdigest() if isinstance(child_prompt, str) else 'missing'}"
+                    )
+                if plan.get("output") and output != plan["output"]:
+                    raise SystemExit(f"child output path did not match delivery_next for {launch.get('agent')}: {output}")
+                launch["_taskSha256"] = hashlib.sha256(task.encode()).hexdigest()
+                launch["_plannedPromptSha256"] = hashlib.sha256(child_prompt.encode()).hexdigest()
+                launch["_promptForwarded"] = True
+                requested.append({key: launch[key] for key in ("agent", "model", "thinking", "context", "cwd", "output", "_taskSha256", "_plannedPromptSha256", "_promptForwarded") if key in launch})
 
 if len(requested) != len(expected):
-    raise SystemExit(f"expected {len(expected)} DSM launches, found {len(requested)}")
+    raise SystemExit(f"expected {len(expected)} {expectations['profile']} launches, found {len(requested)}")
 remaining = requested.copy()
 for launch in expected:
     match = next((item for item in remaining if all(item.get(key) == value for key, value in launch.items() if key != "phase")), None)
     if match is None:
-        raise SystemExit(f"bundled launch was not requested unchanged: {launch}")
+        raise SystemExit(f"selected-profile launch was not requested unchanged: {launch}")
     match["phase"] = launch["phase"]
     remaining.remove(match)
 (results / "requested-launches.json").write_text(json.dumps(requested, indent=2) + "\n")
@@ -357,8 +524,9 @@ for launch in requested:
         "provider": model.get("provider"), "modelId": model.get("modelId"),
         "thinking": thinking.get("thinkingLevel"),
     }
+    expected_model = launch.get("model") or os.environ["DSM_SMOKE_EXPECTED_MODEL"]
     try:
-        assert_effective_model(evidence, os.environ["DSM_SMOKE_EXPECTED_MODEL"])
+        assert_effective_model(evidence, expected_model)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     expected_thinking = launch.get("thinking") or agent_thinking_defaults.get(launch["agent"])
@@ -369,14 +537,17 @@ for launch in requested:
 PY
 
 # Preserve machine-checkable evidence that the workflow, rather than standalone
-# role probes, launched every expected package role and produced every expected
+# role probes, launched every expected profile agent and produced every expected
 # phase artifact. Fault-injection runs expect only the phases up to the failure.
-for role in "${EXPECTED_ROLES[@]}"; do
-	grep -RFl --include='*.jsonl' "dsm.${role}" "$AGENT_DIR/sessions" > "$RESULTS_DIR/dsm.${role}.identity-files.txt"
+while IFS= read -r agent; do
+	[[ -z "$agent" ]] && continue
+	safe_agent=$(printf '%s' "$agent" | tr '/.' '__')
+	identity_file="$RESULTS_DIR/${safe_agent}.identity-files.txt"
+	grep -RFl --include='*.jsonl' "$agent" "$AGENT_DIR/sessions" > "$identity_file" || true
 	# One parent transcript records the planned launch and a separate child
-	# transcript records execution, so each role must occur in at least two files.
-	[[ "$(wc -l < "$RESULTS_DIR/dsm.${role}.identity-files.txt")" -ge 2 ]]
-done
+	# transcript records execution, so each agent must occur in at least two files.
+	[[ "$(wc -l < "$identity_file")" -ge 2 ]]
+done < "$RESULTS_DIR/profile-agents.txt"
 for stem in "${EXPECTED_STEMS[@]}"; do
 	find "$DELIVERY_ROOT" -type f -name "*${stem}*.md" -print > "$RESULTS_DIR/${stem}-artifacts.txt"
 	[[ -s "$RESULTS_DIR/${stem}-artifacts.txt" ]]
@@ -400,5 +571,5 @@ if find "$EVIDENCE_DIR" -type f \( -name 'auth.json' -o -name 'credentials.json'
 	echo "isolated host smoke found credential files in retained evidence" >&2
 	exit 1
 fi
-printf 'PASS\nevidence=%s\norchestrator_model=%s\nprofile=dsm-candidate\nexpect=%s\nrequested_launches=%s\nactual_launches=%s\n' \
-	"$EVIDENCE_DIR" "$MODEL" "$EXPECT" "$RESULTS_DIR/requested-launches.json" "$RESULTS_DIR/actual-launches.json" | tee "$RESULTS_DIR/summary.txt"
+printf 'PASS\nevidence=%s\norchestrator_model=%s\nprofile=%s\nprofile_config=%s\nfallback_child_model=%s\nexpect=%s\nrequested_launches=%s\nactual_launches=%s\n' \
+	"$EVIDENCE_DIR" "$MODEL" "$PROFILE" "$PROFILE_CONFIG_SOURCE" "$CHILD_MODEL" "$EXPECT" "$RESULTS_DIR/requested-launches.json" "$RESULTS_DIR/actual-launches.json" | tee "$RESULTS_DIR/summary.txt"

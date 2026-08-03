@@ -21,6 +21,7 @@ verification but must fail review.
 
 ```bash
 # VERIFY fault injection
+PI_DELIVERY_PROFILE=default \
 DSM_SMOKE_MODEL=clinepass/cline-pass/kimi-k3 \
 DSM_SMOKE_EXTRA_PACKAGES="$HOME/.pi/agent/npm/node_modules/pi-clinepass-provider" \
 DSM_SMOKE_PROMPT_FILE=extensions/delivery-state-machine/scripts/fault-injection/verify-fail-orchestrator-prompt.txt \
@@ -29,6 +30,7 @@ DSM_SMOKE_KEEP_SESSIONS=1 \
 extensions/delivery-state-machine/scripts/isolated-host-smoke.sh
 
 # REVIEW fault injection
+PI_DELIVERY_PROFILE=default \
 DSM_SMOKE_MODEL=clinepass/cline-pass/kimi-k3 \
 DSM_SMOKE_EXTRA_PACKAGES="$HOME/.pi/agent/npm/node_modules/pi-clinepass-provider" \
 DSM_SMOKE_PROMPT_FILE=extensions/delivery-state-machine/scripts/fault-injection/review-fail-orchestrator-prompt.txt \
@@ -40,5 +42,7 @@ extensions/delivery-state-machine/scripts/isolated-host-smoke.sh
 A run passes when the script exits 0: the delivery report records a non-pass
 verdict at the expected phase, the failing phase artifact starts with
 `RESULT: FAIL`, no later phase launched, and every expected child launch
-matches the bundled dsm-candidate profile. `DSM_SMOKE_EXTRA_PACKAGES` is only
-needed when the chosen model's provider plugin is not built into pi.
+matches the selected delivery profile. `DSM_SMOKE_EXTRA_PACKAGES` is only
+needed when the chosen model's provider plugin is not built into pi. Set
+`PI_DELIVERY_PROFILE=dsm-candidate` explicitly when the package-only candidate
+is the intended comparison.

@@ -149,9 +149,17 @@ Run the repository's fast verification suite:
 npm run verify
 ```
 
-The model-backed isolated-host smoke test is intentionally opt-in because it consumes model quota:
+The model-backed isolated-host smoke test is intentionally opt-in because it consumes model quota. It uses `PI_DELIVERY_PROFILE` (defaulting to `default`) and validates that profile's launch set:
 
 ```bash
+PI_DELIVERY_PROFILE=default \
 DSM_SMOKE_MODEL=openai-codex/gpt-5.6-sol \
   extensions/delivery-state-machine/scripts/isolated-host-smoke.sh
 ```
+
+The smoke uses the candidate package's `phase-launches.json` by default. Set
+`DSM_SMOKE_PROFILE_CONFIG=host` or provide a launch-config path to evaluate a
+user-owned profile configuration. Set `PI_DELIVERY_PROFILE=dsm-candidate`
+explicitly for the package-only DSM candidate smoke. The selected profile's
+agent definitions, effective child models, and launch arguments are retained in
+the evidence directory.

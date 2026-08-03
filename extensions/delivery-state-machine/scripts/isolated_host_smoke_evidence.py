@@ -11,7 +11,7 @@ def assert_effective_model(evidence: dict, expected_model: str) -> None:
     actual_models = {model_id, f"{provider}/{model_id}" if provider else model_id}
     if expected_model not in actual_models:
         raise ValueError(
-            f"actual child model did not match DSM_SMOKE_MODEL={expected_model}: {evidence}"
+            f"actual child model did not match expected model={expected_model}: {evidence}"
         )
 
 

@@ -263,17 +263,21 @@ await runTest("pi-subagents discovers DSM roles from the package in an isolated 
 	}
 });
 
-await runTest("isolated host smoke exercises the bundled candidate profile unchanged", () => {
+await runTest("isolated host smoke exercises the selected delivery profile", () => {
 	const extensionDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 	const smoke = fs.readFileSync(path.join(extensionDir, "scripts", "isolated-host-smoke.sh"), "utf8");
 	assert.doesNotMatch(smoke, /cat > .*phase-launches\.json/);
-	assert.match(smoke, /bundled-phase-launches\.json/);
+	assert.match(smoke, /selected-phase-launches\.json/);
+	assert.match(smoke, /PROFILE=\$\{PI_DELIVERY_PROFILE:-default\}/);
+	assert.match(smoke, /export PI_DELIVERY_PROFILE="\$PROFILE"/);
+	assert.match(smoke, /DSM_SMOKE_PROFILE_CONFIG/);
+	assert.doesNotMatch(smoke, /export PI_DELIVERY_PROFILE=dsm-candidate/);
 	assert.match(smoke, /requested-launches\.json/);
 	assert.match(smoke, /actual-launches\.json/);
-	assert.match(smoke, /"subagents": \{\s*"defaultModel": "\$MODEL"/);
+	assert.match(smoke, /"subagents": \{\s*"defaultModel": "\$CHILD_MODEL"/);
 	assert.match(smoke, /When delivery_next returns parallel launches, launch every parallel entry/);
 	assert.match(smoke, /export PYTHONDONTWRITEBYTECODE=1/);
-	assert.equal((smoke.match(/python3 -B/g) ?? []).length, 2);
+	assert.equal((smoke.match(/python3 -B/g) ?? []).length, 3);
 	assert.match(smoke, /source-status-before\.txt/);
 	assert.match(smoke, /source-status-after\.txt/);
 	assert.match(smoke, /cmp -s .*source-status-before\.txt.*source-status-after\.txt/);
@@ -290,7 +294,7 @@ await runTest("isolated host smoke exercises the bundled candidate profile uncha
 	assert.match(smoke, /find "\$EVIDENCE_DIR" -type f .*'auth\.json'.*'credentials\.json'.*'oauth\.json'/);
 	assert.match(smoke, /args\.get\("tasks"\).*isinstance\(args\.get\("tasks"\), list\)/);
 	assert.match(smoke, /printf '\.pi-subagents\/\\n'.*PROJECT_DIR\/\.gitignore/);
-	assert.match(smoke, /assert_effective_model\(evidence, os\.environ\["DSM_SMOKE_EXPECTED_MODEL"\]\)/);
+	assert.match(smoke, /assert_effective_model\(evidence, expected_model\)/);
 	assert.match(smoke, /assert_delivery_done\(Path\(os\.environ\["DSM_SMOKE_DELIVERY_ROOT"\]\)\)/);
 	assert.doesNotMatch(smoke, /grep -Fq "DSM_DELIVERY_SMOKE_DONE"/);
 });
@@ -309,10 +313,10 @@ await runTest("isolated smoke evidence rejects effective-model mismatch and fals
 			helperDir, deliveryRoot,
 		]), /authoritative delivery report is not DONE/);
 		assert.throws(() => execFileSync("python3", [
-			"-B", "-c",
-			"import sys; sys.path.insert(0,sys.argv[1]); from isolated_host_smoke_evidence import assert_effective_model; assert_effective_model({'provider':'openai','modelId':'wrong'},'openai/expected')",
-			helperDir,
-		]), /actual child model did not match DSM_SMOKE_MODEL/);
+		"-B", "-c",
+		"import sys; sys.path.insert(0,sys.argv[1]); from isolated_host_smoke_evidence import assert_effective_model; assert_effective_model({'provider':'openai','modelId':'wrong'},'openai/expected')",
+		helperDir,
+	]), /actual child model did not match expected model/);
 		fs.writeFileSync(path.join(deliveryRoot, "delivery-report.json"), JSON.stringify({ state: { phase: "DONE" } }));
 		execFileSync("python3", [
 			"-B", "-c",
@@ -590,8 +594,10 @@ await runTest("bundled agent thinking defaults avoid relay enforcement while exp
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		const next = await harness.tool("delivery_next");
 		assert.equal(next.details.next.thinking, undefined);
-		const launch = { agent: next.details.next.agent, output: next.details.next.output };
+		const launch = { agent: next.details.next.agent, output: next.details.next.output, task: next.details.next.childPrompt };
 		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: launch }), undefined);
+		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { ...launch, task: "summarized child task" } }))?.reason, /childPrompt verbatim/);
+		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { ...launch, output: `${launch.output}.wrong` } }))?.reason, /pass output=.*exactly/);
 	} finally {
 		delete process.env.PI_DELIVERY_PROFILE;
 	}
@@ -607,7 +613,7 @@ await runTest("bundled agent thinking defaults avoid relay enforcement while exp
 		const harness = createHarness();
 		await advanceHarnessToPhase(harness, "REVIEW");
 		const next = await harness.tool("delivery_next");
-		const tasks = next.details.next.parallel.map((item: any) => ({ agent: item.agent, output: item.output, thinking: item.thinking }));
+		const tasks = next.details.next.parallel.map((item: any) => ({ agent: item.agent, output: item.output, thinking: item.thinking, task: item.childPrompt }));
 		assert.deepEqual(tasks.map((item: any) => item.thinking), ["low", "high"]);
 		const missingSecond = tasks.map((item: any, index: number) => index === 1 ? { ...item, thinking: undefined } : item);
 		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { tasks: missingSecond } }))?.reason, /pass thinking=high exactly.*received no thinking value/);
@@ -1409,6 +1415,16 @@ await runTest("global profile config can force GPT-only models", async () => {
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
 		next = await harness.tool("delivery_next");
 		assert.deepEqual(next.details.next.parallel.map((launch: any) => launch.model), ["openai/gpt-5.5", "openai/gpt-5.5"]);
+	});
+});
+
+await runTest("global profile config accepts max thinking", async () => {
+	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+		"max-thinking": fullProfile({ IMPLEMENT: { agent: "worker", model: "profile/implement", thinking: "max" } }),
+	}), async () => {
+		const harness = createHarness();
+		const next = await harness.tool("delivery_start", { task: "max thinking profile smoke" });
+		assert.equal(next.details.next.thinking, "max");
 	});
 });
 

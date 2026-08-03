@@ -1,4 +1,4 @@
-Run one delivery using the delivery-state-machine tools and the configured dsm-candidate profile. The task is exactly this:
+Run one delivery using the delivery-state-machine tools and the configured delivery profile. The task is exactly this:
 
 "Create a new file `deploy_keys.py` in the repository root providing the credential accessors used by the fixture deployment tooling, with exactly this content:
 

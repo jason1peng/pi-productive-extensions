@@ -1,4 +1,4 @@
-Run one delivery using the delivery-state-machine tools and the configured dsm-candidate profile. The task is exactly this:
+Run one delivery using the delivery-state-machine tools and the configured delivery profile. The task is exactly this:
 
 "Create a new file `calc.py` in the repository root with exactly this content, unchanged:
 

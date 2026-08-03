@@ -19,7 +19,7 @@ export interface PhasePromptContext {
 export interface LaunchConfig {
 	agent: string;
 	model?: string;
-	thinking?: "low" | "medium" | "high";
+	thinking?: "low" | "medium" | "high" | "max";
 	context?: "fresh" | "fork";
 }
 
@@ -78,7 +78,7 @@ const ACTIVE_PROFILE_FILE = "active-profile.json";
 const PROMPT_FRONTMATTER_KEYS = new Set(["phase"]);
 const LAUNCH_KEYS = new Set(["agent", "model", "thinking", "context"]);
 const PROFILE_KEYS = new Set(["defaultProfile", "profiles"]);
-const VALID_THINKING = new Set(["low", "medium", "high"]);
+const VALID_THINKING = new Set(["low", "medium", "high", "max"]);
 const VALID_CONTEXT = new Set(["fresh", "fork"]);
 
 function extensionDir(): string {

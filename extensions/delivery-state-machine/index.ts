@@ -949,6 +949,61 @@ function validateSubagentLaunchThinking(state: DeliveryState, input: unknown): s
 	return undefined;
 }
 
+function validateSubagentLaunchPrompt(state: DeliveryState, input: unknown): string | undefined {
+	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const action = nextAction(state);
+	const expected = action.parallel?.length ? action.parallel : [action as ChildLaunch];
+	const outer = input as Record<string, unknown>;
+	const rawTasks = Array.isArray(outer.tasks) ? outer.tasks : [outer];
+	const actual = rawTasks
+		.filter((task): task is Record<string, unknown> => Boolean(task) && typeof task === "object" && !Array.isArray(task))
+		.map((task) => ({ ...outer, ...task }));
+	const expectedAgents = new Set(expected.map((launch) => launch.agent));
+	const expectedOutputs = new Set(expected.flatMap((launch) => typeof launch.output === "string" ? [launch.output] : []));
+	const targetsDeliveryLaunch = actual.some((launch) =>
+		expectedAgents.has(String(launch.agent ?? ""))
+		|| (typeof launch.output === "string" && expectedOutputs.has(launch.output)),
+	);
+	if (!targetsDeliveryLaunch) return undefined;
+
+	if (expected.length > 1) {
+		if (actual.length !== expected.length) {
+			return `Delivery launch blocked: received ${actual.length} parallel task${actual.length === 1 ? "" : "s"}, but delivery_next planned ${expected.length}. Every planned launch must appear exactly once with its exact childPrompt and output path.`;
+		}
+		const usedOutputs = new Set<string>();
+		for (const launch of actual) {
+			if (typeof launch.output !== "string" || !launch.output) {
+				return "Delivery launch blocked: the planned output path is missing from a parallel task. Retry with the exact launch returned by delivery_next.";
+			}
+			const expectedLaunch = expected.find((candidate) => candidate.output === launch.output);
+			if (!expectedLaunch) {
+				return `Delivery launch blocked: output=${launch.output} does not match a planned parallel launch. Retry with the exact launch returned by delivery_next.`;
+			}
+			if (usedOutputs.has(launch.output)) {
+				return `Delivery launch blocked: planned output path ${launch.output} was used more than once in the parallel call.`;
+			}
+			usedOutputs.add(launch.output);
+			if (launch.agent !== expectedLaunch.agent) {
+				return `Delivery launch blocked: output=${launch.output} belongs to ${expectedLaunch.agent}, not ${String(launch.agent)}.`;
+			}
+			if (launch.task !== expectedLaunch.childPrompt) {
+				return `Delivery launch blocked: pass details.next.childPrompt verbatim as the subagent task for output=${launch.output}; do not summarize or replace it.`;
+			}
+		}
+		return undefined;
+	}
+
+	const expectedLaunch = expected[0];
+	const launch = actual[0];
+	if (expectedLaunch.output && launch.output !== expectedLaunch.output) {
+		return `Delivery launch blocked: pass output=${expectedLaunch.output} exactly as returned by delivery_next; received ${String(launch.output ?? "no output")}.`;
+	}
+	if (launch.task !== expectedLaunch.childPrompt) {
+		return "Delivery launch blocked: pass details.next.childPrompt verbatim as the subagent task; do not summarize or replace it.";
+	}
+	return undefined;
+}
+
 function phaseAttemptForStep(state: DeliveryState, phase: RunnablePhase): number {
 	if (phase === "IMPLEMENT") return implementationAttempt(state);
 	if (phase === "VERIFY") return Math.max(1, state.verifyRound || 1);
@@ -1498,8 +1553,8 @@ function formatNextAction(state: DeliveryState): string {
 		? `parallel (${action.parallel.length}): ${action.parallel.map(launchOne).join(" | ")}`
 		: launchOne(action);
 	const childPromptPointer = action.parallel?.length
-		? `see details.next.parallel[].childPrompt (${action.parallel.length} entries)`
-		: "see details.next.childPrompt";
+		? `pass details.next.parallel[].childPrompt verbatim as each subagent task (${action.parallel.length} entries)`
+		: "pass details.next.childPrompt verbatim as the subagent task";
 	return [
 		`orchestrator: ${action.orchestratorInstruction}`,
 		`launch: ${launch}`,
@@ -2315,7 +2370,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, _ctx) => {
 		if (event.toolName === "subagent") {
-			const reason = validateSubagentLaunchThinking(state, event.input);
+			const reason = validateSubagentLaunchThinking(state, event.input) ?? validateSubagentLaunchPrompt(state, event.input);
 			if (reason) return { block: true, reason };
 			return;
 		}

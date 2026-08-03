@@ -12,12 +12,11 @@ Close this delivery.
 
 Instructions:
 - Proceed only if final verification passed and final review has no blockers.
-- Inspect repository instructions.
 - Run fast CI-equivalent local verification for changed areas after the final code change.
 - Before commit/MR, inspect candidate completeness with git status/diff. Do not close with required source, test, config, script, or doc files untracked or missing from the candidate diff.
 - Commit only relevant files, push the branch, and create an MR/PR when applicable.
 - For non-repo or no-diff tasks, close without push/MR.
-- Remote CI does not need to finish before close unless the user explicitly asks.
+- Remote CI is informational only and does not need to finish before close unless the user explicitly asks.
 - Report MR/PR link, branch, commit, and checks; or explain why no MR/PR was needed.
 - If no MR/PR is needed for a non-repo or no-diff task, treat close as PASS and explain why in the summary.
 

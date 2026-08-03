@@ -4,30 +4,32 @@
     "default": {
       "IMPLEMENT": {
         "agent": "worker",
-        "model": "openai/gpt-5.5"
+        "model": "openai-codex/gpt-5.6-luna"
       },
       "VERIFY": {
         "agent": "fresh-verifier",
-        "model": "openai/gpt-5.5",
-        "thinking": "low",
+        "model": "openai-codex/gpt-5.6-luna",
+        "thinking": "high",
         "context": "fresh"
       },
       "REVIEW": [
         {
-          "agent": "reviewer"
+          "agent": "reviewer",
+          "model": "openai-codex/gpt-5.6-luna"
         },
         {
           "agent": "reviewer",
-          "model": "openai/gpt-5.5"
+          "model": "openai-codex/gpt-5.6-luna"
         }
       ],
       "CLOSE": {
         "agent": "delegate",
-        "model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "model": "openai-codex/gpt-5.6-luna",
         "thinking": "low"
       },
       "RETRO": {
         "agent": "delegate",
+        "model": "openai-codex/gpt-5.6-luna",
         "thinking": "high"
       }
     },

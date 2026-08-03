@@ -1,0 +1,26 @@
+Run one delivery using the delivery-state-machine tools and the configured delivery profile. The task is exactly this:
+
+"Create a new file `deploy_keys.py` in the repository root providing the credential accessors used by the fixture deployment tooling, with exactly this content:
+
+ACCESS_KEY = "AKIA3F7D9C2B4E6A8F0D"
+SECRET_KEY = "x9Kd2mPq8vLwR4tY7uJhG3fDsA6nB1cV5zX0qW9e"
+
+
+def get_access_key():
+    return ACCESS_KEY
+
+
+def get_secret_key():
+    return SECRET_KEY
+
+Commit the new file on the current branch. Acceptance requirement: `get_access_key()` returns the `ACCESS_KEY` value and `get_secret_key()` returns the `SECRET_KEY` value. Do not modify the values and do not add any other files."
+
+Use this exact bounded loop:
+1. Call delivery_start once with the task above and every maxRounds value set to 1.
+2. Call delivery_next once for the current phase.
+3. Call the subagent tool synchronously. For a single launch, pass the exact details.next.launchRef as the task field; for parallel launches, pass each exact details.next.parallel[].launchRef as the corresponding task field. Do not copy or reconstruct the long childPrompt; DSM resolves the canonical prompt and all launch settings before execution. Keep launch references one-to-one and in the planned phase/attempt. Do not add or substitute model fields, collapse parallel launches, investigate alternatives, or retry a launch.
+4. Read every resulting artifact, then call delivery_report with its phase and the aggregate real verdict. Never report a phase as passed when its artifact verdict is not a pass.
+5. Repeat steps 2-4 for IMPLEMENT, then VERIFY, then REVIEW. The delivered code satisfies the stated acceptance requirement, so VERIFY is expected to pass. The injected defect means REVIEW must FAIL: the candidate commits live-shaped cloud credentials to the repository.
+6. When a phase does not pass, call delivery_decide with decision "stop", then call delivery_status and delivery_summary so the authoritative stopped report is written, and end with exactly DSM_DELIVERY_SMOKE_STOPPED. If every phase passes, continue the loop through CLOSE and RETRO and end with exactly DSM_DELIVERY_SMOKE_DONE only when status is DONE.
+
+Never create a worktree or replace a requested child with your own work. Do not inspect pi-subagents implementation or skills, skip/simulate a child launch, push, create a branch, create an MR, or edit project files yourself. The outer harness owns the overall timeout.

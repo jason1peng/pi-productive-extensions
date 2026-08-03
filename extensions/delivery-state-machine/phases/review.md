@@ -11,16 +11,14 @@ Launch the configured reviewer agent(s) for independent read-only current-diff r
 Review the current diff for this task independently. Be read-only: do not edit source files.
 
 Instructions:
-- Inspect verification evidence and code. Investigate broadly, but adjudicate findings against this boundary, in precedence order: the accepted user task and explicit decisions; documented product or repository invariants; the accepted implementation plan; the documented supported operating and threat model; and explicit exclusions. A lower-level plan or exclusion cannot excuse violating a higher-level accepted requirement or invariant.
-- Preserve every meaningful concern in the report using these destinations: a requirement or invariant violation is blocking; a realistic regression in the supported workflow is blocking; an unsupported/adversarial scenario or optional hardening is a non-blocking note by default; and a potential product, safety, concurrency, or threat-model contract change requires parent/user judgment. Put a `Decisions needed` label in the Summary; a contract question pauses delivery only when its decision is necessary to judge or continue the task, while other contract suggestions remain visible and non-gating.
+- Inspect verification evidence and code. Adjudicate findings against this boundary, in precedence order: the accepted user task and explicit decisions; documented product or repository invariants; the accepted implementation plan; the documented supported operating and threat model; and explicit exclusions. A lower-level plan or exclusion cannot excuse violating a higher-level accepted requirement or invariant.
+- Preserve every meaningful concern in the report: a requirement or invariant violation is blocking; a realistic regression in the supported workflow is blocking; an unsupported/adversarial scenario or optional hardening is a non-blocking note by default; and a potential product, safety, concurrency, or threat-model contract change requires parent/user judgment. Put a `Decisions needed` label in the Summary; a contract question pauses delivery only when its decision is necessary to judge or continue the task, while other contract suggestions remain visible and non-gating.
 - Every must-fix finding must identify the exact accepted requirement or invariant violated, a realistic reproducer inside the supported operating model, and why existing safeguards and tests are insufficient. A missing plan item is blocking when a higher-level accepted requirement or invariant requires it. Do not downgrade a genuine in-scope defect because repair is inconvenient or expensive.
 - Treat realistic data loss within the supported workflow as blocking. Treat unsupported concurrency, hostile filesystem mutation, broader threat models, and optional defense in depth as non-blocking unless the accepted contract includes them; do not make a stronger contract mandatory merely because it would be safer.
 - Inspect candidate completeness with git status/diff when working in a git repository. Required source, test, config, script, or doc files that are untracked or missing from the candidate diff are must-fix findings unless their exclusion is explicitly justified in the evidence.
 - For cleanup, revert, or existing-MR work, check the intended review base and distinguish changed surfaces from protected/preserved surfaces.
-- Classify findings by whether they must be fixed in this delivery.
-- Return FAIL if any supported must-fix finding with the required evidence should be fixed before close/MR, even if it is small or phrased as a suggestion. Request parent/user judgment instead of prescribing repair when the proposed fix would expand the accepted contract.
-- Return PASS_WITH_NON_BLOCKING_NOTES only when every note is safe to defer without hurting correctness, tests, maintainability, or reviewability of this change.
-- Return PASS only when there are no meaningful findings.
+- Classify findings by whether they must be fixed in this delivery. Return FAIL if any supported must-fix finding with the required evidence should be fixed before close/MR, even if it is small or phrased as a suggestion. Request parent/user judgment instead of prescribing repair when the proposed fix would expand the accepted contract.
+- Return PASS_WITH_NON_BLOCKING_NOTES only when every note is safe to defer without hurting correctness, tests, maintainability, or reviewability of this change. Return PASS only when there are no meaningful findings.
 - Include blockers/must-fix findings and file references when applicable.
 - Before returning PASS, actively try to disprove the implementation:
   - Identify the top 2-3 most likely correctness, regression, security, operability, or maintainability risks for this diff.
@@ -34,6 +32,7 @@ Finding classification rules:
 - Do not label something as a suggestion if you believe it should be fixed in this delivery.
 
 The Must-fix findings section must include the failure reason and suggested repair when failing; write `none` when not failing.
+The `## Project harness discovery and compliance` section is mandatory and must be a top-level section with its required bullets directly below it, never nested under `## Evidence reviewed` or another heading.
 The Evidence reviewed and Risk checks sections must include:
 - Requirements matched by code/tests: yes/no
 - Candidate completeness/trackedness checked: yes/no/not a git repo; blockers listed or none
@@ -47,7 +46,7 @@ The Evidence reviewed and Risk checks sections must include:
 - If no findings: strongest potential objections and why they are not blockers
 - Verdict follows classification rules: yes/no
 
-Use `none` for empty Must-fix findings, Non-blocking notes, or Recommendation. Parallel child artifacts and aggregate review artifacts must use the same headings.
+Use the exact contract headings at level 2, including `## Risk checks`; do not substitute headings such as `## Risk checks / evidence` or omit an empty section. Use `none` for empty Must-fix findings, Non-blocking notes, or Recommendation. Parallel child artifacts and aggregate review artifacts must use the same headings.
 
 Task:
 {{task}}

@@ -594,6 +594,7 @@ await runTest("bundled agent thinking defaults avoid relay enforcement while exp
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		const next = await harness.tool("delivery_next");
 		assert.equal(next.details.next.thinking, undefined);
+		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: { action: "list" } }), undefined);
 		const launch = { agent: next.details.next.agent, output: next.details.next.output, task: next.details.next.childPrompt };
 		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: launch }), undefined);
 		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { ...launch, task: "summarized child task" } }))?.reason, /childPrompt verbatim/);

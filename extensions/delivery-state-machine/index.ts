@@ -893,6 +893,8 @@ function nextAction(state: DeliveryState): NextAction {
 
 function validateSubagentLaunchThinking(state: DeliveryState, input: unknown): string | undefined {
 	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const inputRecord = input as Record<string, unknown>;
+	if (typeof inputRecord.action === "string") return undefined;
 	const action = nextAction(state);
 	const expected = action.parallel?.length ? action.parallel : [action];
 	const outer = input as Record<string, unknown>;
@@ -951,6 +953,8 @@ function validateSubagentLaunchThinking(state: DeliveryState, input: unknown): s
 
 function validateSubagentLaunchPrompt(state: DeliveryState, input: unknown): string | undefined {
 	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const inputRecord = input as Record<string, unknown>;
+	if (typeof inputRecord.action === "string") return undefined;
 	const action = nextAction(state);
 	const expected = action.parallel?.length ? action.parallel : [action as ChildLaunch];
 	const outer = input as Record<string, unknown>;

@@ -167,7 +167,7 @@ interface NextAction {
 }
 
 const START_PARAMS = Type.Object({
-	task: Type.String({ description: "User task, bug, issue URL, or requirement to deliver" }),
+	task: Type.String({ description: "Prepared delivery brief naming any authoritative source" }),
 	maxRepairRounds: Type.Optional(Type.Number({ description: "Legacy override: maximum repair loops for every phase" })),
 	maxRounds: Type.Optional(Type.Object({
 		IMPLEMENT: Type.Optional(Type.Number({ description: "Maximum IMPLEMENT attempts before stopping" })),
@@ -585,11 +585,33 @@ function readPromptTemplate(filename: string): string {
 	return fs.readFileSync(path.join(extensionDir(), "prompts", filename), "utf8");
 }
 
+function renderPreparePrompt(task: string): string {
+	return renderTemplate(readPromptTemplate("prepare.md"), { task });
+}
+
 function renderDeliverPrompt(state: DeliveryState): string {
 	return renderTemplate(readPromptTemplate("deliver.md"), {
 		task: state.task ?? "<missing task>",
 		artifactDir: state.artifactDir ?? "<missing artifact dir>",
 	});
+}
+
+function isBareDeliveryReference(task: string): boolean {
+	if (/^#\d+[.!?]?$/.test(task)) return true;
+	if (/^[A-Za-z][A-Za-z0-9_-]*[-_]\d+[.!?]?$/.test(task)) return true;
+	if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/\S+$/i.test(task) || /^www\.\S+$/i.test(task)) return true;
+	if (path.isAbsolute(task) || /^~(?:[\\/]|$)/.test(task) || /^(?:\.{1,2})(?:[\\/]|$)/.test(task) || /^[A-Za-z]:[\\/]/.test(task)) return true;
+	if (/^(?:AGENTS|CLAUDE|CONTRIBUTING|GEMINI|README)(?:\.md)?$/i.test(task)) return true;
+	return !/\s/.test(task) && (/[\\/]/.test(task) || /\.[A-Za-z0-9_-]{1,16}$/.test(task));
+}
+
+function requirePreparedTask(value: unknown): string {
+	const task = typeof value === "string" ? value.trim() : "";
+	if (!task || isBareDeliveryReference(task)) {
+		const received = typeof value === "string" ? value : value === undefined ? "<undefined>" : String(value);
+		throw new Error(`delivery_start rejected received value ${JSON.stringify(received)}; prepare the brief first by resolving and reading any authoritative source, then call delivery_start with a prepared brief instead of a bare reference.`);
+	}
+	return task;
 }
 
 function artifactGuidance(state: DeliveryState): string {
@@ -728,6 +750,11 @@ Common workflow instruction:
 - Return results and evidence to the parent/orchestrator.
 - Never call delivery_report; the parent/orchestrator advances the workflow after you finish.`;
 
+const AUTHORITATIVE_SOURCE_PROMPT = `Authoritative source instruction:
+- Read any named authoritative source before acting, using the path named in the prepared brief.
+- If a named source is missing, unreadable, or contradicts the prepared brief, do not infer or guess; report a source blocker to the parent/orchestrator and record \`Outcome: blocked\` in the artifact.
+- On repair attempts, reuse the same prepared brief and named source; do not replace them with an inferred request.`;
+
 const CHILD_PROMPT_AUTHORITY_SUFFIX = `
 
 Instruction authority:
@@ -842,7 +869,7 @@ function fallbackNextPrompt(state: DeliveryState): string {
 		case "STOPPED":
 			return "Delivery state machine is stopped. Do not continue unless the user starts/resets it.";
 		default:
-			return "No active delivery. Use /deliver <task> or delivery_start.";
+			return "No active delivery. Use /deliver <request> to prepare a brief, then delivery_start.";
 	}
 }
 
@@ -859,8 +886,8 @@ function nextAction(state: DeliveryState): NextAction {
 	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
 	const promptForLaunch = (launch: LaunchConfig) => isBundledDsmAgentForPhase(state.phase, launch.agent)
-		? `${config.childPrompt(context, launch.agent)}\n\nProject harness artifact contract:\n${DSM_PROJECT_HARNESS_CONTRACT}\n\n${projectHarnessRootContext(state)}`
-		: `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context, launch.agent)}\n\n${projectHarnessRootContext(state)}`;
+		? `${config.childPrompt(context, launch.agent)}\n\nProject harness artifact contract:\n${DSM_PROJECT_HARNESS_CONTRACT}\n\n${AUTHORITATIVE_SOURCE_PROMPT}\n\n${projectHarnessRootContext(state)}`
+		: `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context, launch.agent)}\n\n${AUTHORITATIVE_SOURCE_PROMPT}\n\n${projectHarnessRootContext(state)}`;
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
@@ -2482,36 +2509,16 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("deliver", {
-		description: "Start the delivery state machine: /deliver <task>",
+		description: "Prepare a delivery request: /deliver <request>",
 		handler: async (args, ctx) => {
 			const task = args.trim();
 			if (!task) {
 				ctx.ui.notify("Usage: /deliver <task / issue / bug>", "warning");
 				return;
 			}
-			state = initialState();
-			state.active = true;
-			state.task = task;
-			refreshGitInfo(ctx, state);
-			const projectRoot = state.gitRoot ?? ctx.cwd;
-			const deliveryConfig = loadDeliveryConfig(ctx, projectRoot);
-			state.maxPhaseRounds = resolveMaxPhaseRounds(deliveryConfig);
-			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
-			const phaseConfigBundle = loadPhaseConfigBundle();
-			state.phaseLaunches = phaseConfigBundle.launches;
-			state.launchProfile = phaseConfigBundle.profileResolution;
-			state.project = createProjectMetadata(ctx.cwd, state.gitRoot);
-			state.artifactDir = createArtifactDir(resolveArtifactRoot(projectRoot, deliveryConfig), task, state.project);
-			state.usageAtStart = collectSessionUsage(ctx);
-			state.phase = "IMPLEMENT";
-			state.verifyRound = 1;
-			state.reviewRound = 1;
-			addHistory(state, { phase: "IMPLEMENT", event: "start", summary: truncate(task) });
-			recordPlannedSteps(state, ctx, nextAction(state));
-			persist();
-			updateUi(ctx, state);
-			pi.setSessionName(`deliver: ${truncate(task, 50)}`);
-			pi.sendUserMessage(renderDeliverPrompt(state));
+			// /deliver is deliberately prompt-only. The parent resolves the request and
+			// calls delivery_start only after it has prepared a usable brief.
+			pi.sendUserMessage(renderPreparePrompt(task));
 		},
 	});
 
@@ -2544,18 +2551,20 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "delivery_start",
 		label: "Delivery Start",
-		description: "Start the delivery state machine for a task.",
-		promptSnippet: "Start a controlled implement-verify-review-close-retro delivery workflow",
+		description: "Start the delivery state machine with a prepared task brief.",
+		promptSnippet: "Start a controlled delivery workflow from a prepared brief",
 		promptGuidelines: [
-			"Use delivery_start when the user asks to deliver a task through the state-machine workflow.",
+			"Call delivery_start only after the parent resolves any request reference, reads the authoritative source, and prepares a clear brief.",
+			"Bare identifiers, URLs, paths, and empty tasks are rejected; prepare the brief first instead of asking DSM to resolve a reference.",
 			"Follow the returned delivery playbook for the worktree policy, loop order, and delivery-owned artifact/verdict gates.",
 			"Use delivery_next before launches; prefer each returned launchRef as the subagent task so DSM resolves canonical prompts and settings without LLM rewriting.",
 		],
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const task = requirePreparedTask(params.task);
 			state = initialState();
 			state.active = true;
-			state.task = params.task;
+			state.task = task;
 			refreshGitInfo(ctx, state);
 			const projectRoot = state.gitRoot ?? ctx.cwd;
 			const deliveryConfig = loadDeliveryConfig(ctx, projectRoot);
@@ -2565,17 +2574,18 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state.phaseLaunches = phaseConfigBundle.launches;
 			state.launchProfile = phaseConfigBundle.profileResolution;
 			state.project = createProjectMetadata(ctx.cwd, state.gitRoot);
-			state.artifactDir = createArtifactDir(resolveArtifactRoot(projectRoot, deliveryConfig), params.task, state.project);
+			state.artifactDir = createArtifactDir(resolveArtifactRoot(projectRoot, deliveryConfig), task, state.project);
 			state.usageAtStart = collectSessionUsage(ctx);
 			state.phase = "IMPLEMENT";
 			state.verifyRound = 1;
 			state.reviewRound = 1;
-			addHistory(state, { phase: "IMPLEMENT", event: "start", summary: truncate(params.task) });
+			addHistory(state, { phase: "IMPLEMENT", event: "start", summary: truncate(task) });
 			const action = nextAction(state);
 			recordPlannedSteps(state, ctx, action);
 			persist();
 			updateUi(ctx, state);
-			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: toolNextAction(state) } };
+			pi.setSessionName(`deliver: ${truncate(task, 50)}`);
+			return { content: [{ type: "text", text: boundedToolContent(renderDeliverPrompt(state)) }], details: { state: cloneState(state), next: toolNextAction(state) } };
 		},
 	});
 

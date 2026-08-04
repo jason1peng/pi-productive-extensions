@@ -67,6 +67,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 	const commands = new Map<string, { handler: (args: string, ctx: FakeContext) => Promise<void> }>();
 	const eventHandlers = new Map<string, (event: unknown, ctx: FakeContext) => Promise<any>>();
 	const sentMessages: string[] = [];
+	const sessionNames: string[] = [];
 	const appendedEntries: Array<{ type: "custom"; customType: string; data: unknown }> = [];
 
 	const pi = {
@@ -82,7 +83,9 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		registerCommand(name: string, command: { handler: (args: string, ctx: FakeContext) => Promise<void> }) {
 			commands.set(name, command);
 		},
-		setSessionName() {},
+		setSessionName(name: string) {
+			sessionNames.push(name);
+		},
 		sendUserMessage(message: string) {
 			sentMessages.push(message);
 		},
@@ -144,7 +147,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		return result;
 	}
 
-	return { tools, commands, eventHandlers, sentMessages, appendedEntries, ctx, tool, emit };
+	return { tools, commands, eventHandlers, sentMessages, sessionNames, appendedEntries, ctx, tool, emit };
 }
 
 const testFailures: Array<{ name: string; error: unknown }> = [];
@@ -545,6 +548,8 @@ await runTest("DSM dynamic prompts allow only runtime-owned contracts plus task/
 				for (const prompt of prompts) {
 					assert.match(prompt, new RegExp(`Artifact contract for ${phase}`));
 					assert.match(prompt, /Project harness artifact contract:/);
+				assert.match(prompt, /Authoritative source instruction:/);
+				assert.match(prompt, /Read any named authoritative source before acting/);
 					assert.match(prompt, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 					assert.match(prompt, new RegExp(task));
 					for (const policy of forbiddenStablePolicy) assert.doesNotMatch(prompt, new RegExp(policy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${phase} leaked stable policy: ${policy}`);
@@ -677,6 +682,7 @@ await runTest("default child prompts keep stable instructions ahead of run-speci
 					phaseIntroductions[phase],
 					task,
 					"Artifact guidance:",
+					"Authoritative source instruction:",
 					`Project harness resolved root for this run: ${cwd}`,
 					result.details.next.parallel ? "Parallel phase instruction:" : "Artifact contract:\n- Write your result to exactly this path:",
 					"Instruction authority:",
@@ -758,6 +764,9 @@ await runTest("every runnable child prompt includes bounded project harness disc
 			const prompts = result.details.next.parallel?.map((launch: any) => launch.childPrompt) ?? [result.details.next.childPrompt];
 			for (const prompt of prompts) {
 				assert.match(prompt, /Project harness discovery \(bounded, best effort\)/);
+				assert.match(prompt, /Authoritative source instruction:/);
+				assert.match(prompt, /Read any named authoritative source before acting/);
+				assert.match(prompt, /report a source blocker/);
 				assert.match(prompt, new RegExp(`Project harness resolved root for this run: ${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 				assert.match(prompt, /none discovered/);
 				assert.match(prompt, /do not recursively read unrelated documentation/);
@@ -890,21 +899,87 @@ await runTest("launch references resolve canonical single and parallel subagent 
 	);
 });
 
-await runTest("planning may use the stable primary checkout but implementation requires a fresh main worktree", async () => {
+await runTest("/deliver prepares without creating state, then delivery_start hands off the playbook", async () => {
 	const harness = createHarness();
 	const deliver = harness.commands.get("deliver");
 	assert.ok(deliver, "deliver command should be registered");
-	await deliver.handler("planning worktree policy smoke", harness.ctx);
-	const result = await harness.tool("delivery_next");
-	const bootstrapPrompt = harness.sentMessages.at(-1) ?? "";
-	const orchestratorInstruction = result.details.next.orchestratorInstruction;
-	const toolGuidelines = harness.tools.get("delivery_start")?.promptGuidelines?.join(" ") ?? "";
+	const before = await harness.tool("delivery_status");
+	const beforeEntries = harness.appendedEntries.length;
+	await deliver.handler("AGP-003", harness.ctx);
+	const preparationPrompt = harness.sentMessages.at(-1) ?? "";
+	const after = await harness.tool("delivery_status");
 
-	assert.match(bootstrapPrompt, /planning-only MR on a (?:`plan\/<slug>`|plan\/<slug>) branch may be created and submitted directly from the stable primary checkout/i);
-	assert.match(bootstrapPrompt, /latest fetched (?:`main`|main)/i);
-	assert.match(bootstrapPrompt, /never from the planning branch/i);
-	assert.match(toolGuidelines, /delivery playbook/i);
-	assert.equal(orchestratorInstruction, "Launch the configured implementation subagent as sole writer for implementation.");
+	assert.deepEqual(after.details.state, before.details.state, "/deliver must not create or mutate delivery state");
+	assert.equal(harness.appendedEntries.length, beforeEntries, "/deliver must not persist state");
+	assert.equal(harness.sessionNames.length, 0, "/deliver must not rename the session");
+	assert.match(preparationPrompt, /prepare this delivery request/i);
+	assert.match(preparationPrompt, /resolve any reference/i);
+	assert.match(preparationPrompt, /AGP-003/);
+	assert.doesNotMatch(preparationPrompt, /User-scope artifact directory/);
+
+	const prepared = `Deliver AGP-003.
+
+Authoritative source (read before acting):
+/plans/ready--AGP-003.md
+
+Target repository: pi-productive-extensions (matches current checkout)
+Feasibility: clear
+Clarifications: none`;
+	const started = await harness.tool("delivery_start", { task: prepared });
+	assert.equal(started.details.state.active, true);
+	assert.equal(harness.sessionNames.length, 1, "delivery_start owns session naming");
+	assert.match(started.content[0].text, /Run the delivery state machine for this prepared brief/);
+	assert.match(started.content[0].text, /User-scope artifact directory for this run:/);
+	assert.match(started.content[0].text, /latest fetched (?:`main`|main)/i);
+	assert.match(started.details.next.orchestratorInstruction, /implementation subagent/i);
+	const toolGuidelines = harness.tools.get("delivery_start")?.promptGuidelines?.join(" ") ?? "";
+	assert.match(toolGuidelines, /prepares a clear brief/i);
+});
+
+await runTest("delivery_start rejects bare references without creating state or files", async () => {
+	for (const task of ["", "   ", "AGP-003", "PROJ-1234", "https://example.test/plans/AGP-003", "/tmp/ready--AGP-003.md", "./plans/AGP-003.md", "README.md"]) {
+		const harness = createHarness();
+		const before = await harness.tool("delivery_status");
+		const beforeEntries = harness.appendedEntries.length;
+		await assert.rejects(
+			() => harness.tool("delivery_start", { task }),
+			(error: unknown) => error instanceof Error
+				&& /delivery_start rejected/i.test(error.message)
+				&& error.message.includes(JSON.stringify(task))
+				&& /prepare the brief first/i.test(error.message),
+			`bare task should be rejected: ${task}`,
+		);
+		const after = await harness.tool("delivery_status");
+		assert.deepEqual(after.details.state, before.details.state);
+		assert.equal(harness.appendedEntries.length, beforeEntries);
+		assert.equal(harness.sessionNames.length, 0);
+		assert.equal(harness.sentMessages.length, 0);
+	}
+});
+
+await runTest("named authoritative source remains in repair prompts", async () => {
+	const sourcePath = "/plans/ready--PPE-003.md";
+	const task = `Deliver PPE-003.
+
+Authoritative source (read before acting):
+${sourcePath}
+
+Target repository: pi-productive-extensions (matches current checkout)
+Feasibility: clear
+Clarifications: none`;
+	const harness = createHarness();
+	let result = await harness.tool("delivery_start", { task });
+	assert.match(result.details.next.childPrompt, new RegExp(sourcePath.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")));
+	assert.match(result.details.next.childPrompt, /Read any named authoritative source before acting/);
+
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	result = await harness.tool("delivery_next");
+	assert.match(result.details.next.childPrompt, new RegExp(sourcePath.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")));
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "FAIL", summary: "source blocker reproduced", recommendedDecision: "repair" });
+	result = await harness.tool("delivery_next");
+	assert.equal(result.details.state.phase, "IMPLEMENT");
+	assert.match(result.details.next.childPrompt, new RegExp(sourcePath.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")));
+	assert.match(result.details.next.childPrompt, /On repair attempts, reuse the same prepared brief and named source/);
 });
 
 await runTest("reports reject wrong, duplicate, missing, and phase-invalid verdicts without side effects", async () => {
@@ -1413,13 +1488,15 @@ await runTest("delivery usage accounting discovers subagent sessions and subtrac
 	}
 });
 
-await runTest("/deliver reaches review with exactly the configured parallel reviewers", async () => {
+await runTest("prepared delivery reaches review with exactly the configured parallel reviewers", async () => {
 	const harness = createHarness();
 	const deliver = harness.commands.get("deliver");
 	assert.ok(deliver, "deliver command should be registered");
 
 	await deliver.handler("simple parallel review smoke", harness.ctx);
-	assert.match(harness.sentMessages[0], /Run the delivery state machine for this task:/);
+	assert.match(harness.sentMessages[0], /Prepare this delivery request/);
+	await harness.tool("delivery_start", { task: "Deliver the simple parallel review smoke request with the clarified acceptance criteria." });
+	assert.match((await harness.tool("delivery_status")).details.state.phase, /IMPLEMENT/);
 
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "smoke implementation pass" });
 	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "smoke verification pass" });
@@ -1581,6 +1658,8 @@ await runTest("user phase prompt override wins and project prompt override is ig
 
 			assert.match(next.details.next.childPrompt, /USER VERIFY PROMPT prompt override smoke/);
 			assert.match(next.details.next.childPrompt, /Project harness discovery \(bounded, best effort\)/);
+			assert.match(next.details.next.childPrompt, /Authoritative source instruction:/);
+			assert.match(next.details.next.childPrompt, /Read any named authoritative source before acting/);
 			assert.doesNotMatch(next.details.next.childPrompt, /PROJECT VERIFY PROMPT/);
 			assert.match(next.details.next.orchestratorInstruction, /Launch the configured verifier/);
 		} finally {

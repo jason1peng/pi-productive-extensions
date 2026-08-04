@@ -69,11 +69,30 @@ Profile selection is pinned when a delivery starts.
 
 ## Basic usage
 
-Start a delivery:
+`/deliver <request>` is a parent preparation step. It does not create delivery state, an artifact directory, or a planned phase. The returned instruction asks the parent to resolve and read any plan, ticket, URL, or file reference, then check clarity, feasibility, and the target checkout before calling `delivery_start`.
+
+Start a clear request with a prepared brief:
 
 ```text
-/deliver Implement the approved authentication plan
+/deliver AGP-003
 ```
+
+Then call `delivery_start` with ordinary task text that names the exact authoritative source path:
+
+```md
+Deliver AGP-003.
+
+Authoritative source (read before acting):
+/absolute/path/to/ready--AGP-003--plan.md
+
+Target repository: agents-platform (matches current checkout)
+Feasibility: clear
+Clarifications: none
+```
+
+`delivery_start` uses a deterministic admission heuristic to reject empty tasks and bare identifiers, URLs, or filesystem paths. It cannot classify every vague brief. A prepared brief must be resolved by the parent; the state machine does not resolve references or validate the source's product meaning. After state creation, `delivery_start` returns the existing delivery playbook and first IMPLEMENT action.
+
+Every runnable phase reads any named authoritative source before acting. A missing, unreadable, or contradictory source is reported as a blocker rather than guessed, and repair attempts reuse the same prepared brief/source.
 
 Pi will guide the parent session through the required work and quality gates. When a gate finds a supported defect, the workflow can return to implementation. It pauses when a repair, risk, or stop decision requires user input.
 

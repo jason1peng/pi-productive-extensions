@@ -955,9 +955,21 @@ export function createServer(config = loadConfig()): http.Server {
 	});
 }
 
+export function displayHost(host: string): string {
+	return host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+}
+
+export function viewerUrl(config: Pick<ReportViewerConfig, "host" | "port">): string {
+	const host = displayHost(config.host);
+	return `http://${host.includes(":") ? `[${host}]` : host}:${config.port}/`;
+}
+
 if ((import.meta as any).main) {
 	const config = loadConfig();
 	createServer(config).listen(config.port, config.host, () => {
-		console.log(`Report viewer listening on http://${config.host}:${config.port}`);
+		const url = viewerUrl(config);
+		console.log(`Report viewer ready`);
+		console.log(`  Local:   ${url}`);
+		if (config.host !== displayHost(config.host)) console.log(`  Bound:   ${config.host}:${config.port} (all interfaces)`);
 	});
 }

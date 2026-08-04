@@ -6,6 +6,7 @@ import {
 	createImprovement,
 	createServer,
 	decideImprovement,
+	displayHost,
 	deliveryAgentDir,
 	groupReportsByProject,
 	loadConfig,
@@ -15,6 +16,7 @@ import {
 	renderMarkdownSafe,
 	resolveArtifactPath,
 	runApprovedImprovement,
+	viewerUrl,
 	scanReports,
 	type ReportViewerConfig,
 } from "../src/server.ts";
@@ -162,6 +164,15 @@ await runTest("config defaults to the extension delivery artifact root", () => {
 	assert.equal(config.agentCommand.promptMode, undefined);
 	assert.equal(config.host, "127.0.0.1");
 	assert.ok(config.csrfToken.length > 20);
+});
+
+await runTest("viewer startup URL handles local, wildcard, and IPv6 hosts", () => {
+	assert.equal(displayHost("127.0.0.1"), "127.0.0.1");
+	assert.equal(displayHost("0.0.0.0"), "127.0.0.1");
+	assert.equal(displayHost("::"), "127.0.0.1");
+	assert.equal(viewerUrl({ host: "127.0.0.1", port: 8765 }), "http://127.0.0.1:8765/");
+	assert.equal(viewerUrl({ host: "::1", port: 8765 }), "http://[::1]:8765/");
+	assert.equal(viewerUrl({ host: "0.0.0.0", port: 8765 }), "http://127.0.0.1:8765/");
 });
 
 await runTest("delivery profile state falls back to built-in definitions", async () => {

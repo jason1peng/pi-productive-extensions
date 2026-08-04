@@ -1,6 +1,8 @@
-Run the delivery state machine for this task:
+Run the delivery state machine for this prepared brief:
 
 {{task}}
+
+The parent has already resolved and read any named authoritative source. If a named source is missing, unreadable, or contradicts this brief, stop and report the blocker instead of guessing.
 
 User-scope artifact directory for this run: {{artifactDir}}
 

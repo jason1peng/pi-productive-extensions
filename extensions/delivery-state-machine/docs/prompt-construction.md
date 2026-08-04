@@ -12,7 +12,7 @@ A runnable phase exposes three different instruction surfaces through `delivery_
 
 For parallel phases, each `details.next.parallel[]` entry receives its own `childPrompt` plus an exact `artifact`/`output` path. The aggregate artifact remains parent/state-machine owned.
 
-The `/deliver` bootstrap prompt is separate. It comes from `prompts/deliver.md` and instructs the parent how to drive the state machine; it is not part of a phase child prompt.
+The `/deliver` preparation prompt is separate. It comes from `prompts/prepare.md`, asks the parent to resolve/read the request before starting, and does not create delivery state. After `delivery_start` admits a prepared brief, its response surfaces the existing loop playbook from `prompts/deliver.md`; neither parent prompt is part of a phase child prompt.
 
 ## Child prompt assembly order
 
@@ -29,11 +29,12 @@ For a single-child phase, the final prompt is assembled in this order:
       built-in `## DSM child prompt` for `dsm.*` agents or built-in
       `## Child prompt` for compatibility/builtin agents
    c. Placeholder rendering; built-in templates place dynamic values last
-4. Dynamic resolved project/worktree root
-5. Dynamic output instruction
+4. Centrally injected authoritative-source instruction
+5. Dynamic resolved project/worktree root
+6. Dynamic output instruction
    a. Single child: exact planned artifact path
    b. Parallel child: child identity and exact attempt-specific artifact path
-6. Final static instruction-authority safeguard
+7. Final static instruction-authority safeguard
 ```
 
 Conceptually, the implementation is:
@@ -47,6 +48,7 @@ const baseChildPrompt =
   PROJECT_HARNESS_PROMPT
   + COMMON_CHILD_WORKFLOW_PROMPT
   + resolvedPhasePrompt
+  + AUTHORITATIVE_SOURCE_PROMPT
   + projectHarnessRootContext(state);
 
 const childPrompt = parallel
@@ -84,6 +86,8 @@ The user file has higher precedence. Overrides are merged by section:
 - `## Child prompt`
 
 Built-in files also contain `## DSM child prompt`, a concise dynamic template used only for package-scoped `dsm.*` launches. Stable DSM role policy lives in `agents/dsm/*.md`. A user file may override one section and inherit the other from the built-in file; a user `## Child prompt` applies to both compatibility and DSM profiles so existing override behavior is preserved. Project-local phase prompt overrides are not loaded.
+
+The centrally injected authoritative-source instruction is present for every runnable phase and every launch profile, including when a user replaces the phase `## Child prompt`. It requires a named source in the prepared brief to be read before acting and requires a source blocker with `Outcome: blocked` when that source is missing, unreadable, or contradictory. Repair attempts retain the same prepared brief and source.
 
 The resolved templates support these child-prompt values:
 
@@ -136,6 +140,7 @@ A user/global phase prompt override cannot remove or replace this prepended cont
 | Artifact filename/path | No | Planned by the state machine and validated exactly |
 | Project-harness discovery prefix | No | Added centrally |
 | Common child workflow prefix | No | Added centrally |
+| Authoritative-source blocker instruction | No | Added centrally |
 | Post-context instruction-authority safeguard | No | Added centrally |
 | Single-child output path / parallel-child identity and output path | No | Added centrally per child |
 | Parent report instruction | No | Generated centrally from state/phase |

@@ -33,24 +33,25 @@ Related: [TOKEN_EFFICIENCY_PLAN.md](../TOKEN_EFFICIENCY_PLAN.md) (fix plan), [pr
 ## 2. Current design: the loop
 
 ```
-1. delivery_start(task)
-      └─► returns the deliver.md "playbook" (loop instructions) + first next-action package
-2. delivery_next()
+1. `/deliver <request>`
+      └─► returns a preparation instruction only; it creates no delivery state
+2. parent resolves/reads any reference and calls delivery_start(prepared brief)
+      └─► creates state and returns the deliver.md "playbook" (loop instructions) + first next-action package
+3. delivery_next()
       └─► returns the NEXT-ACTION PACKAGE (see §3)
-3. orchestrator launches child subagent(s):
+4. orchestrator launches child subagent(s):
       agent/model/thinking/context from package, task = details.next.childPrompt,
       output = details.next.artifact  (the exact planned artifact path)
-4. child works (read-only gates or sole-writer implement), writes its artifact file, returns
-5. delivery_report(phase, verdict, summary, artifact, usage)
+5. child reads any named authoritative source before acting, then works (read-only gates or sole-writer implement), writes its artifact file, returns
+6. delivery_report(phase, verdict, summary, artifact, usage)
       └─► validates the artifact (RESULT line, required headings, harness section, exact path)
       └─► updates state (history, steps, usage, repair routing)
-      └─► returns ... the full NEXT-ACTION PACKAGE again
-6. orchestrator calls delivery_next() anyway (per playbook)
-      └─► gets the same NEXT-ACTION PACKAGE a second time
+      └─► returns a slim state acknowledgement
+7. orchestrator calls delivery_next() (per playbook)
    → back to 3 for the next phase
-7. On FAIL + recommendedDecision=repair → routes back to IMPLEMENT automatically.
+8. On FAIL + recommendedDecision=repair → routes back to IMPLEMENT automatically.
    On WAITING_DECISION → decisionPrompt asks the user: repair / accept_risk / stop.
-8. RETRO done → DONE; delivery_summary writes 00-delivery-summary.md.
+9. RETRO done → DONE; delivery_summary writes 00-delivery-summary.md.
 ```
 
 ## 3. Current design: what's inside every tool response

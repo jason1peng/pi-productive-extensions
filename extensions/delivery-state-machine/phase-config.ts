@@ -16,10 +16,13 @@ export interface PhasePromptContext {
 	pendingIssueInstruction: string;
 }
 
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = typeof THINKING_LEVELS[number];
+
 export interface LaunchConfig {
 	agent: string;
 	model?: string;
-	thinking?: "low" | "medium" | "high" | "max";
+	thinking?: ThinkingLevel;
 	context?: "fresh" | "fork";
 }
 
@@ -78,7 +81,7 @@ const ACTIVE_PROFILE_FILE = "active-profile.json";
 const PROMPT_FRONTMATTER_KEYS = new Set(["phase"]);
 const LAUNCH_KEYS = new Set(["agent", "model", "thinking", "context"]);
 const PROFILE_KEYS = new Set(["defaultProfile", "profiles"]);
-const VALID_THINKING = new Set(["low", "medium", "high", "max"]);
+const VALID_THINKING = new Set<string>(THINKING_LEVELS);
 const VALID_CONTEXT = new Set(["fresh", "fork"]);
 
 function extensionDir(): string {

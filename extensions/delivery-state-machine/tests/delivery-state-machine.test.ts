@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { collectSessionUsage, collectUsageFromJsonlContent, subtractUsageTotals } from "../../../shared/session-usage.ts";
 import deliveryStateMachine from "../index.ts";
 import { PHASE_CONTRACTS, phaseArtifactContractMarkdown, renderPhaseArtifactMarkdown, type RunnablePhase, type Verdict } from "../phase-contract.ts";
-import { materializePhaseConfigs } from "../phase-config.ts";
+import { materializePhaseConfigs, THINKING_LEVELS } from "../phase-config.ts";
 import { readPiSubagentMetadataFiles, resolvePiSubagentChildUsage, usageFromPiSubagentMetadata } from "../pi-subagents-usage.ts";
 
 const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
@@ -1493,14 +1493,20 @@ await runTest("global profile config can force GPT-only models", async () => {
 	});
 });
 
-await runTest("global profile config accepts max thinking", async () => {
-	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
-		"max-thinking": fullProfile({ IMPLEMENT: { agent: "worker", model: "profile/implement", thinking: "max" } }),
-	}), async () => {
-		const harness = createHarness();
-		const next = await harness.tool("delivery_start", { task: "max thinking profile smoke" });
-		assert.equal(next.details.next.thinking, "max");
-	});
+await runTest("global profile config accepts every supported thinking level and preserves its model suffix", async () => {
+	for (const thinking of THINKING_LEVELS) {
+		await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
+			"thinking-level": fullProfile({ IMPLEMENT: { agent: "worker", model: "profile/implement", thinking } }),
+		}), async () => {
+			const harness = createHarness();
+			const next = await harness.tool("delivery_start", { task: `${thinking} thinking profile smoke` });
+			assert.equal(next.details.next.thinking, thinking);
+			const input: any = { agent: "worker", task: next.details.next.launchRef, model: "wrong/model" };
+			assert.equal(await harness.emit("tool_call", { toolName: "subagent", input }), undefined);
+			assert.equal(input.model, `profile/implement:${thinking}`);
+			assert.equal(input.thinking, thinking);
+		});
+	}
 });
 
 await runTest("global profile config trims profile names consistently", async () => {

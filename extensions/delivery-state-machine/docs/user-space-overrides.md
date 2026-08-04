@@ -78,7 +78,7 @@ Rules:
 - Every profile must define every runnable phase: `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO`.
 - A phase can be a single launch object or an array. Arrays launch parallel children for that phase.
 - Launch entries support only `agent`, `model`, `thinking`, and `context`.
-- `thinking` must be `low`, `medium`, `high`, or `max`.
+- `thinking` must be one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. The selected model/provider must support the requested level.
 - `context` must be `fresh` or `fork`.
 
 ## Add multiple profiles

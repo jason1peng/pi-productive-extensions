@@ -1,182 +1,211 @@
-# Phase data flow — current design and simplification plan
+# Delivery state machine: how a delivery moves through the system
 
-Audience: anyone trying to understand what data the delivery state machine passes around per phase, why the current shape wastes tokens, and what the simplified shape will be.
+This guide explains the delivery state machine for people who need to run, integrate with, or troubleshoot a delivery. It focuses on the behavior that exists today: who does what, which data moves between steps, and where results are stored.
 
-Related: [TOKEN_EFFICIENCY_PLAN.md](../TOKEN_EFFICIENCY_PLAN.md) (fix plan), [prompt-construction.md](prompt-construction.md) (prompt layering), measured evidence in `tmp/dsm-token-efficiency-review.html`.
+For implementation details, see [`index.ts`](../index.ts). For child-prompt construction, see [`prompt-construction.md`](prompt-construction.md). Historical token-efficiency measurements and future optimization work live separately in [`TOKEN_EFFICIENCY_PLAN.md`](../TOKEN_EFFICIENCY_PLAN.md).
 
----
+## 1. The mental model
 
-## 1. The players
+A delivery has one parent orchestrator and one or more child agents:
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│ ORCHESTRATOR (the parent LLM session — you, talking to pi)     │
-│  • drives the loop by calling delivery_* tools                 │
-│  • launches child subagents                                    │
-│  • pays tokens for EVERYTHING it receives                      │
-└───────────────┬────────────────────────────────┬───────────────┘
-                │ tool calls / tool results       │ subagent launches (childPrompt)
-┌───────────────▼───────────────┐   ┌─────────────▼──────────────┐
-│ DELIVERY STATE MACHINE        │   │ CHILD SUBAGENTS            │
-│ (this extension, index.ts)    │   │ (worker / verifier /       │
-│  • owns state + phase logic   │   │  reviewer / closer / retro)│
-│  • builds prompts             │   │  • do the actual work      │
-│  • validates artifacts        │   │  • write artifact files    │
-└───────────────┬───────────────┘   └─────────────┬──────────────┘
-                │ reads/validates                  │ writes
-┌───────────────▼─────────────────────────────────▼──────────────┐
-│ ARTIFACT FILES (~/.pi/delivery-run/... or project run dir)     │
-│  01-implementation.md, 02-verification.md, 03-review*.md, ...  │
-└────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    User[User request] --> Parent[Parent orchestrator]
+    Parent --> DSM[Delivery state machine]
+    DSM --> Child[Worker / verifier / reviewer / closer / retro]
+    Child --> Artifacts[Phase artifacts]
+    Artifacts --> DSM
+    DSM --> Parent
+    DSM --> Summary[Delivery summary]
 ```
 
-## 2. Current design: the loop
+- **Parent orchestrator** drives the loop by calling `delivery_*` tools and launching children.
+- **Delivery state machine** owns phase order, launch settings, worktree targeting, artifact validation, verdicts, repair routing, and usage accounting.
+- **Child agents** perform the phase work and write a result artifact. They do not advance the delivery themselves.
+- **Artifacts** are the durable evidence for each phase, normally under `~/.pi/delivery-run/...` or the configured project run directory.
 
-```
-1. `/deliver <request>`
-      └─► returns a preparation instruction only; it creates no delivery state
-2. parent resolves/reads any reference and calls delivery_start(prepared brief)
-      └─► creates state and returns the deliver.md "playbook" (loop instructions) + first next-action package
-3. delivery_next()
-      └─► returns the NEXT-ACTION PACKAGE (see §3)
-4. orchestrator launches child subagent(s):
-      agent/model/thinking/context from package, task = details.next.childPrompt,
-      output = details.next.artifact  (the exact planned artifact path)
-5. child reads any named authoritative source before acting, then works (read-only gates or sole-writer implement), writes its artifact file, returns
-6. delivery_report(phase, verdict, summary, artifact, usage)
-      └─► validates the artifact (RESULT line, required headings, harness section, exact path)
-      └─► updates state (history, steps, usage, repair routing)
-      └─► returns a slim state acknowledgement
-7. orchestrator calls delivery_next() (per playbook)
-   → back to 3 for the next phase
-8. On FAIL + recommendedDecision=repair → routes back to IMPLEMENT automatically.
-   On WAITING_DECISION → decisionPrompt asks the user: repair / accept_risk / stop.
-9. RETRO done → DONE; delivery_summary writes 00-delivery-summary.md.
-```
+The parent should treat the structured `details` fields returned by the tools as authoritative. The human-readable `content[0].text` is a compact transcript/status view.
 
-## 3. Current design: what's inside every tool response
+## 2. End-to-end flow
 
-Every `delivery_next` AND every `delivery_report` returns all of this:
+```mermaid
+sequenceDiagram
+    actor User
+    participant Parent as Parent orchestrator
+    participant DSM as Delivery state machine
+    participant Child as Phase child
+    participant FS as Artifact files
 
-```
-tool result
-├── content[0].text            human-readable status + THE FULL childPrompt embedded
-│                              (measured: ~42k tokens/run — nobody acts on this copy)
-│
-└── details
-    ├── state                  FULL state clone: task, history[], steps[] (with usage
-    │                          metadata), acceptedRisks, phaseLaunches, launchProfile...
-    │                          grows ~4.3k → ~33k chars over a run
-    │                          (measured: ~94k tokens/run = 35% of tool bytes)
-    │
-    └── next                   the NEXT-ACTION PACKAGE:
-        ├── phase, agent, model, thinking, context     launch settings
-        ├── artifact / output / outputMode             exact planned artifact path
-        ├── childPrompt            ◄── the ONE copy the orchestrator actually uses
-        ├── prompt                 ◄── identical mirror "for compatibility" (dead)
-        ├── orchestratorInstruction                    parent-only guidance
-        ├── reportInstruction                          parent-only "how to report back"
-        └── parallel[]             for REVIEW: 2 entries, each with its own childPrompt
-                                   (+ the base prompt/childPrompt still included)
+    User->>Parent: Request a change
+    Parent->>DSM: /deliver (prepare brief)
+    DSM-->>Parent: Prepared brief, no state created
+    Parent->>DSM: delivery_start(task, deliveryRoot?)
+    DSM-->>Parent: Initial state + playbook
+
+    loop Each phase
+        Parent->>DSM: delivery_next()
+        DSM-->>Parent: Next-action package
+        Parent->>Child: Launch with exact childPrompt / launchRef and artifact path
+        Child->>FS: Write RESULT artifact
+        Child-->>Parent: Completion result
+        Parent->>DSM: delivery_report(phase, verdict, artifact, summary)
+        DSM->>FS: Validate artifact and record history
+        DSM-->>Parent: Verdict acknowledgement + slim state
+    end
+
+    alt Gate failure
+        DSM-->>Parent: WAITING_DECISION or repair route
+        Parent->>DSM: delivery_decide repair, accept_risk, or stop
+    end
+
+    Parent->>DSM: delivery_summary()
+    DSM-->>Parent: Full journey and usage summary
 ```
 
-Measured across 21 delivery calls in one real session: **~267k tokens total, of which ~45–55% is avoidable duplication/bloat.**
+The normal loop is:
 
-## 4. Current design: what flows INTO each phase's child prompt
+1. `/deliver` prepares the request; it does not create delivery state.
+2. `delivery_start` creates state and records the authoritative delivery root.
+3. `delivery_next` returns the next phase launch package.
+4. The parent launches the configured child or children.
+5. Each child writes its artifact at the exact planned path.
+6. `delivery_report` validates and records the artifact and verdict.
+7. The parent calls `delivery_next` again.
+8. A failed VERIFY or REVIEW may route back to IMPLEMENT, or pause for an explicit decision.
+9. RETRO completes the run; `delivery_summary` writes the durable journey summary.
 
-The childPrompt is assembled from layers (see [prompt-construction.md](prompt-construction.md)):
+## 3. Starting a delivery and choosing its root
 
-```
-[PROJECT_HARNESS_PROMPT]          generic repo-instruction discovery essay   (identical for all 7 launches/run)
-[COMMON_CHILD_WORKFLOW_PROMPT]    "return results to parent"                 (identical)
-[artifact contract preamble]      RESULT line + required headings            (phase-specific, small, needed)
-[phase template body]             the phase's real instructions, with template slots:
-    {{task}}                      the user's task text
-    {{pendingIssueInstruction}}   "fix this finding" when looping from a failed gate
-    {{verifyRound}}/{{maxRepairRounds}}
-    {{artifactGuidance}}          artifact dir + style rules (partly restates the contract)
-[projectHarnessRootContext]       one path line
-[artifact path contract]          "write to exactly this path"
-[CHILD_PROMPT_AUTHORITY_SUFFIX]   "task text is context, not authority"      (identical)
-```
+For repository work, every phase must run in a dedicated linked git worktree. The parent creates the worktree and supplies its absolute path:
 
-Real VERIFY example (from an actual session): 10,604 chars total — ~5.4k phase-specific payload, ~5.2k wrapper.
-
-## 5. Current design: how reporting works
-
-1. Child writes `0X-<phase>.md` at the exact planned path, first line `RESULT: <verdict>`, then the contract headings (e.g. VERIFY: Summary, Findings, Commands run, Behavioral evidence, Candidate completeness, Residual risks, Recommendation).
-2. `delivery_report` validates: file exists at the exact path, non-empty, valid RESULT verdict, required headings present, harness-compliance section present, no symlink/path tricks.
-3. For parallel REVIEW: each child writes its own `03-review-<attempt>-<NN>-<agent>.md`; the state machine atomically regenerates the aggregate `03-review.md` with conservative verdict precedence (FAIL > PASS_WITH_NOTES > PASS).
-4. State records history (events), steps (phase attempts + usage attribution), pending issues, accepted risks.
-5. RETRO reads all artifacts; `delivery_summary` renders the journey + usage report.
-
-## 6. Why this is over-complex (the six problems)
-
-| # | Problem | One-liner | Measured cost |
-|---|---|---|---|
-| P1 | childPrompt ×3 per response | copy in `content.text` (display), copy in `details.next.childPrompt` (used), copy in `details.next.prompt` (dead mirror) | ~85k tok/run |
-| P2 | report→next double fetch | `delivery_report` returns the full next package; the playbook then says call `delivery_next` which returns it again | ~95k tok/run |
-| P3 | ever-growing state attachment | full history/steps/launch-config clone on every call; orchestrator never reads it for decisions | ~94k tok/run |
-| P4 | instructions in 3 channels | same rules in `deliver.md`, tool `promptGuidelines`, and `orchestratorInstruction` | ~1k tok/run + persistent system-prompt cost |
-| P5 | wrapper blocks per child | harness essay + workflow + authority suffix + artifactGuidance repeated 7× per run | ~3.7k tok/run |
-| P6 | prompt content said 2–4× | verify.md states classification rules 4×; must-fix rule appears 6–7× across files | ~0.8–1.5k tok/run |
-
-## 7. Proposed design (after fix plan P1+P2)
-
-### 7.1 Tool responses carry each piece of information exactly once
-
-```
-delivery_next tool result (NEW)
-├── content[0].text   short status only: "Delivery: verify attempt 1/3 |
-│                      branch: x | next: launch fresh-verifier → details.next"
-└── details
-    ├── state         SLIM: { phase, verifyRound, reviewRound, readyToClose,
-    │                     pendingIssue, artifactDir, cwd, gitBranch, gitRoot,
-    │                     deliveryRoot, worktreePolicy }
-    │                     (full history/steps only via delivery_status / delivery_summary)
-    └── next
-        ├── phase, agent, model, thinking, context
-        ├── artifact / output / outputMode
-        ├── childPrompt            ◄── ONE copy, nowhere else
-        ├── orchestratorInstruction
-        ├── reportInstruction
-        └── parallel[]?            (unchanged)
-        (prompt mirror: DELETED — user decision: no backward compatibility needed)
-
-delivery_report tool result (NEW)
-├── content[0].text   "VERIFY recorded: PASS. Next phase: REVIEW."
-└── details           { state: SLIM }        ← no next package; orchestrator calls
-                                               delivery_next when ready (already the
-                                               documented protocol)
+```bash
+git fetch origin
+git worktree add -b <branch> <path-outside-main-working-tree> origin/main
 ```
 
-### 7.2 One home per instruction
+```text
+delivery_start({
+  task: "...",
+  deliveryRoot: "/absolute/path/to/linked/worktree"
+})
+```
 
-| Rule | Lives in (single source) | Removed from |
+The state machine:
+
+- rejects the repository's main working tree, including a subdirectory of it;
+- rejects a missing path and a path belonging to another repository;
+- keeps the supplied root sticky across `delivery_status`, `delivery_next`, reports, and resumed sessions;
+- derives child `cwd`, `gitRoot`, artifact-root resolution, and harness-root context from that root;
+- records the outcome in `state.worktreePolicy` and exposes it in status/next responses.
+
+A delivery started from an existing linked worktree may omit `deliveryRoot`; the session cwd is used and validated. Non-git work is allowed because there is no repository tree to protect, and records that the worktree policy is not applicable.
+
+## 4. What the tools return
+
+### `delivery_next`: the next action
+
+`delivery_next` returns a short status message and structured details:
+
+```text
+details
+├── state   slim current snapshot
+└── next    next-action package
+    ├── phase, agent, model, thinking, context
+    ├── artifact, output, outputMode
+    ├── childPrompt                 authoritative child instructions
+    ├── orchestratorInstruction     parent-only launch guidance
+    ├── reportInstruction           parent-only reporting guidance
+    └── parallel[]?                 one package for each parallel child
+```
+
+The parent must pass `details.next.childPrompt` verbatim as the child task, or use the canonical `launchRef` supplied by the state machine. It must use the exact planned artifact path in `details.next.artifact`.
+
+There is no `details.next.prompt` response field. The old compatibility mirror was removed and is not used by the runtime.
+
+### `delivery_report`: record the result
+
+`delivery_report` accepts the phase verdict, summary, artifact path, and usage metadata. It:
+
+- checks that the artifact exists at the exact planned path;
+- validates the `RESULT` line and required phase headings;
+- validates harness evidence and path safety;
+- records history, steps, usage, and pending issues;
+- determines the next phase or pauses for a decision.
+
+It returns an acknowledgement and slim state. It does not return the next launch package; call `delivery_next` for that.
+
+### Full-state readers
+
+- `delivery_status` shows the current state and the authoritative root.
+- `delivery_summary` renders the complete journey, phase artifacts, and usage accounting.
+
+## 5. What a child receives
+
+The child prompt is assembled from a small number of layers:
+
+```text
+project harness guidance
++ common child workflow
++ phase instructions
++ task text
++ round / repair context when applicable
++ artifact contract and exact output path
++ resolved project/worktree root
++ authority guidance for named sources
+```
+
+The phase determines the child role:
+
+| Phase | Child responsibility | Writes |
 |---|---|---|
-| Loop protocol (launch, report, artifact checks) | `prompts/deliver.md` | tool `promptGuidelines` (one-line pointers only) |
-| Worktree policy (how the worktree is supplied, and that enforcement has no opt-out) | `prompts/deliver.md` | `worktreePolicyInstruction()` |
-| Delivery root (authoritative cwd/gitRoot for every phase) | `delivery_start`'s `deliveryRoot` parameter, stored as sticky `state.deliveryRoot` and re-derived by `refreshGitInfo()`; refused unconditionally when it is the repository's main working tree | the session `ctx.cwd` on the status/journey paths |
-| Artifact headings + RESULT | `phaseArtifactContractMarkdown()` | `artifactGuidance` restatement |
-| Harness/workflow/authority boilerplate | compressed constants (later: agent system prompts, pending P3 stack decision) | — |
-| Adjudication / must-fix classification | one canonical wording per phase file | 2nd–4th restatements in verify.md/review.md/deliver.md |
+| IMPLEMENT | Make the requested change; sole writer | implementation artifact |
+| VERIFY | Independently check the candidate | verification artifact |
+| REVIEW | Independently assess the candidate; may run in parallel | one review artifact per reviewer, then aggregate |
+| CLOSE | Perform the approved close-out flow | close artifact |
+| RETRO | Record durable lessons and follow-ups | retrospective artifact |
 
-### 7.3 What does NOT change
+Children should read any named authoritative source before acting. Read-only gates must not modify the candidate. IMPLEMENT is the sole writer for implementation changes.
 
-- The loop itself: start → next → launch → report → gates → repair → decision → close → retro
-- Artifact contract + report-time validation (exact path, RESULT, headings, harness section)
-- Parallel REVIEW machinery and conservative aggregate verdicts (default depth stays 2 until the P3 benchmark decision)
-- `decisionPrompt` user-decision flow; bounded repair; `delivery_status`/`delivery_summary` as the full-state readers
+## 6. Artifacts and verdicts
 
-## 8. Mapping to the fix plan
+Every phase artifact begins with a verdict:
 
-| Problem | Fix phase | Fix |
+```text
+RESULT: PASS
+```
+
+The remainder follows the phase-specific headings. The state machine validates the artifact when `delivery_report` is called; a child saying “done” without a valid artifact is not sufficient evidence.
+
+For parallel REVIEW, each reviewer writes a separate artifact. The state machine creates the aggregate review result using conservative precedence:
+
+```text
+FAIL > PASS_WITH_NON_BLOCKING_NOTES > PASS
+```
+
+A failed VERIFY or REVIEW is not silently ignored:
+
+- a supported must-fix finding can route back to IMPLEMENT;
+- an exhausted or ambiguous failure pauses for the parent's explicit decision;
+- `accept_risk`, `stop`, and `defer` decisions are recorded rather than inferred.
+
+## 7. Quick reference
+
+| Need to… | Use | Remember |
 |---|---|---|
-| P1 (triplication) | plan P1.2, P1.3 | delete `prompt` mirror; pointer line in `content.text` |
-| P2 (double fetch) | plan P1.4 | ack-only `delivery_report` |
-| P3 (state bloat) | plan P1.5 | slim state snapshot |
-| P4 (3 channels) | plan P1.6, P1.7 | guidelines → one-liners; deliver.md is the home |
-| P5 (wrappers) | plan P2.1, P2.2 | slim artifactGuidance; compress harness constants |
-| P6 (repeated rules) | plan P2.3–P2.8 | canonical wording once per file |
+| Prepare a request | `/deliver` | Does not create state |
+| Start a run | `delivery_start` | Supply a linked worktree for repository work |
+| Get the next child launch | `delivery_next` | Use `details.next.childPrompt` and the exact artifact path |
+| Record a phase | `delivery_report` | Artifact evidence is required |
+| Inspect current state | `delivery_status` | Root and worktree policy are authoritative here |
+| Resolve a failed gate | `delivery_decide` | Requires an explicit decision |
+| See the complete journey | `delivery_summary` | Includes artifacts and usage |
 
-Each fix lands behind the gates in [TOKEN_EFFICIENCY_PLAN.md](../TOKEN_EFFICIENCY_PLAN.md): measured byte reduction for P1, fault-injection proof that VERIFY/REVIEW still catch broken candidates for P2.
+## 8. Source of truth
+
+When this guide conflicts with runtime behavior, use the following order:
+
+1. The delivery state machine and its tests in [`index.ts`](../index.ts) and `tests/`.
+2. The phase prompt and artifact contract for the active phase.
+3. This overview document.
+
+The state machine is intentionally strict about launch identity, artifact paths, verdicts, and repository roots so that a delivery's evidence remains reviewable and reproducible.

@@ -10,7 +10,11 @@ Use the `delivery_*` tools as source of truth for phase, launch settings, and st
 
 Start by calling `delivery_status`, then `delivery_next`.
 
-A planning-only MR on a `plan/<slug>` branch may be created and submitted directly from the stable primary checkout without a dedicated planning worktree. After that plan is approved or merged, implementation and delivery must use a dedicated git worktree created from the latest fetched `main`, never from the planning branch. Otherwise, before implementation, unless this is the same task or an amended requirement, ensure repo work happens in a dedicated git worktree created from the latest fetched `main`. If this is non-git/non-repo work, record why the policy is not applicable.
+A planning-only MR on a `plan/<slug>` branch may be created and submitted directly from the stable primary checkout without a dedicated planning worktree. After that plan is approved or merged, implementation and delivery must run in a dedicated git worktree created from the latest fetched `main`, never from the planning branch.
+
+You create that worktree yourself (`git fetch origin && git worktree add -b <branch> <path-outside-the-main-working-tree> origin/main`) and pass its absolute path as `delivery_start`'s `deliveryRoot`. Delivery never creates or names worktrees. The recorded root is sticky: every child launch, the harness-root line, the artifact root, and the CLOSE push resolve against it, and `delivery_status` cannot move it back to the session cwd. Omit `deliveryRoot` only when the session cwd already *is* that worktree, or for non-git work.
+
+Enforcement is unconditional and has no opt-out parameter or reason-string override: `delivery_start` refuses a delivery rooted at the repository's main working tree (or a subdirectory of it) whether it is on the default branch, on a hand-made feature branch, or detached. Non-git work starts normally and records `worktree policy not applicable: not a git work tree`; the same-task/amended-requirement case needs no exemption because that delivery is already rooted in a linked worktree.
 
 For each returned phase:
 - If `details.next.parallel` is present, launch every listed child in parallel using each entry's `launchRef` as that task's `task` field; DSM resolves each exact `agent/model/thinking/context`, `acceptance`, `cwd`, `childPrompt`, and `output`/`outputMode` before execution. Save each child artifact at `details.next.parallel[].artifact`, then aggregate before one `delivery_report` call for the phase.

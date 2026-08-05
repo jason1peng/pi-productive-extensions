@@ -127,6 +127,8 @@ interface DeliveryState {
 	cwd?: string;
 	gitBranch?: string;
 	gitRoot?: string;
+	deliveryRoot?: string;
+	worktreePolicy?: string;
 	lastVerificationVerdict?: Verdict;
 	lastReviewVerdict?: Verdict;
 	readyToClose: boolean;
@@ -168,6 +170,7 @@ interface NextAction {
 
 const START_PARAMS = Type.Object({
 	task: Type.String({ description: "Prepared delivery brief naming any authoritative source" }),
+	deliveryRoot: Type.Optional(Type.String({ description: "Absolute path to the pre-created dedicated git worktree every delivery phase must run in. The orchestrator creates the worktree; delivery never creates one. Omit only when the session cwd is already that worktree or the work is non-git." })),
 	maxRepairRounds: Type.Optional(Type.Number({ description: "Legacy override: maximum repair loops for every phase" })),
 	maxRounds: Type.Optional(Type.Object({
 		IMPLEMENT: Type.Optional(Type.Number({ description: "Maximum IMPLEMENT attempts before stopping" })),
@@ -281,6 +284,8 @@ function toolStateSnapshot(state: DeliveryState): Partial<DeliveryState> {
 	if (state.cwd) snapshot.cwd = state.cwd;
 	if (state.gitBranch) snapshot.gitBranch = state.gitBranch;
 	if (state.gitRoot) snapshot.gitRoot = state.gitRoot;
+	if (state.deliveryRoot) snapshot.deliveryRoot = state.deliveryRoot;
+	if (state.worktreePolicy) snapshot.worktreePolicy = state.worktreePolicy;
 	if (state.lastVerificationVerdict) snapshot.lastVerificationVerdict = state.lastVerificationVerdict;
 	if (state.lastReviewVerdict) snapshot.lastReviewVerdict = state.lastReviewVerdict;
 	if (state.pendingIssue) snapshot.pendingIssue = JSON.parse(JSON.stringify(state.pendingIssue));
@@ -382,16 +387,128 @@ function gitOutput(cwd: string, args: string[]): string | undefined {
 	}
 }
 
+// The recorded delivery root is sticky: once delivery_start validates a root, every later
+// refresh derives cwd/gitRoot/gitBranch from it, so the status and journey paths can no longer
+// move an in-flight delivery back to the session cwd (PPE-005). Branch information is still
+// re-read from that root on every refresh.
 function refreshGitInfo(ctx: ExtensionContext, state: DeliveryState) {
-	state.cwd = ctx.cwd;
-	if (gitOutput(ctx.cwd, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
+	const root = state.deliveryRoot ?? ctx.cwd;
+	state.cwd = root;
+	if (gitOutput(root, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
 		state.gitBranch = undefined;
 		state.gitRoot = undefined;
 		return;
 	}
-	state.gitRoot = gitOutput(ctx.cwd, ["rev-parse", "--show-toplevel"]);
-	const branch = gitOutput(ctx.cwd, ["branch", "--show-current"]);
-	state.gitBranch = branch || `detached@${gitOutput(ctx.cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown"}`;
+	state.gitRoot = gitOutput(root, ["rev-parse", "--show-toplevel"]);
+	const branch = gitOutput(root, ["branch", "--show-current"]);
+	state.gitBranch = branch || `detached@${gitOutput(root, ["rev-parse", "--short", "HEAD"]) ?? "unknown"}`;
+}
+
+const NOT_A_GIT_WORK_TREE_POLICY = "worktree policy not applicable: not a git work tree";
+
+function realPathOrSelf(target: string): string {
+	try {
+		return fs.realpathSync(target);
+	} catch {
+		return path.resolve(target);
+	}
+}
+
+function isGitWorkTree(root: string): boolean {
+	return gitOutput(root, ["rev-parse", "--is-inside-work-tree"]) === "true";
+}
+
+function gitCommonDir(root: string): string | undefined {
+	const commonDir = gitOutput(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+	return commonDir ? realPathOrSelf(commonDir) : undefined;
+}
+
+// D2a: the main working tree is the one whose `<toplevel>/.git` *is* the shared git common dir.
+// A linked worktree has a `.git` file pointing into `<common>/worktrees/<name>`, so it never matches.
+// Branch state is deliberately irrelevant: default branch, feature branch, and detached HEAD in the
+// main working tree are all refused.
+function isMainWorkingTree(root: string): boolean {
+	const toplevel = gitOutput(root, ["rev-parse", "--path-format=absolute", "--show-toplevel"]);
+	const commonDir = gitCommonDir(root);
+	if (!toplevel || !commonDir) return false;
+	return commonDir === realPathOrSelf(path.join(toplevel, ".git"));
+}
+
+function worktreeAddHint(): string {
+	return [
+		"Create a dedicated worktree from the latest fetched main and pass its absolute path as deliveryRoot:",
+		"  git fetch origin",
+		"  git worktree add -b <branch> <path-outside-the-main-working-tree> origin/main",
+	].join("\n");
+}
+
+function mainWorkingTreeRefusal(root: string, context: string): string {
+	return [
+		`delivery-state-machine refused ${context}: the delivery root ${root} is this repository's main working tree.`,
+		"Every delivery phase must run in a dedicated linked git worktree, on any branch, and this rule has no opt-out parameter or reason-string override.",
+		worktreeAddHint(),
+	].join("\n");
+}
+
+interface DeliveryRootResolution {
+	deliveryRoot?: string;
+	worktreePolicy: string;
+}
+
+// D1: the orchestrator creates the worktree and supplies its existing path. Validation is strict and
+// fails loudly; there is never a silent fallback to the session cwd once a root has been supplied.
+function resolveDeliveryRoot(ctx: ExtensionContext, requested: unknown): DeliveryRootResolution {
+	const sessionIsGit = isGitWorkTree(ctx.cwd);
+	if (requested === undefined || requested === null) {
+		if (!sessionIsGit) return { worktreePolicy: NOT_A_GIT_WORK_TREE_POLICY };
+		if (isMainWorkingTree(ctx.cwd)) throw new Error(mainWorkingTreeRefusal(ctx.cwd, "to start"));
+		return { deliveryRoot: ctx.cwd, worktreePolicy: `worktree policy satisfied: linked git worktree ${ctx.cwd} (inherited from the session cwd)` };
+	}
+	if (typeof requested !== "string" || !requested.trim()) {
+		throw new Error(`delivery-state-machine rejected deliveryRoot: expected a non-empty absolute path to an existing git worktree.\n${worktreeAddHint()}`);
+	}
+	const root = requested.trim();
+	if (!path.isAbsolute(root)) {
+		throw new Error(`delivery-state-machine rejected deliveryRoot ${root}: it must be an absolute path.\n${worktreeAddHint()}`);
+	}
+	if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+		throw new Error(`delivery-state-machine rejected deliveryRoot ${root}: it does not exist or is not a directory. Delivery never creates worktrees.\n${worktreeAddHint()}`);
+	}
+	if (!isGitWorkTree(root)) {
+		throw new Error(`delivery-state-machine rejected deliveryRoot ${root}: it is not a git work tree.\n${worktreeAddHint()}`);
+	}
+	if (!sessionIsGit) {
+		throw new Error(`delivery-state-machine rejected deliveryRoot ${root}: the session cwd ${ctx.cwd} is not inside a git repository, so the supplied root cannot be confirmed to belong to this session's repository. Start the session inside the repository, or omit deliveryRoot for non-git work.`);
+	}
+	const sessionCommonDir = gitCommonDir(ctx.cwd);
+	const rootCommonDir = gitCommonDir(root);
+	if (!sessionCommonDir || !rootCommonDir || sessionCommonDir !== rootCommonDir) {
+		throw new Error(`delivery-state-machine rejected deliveryRoot ${root}: it belongs to a different repository (git dir ${rootCommonDir ?? "<unknown>"}) than the session cwd ${ctx.cwd} (git dir ${sessionCommonDir ?? "<unknown>"}).\n${worktreeAddHint()}`);
+	}
+	if (isMainWorkingTree(root)) throw new Error(mainWorkingTreeRefusal(root, "to start"));
+	return { deliveryRoot: root, worktreePolicy: `worktree policy satisfied: linked git worktree ${root}` };
+}
+
+// A resumed session reconstructs state from the session branch, so the recorded root must be
+// re-validated instead of silently falling back to a differing ctx.cwd.
+function assertRecordedDeliveryRoot(ctx: ExtensionContext, state: DeliveryState) {
+	const root = state.deliveryRoot;
+	if (!state.active || !root) return;
+	if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+		throw new Error(`delivery-state-machine cannot continue: the recorded delivery root ${root} no longer exists. Restore that worktree, or run delivery_reset and start a new delivery with a valid deliveryRoot.\n${worktreeAddHint()}`);
+	}
+	if (!isGitWorkTree(root)) {
+		throw new Error(`delivery-state-machine cannot continue: the recorded delivery root ${root} is no longer a git work tree. Restore that worktree, or run delivery_reset and start a new delivery with a valid deliveryRoot.\n${worktreeAddHint()}`);
+	}
+	if (isMainWorkingTree(root)) throw new Error(mainWorkingTreeRefusal(root, "to continue"));
+	if (!isGitWorkTree(ctx.cwd)) {
+		throw new Error(`delivery-state-machine cannot continue: the session cwd ${ctx.cwd} is not inside a git repository, so the recorded delivery root ${root} cannot be confirmed to belong to this session's repository. Resume from that repository, or run delivery_reset.`);
+	}
+	const sessionCommonDir = gitCommonDir(ctx.cwd);
+	const rootCommonDir = gitCommonDir(root);
+	if (!sessionCommonDir || !rootCommonDir || sessionCommonDir !== rootCommonDir) {
+		throw new Error(`delivery-state-machine cannot continue: the recorded delivery root ${root} (git dir ${rootCommonDir ?? "<unknown>"}) belongs to a different repository than the session cwd ${ctx.cwd} (git dir ${sessionCommonDir ?? "<unknown>"}). Resume from the delivery repository, or run delivery_reset.`);
+	}
 }
 
 function truncate(text: string | undefined, max = 500): string {
@@ -2107,6 +2224,8 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 		`Artifact directory: ${state.artifactDir ?? "<none>"}`,
 		`Cwd: ${state.cwd ?? ctx.cwd ?? "<unknown>"}`,
 		`Branch: ${state.gitBranch ?? "<not a git worktree>"}`,
+		`Delivery root: ${state.deliveryRoot ?? "<none: session cwd>"}`,
+		...(state.worktreePolicy ? [`Worktree policy: ${state.worktreePolicy}`] : []),
 		`Overall cost: ${usableSinceStart ? formatCost(usableSinceStart.cost) : "unavailable"}`,
 		`Overall tokens: ${usableSinceStart ? formatNumber(usableSinceStart.totalTokens) : "unavailable"}`,
 		`Overall input tokens: ${usableSinceStart ? formatNumber(usableSinceStart.input) : "unavailable"}`,
@@ -2298,6 +2417,8 @@ function formatState(state: DeliveryState): string {
 	];
 	if (state.cwd) lines.push(`cwd: ${state.cwd}`);
 	if (state.gitBranch) lines.push(`gitBranch: ${state.gitBranch}`);
+	lines.push(`deliveryRoot: ${state.deliveryRoot ?? "<none: session cwd>"}`);
+	if (state.worktreePolicy) lines.push(`worktreePolicy: ${state.worktreePolicy}`);
 	if (state.gitRoot) lines.push(`gitRoot: ${state.gitRoot}`);
 	if (state.artifactDir) lines.push(`artifactDir: ${state.artifactDir}`);
 	if (state.pendingIssue) {
@@ -2557,23 +2678,27 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			"Call delivery_start only after the parent resolves any request reference, reads the authoritative source, and prepares a clear brief.",
 			"Bare identifiers, URLs, paths, and empty tasks are rejected; prepare the brief first instead of asking DSM to resolve a reference.",
 			"Follow the returned delivery playbook for the worktree policy, loop order, and delivery-owned artifact/verdict gates.",
+			"Pass deliveryRoot with the absolute path of the dedicated git worktree you already created; a delivery rooted at the repository's main working tree is refused with no opt-out.",
 			"Use delivery_next before launches; prefer each returned launchRef as the subagent task so DSM resolves canonical prompts and settings without LLM rewriting.",
 		],
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const task = requirePreparedTask(params.task);
+			const rootResolution = resolveDeliveryRoot(ctx, (params as { deliveryRoot?: unknown }).deliveryRoot);
 			state = initialState();
 			state.active = true;
 			state.task = task;
+			state.deliveryRoot = rootResolution.deliveryRoot;
+			state.worktreePolicy = rootResolution.worktreePolicy;
 			refreshGitInfo(ctx, state);
-			const projectRoot = state.gitRoot ?? ctx.cwd;
+			const projectRoot = state.gitRoot ?? state.cwd ?? ctx.cwd;
 			const deliveryConfig = loadDeliveryConfig(ctx, projectRoot);
 			state.maxPhaseRounds = resolveMaxPhaseRounds(deliveryConfig, params.maxRepairRounds, params.maxRounds);
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			const phaseConfigBundle = loadPhaseConfigBundle();
 			state.phaseLaunches = phaseConfigBundle.launches;
 			state.launchProfile = phaseConfigBundle.profileResolution;
-			state.project = createProjectMetadata(ctx.cwd, state.gitRoot);
+			state.project = createProjectMetadata(state.cwd ?? ctx.cwd, state.gitRoot);
 			state.artifactDir = createArtifactDir(resolveArtifactRoot(projectRoot, deliveryConfig), task, state.project);
 			state.usageAtStart = collectSessionUsage(ctx);
 			state.phase = "IMPLEMENT";
@@ -2602,6 +2727,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		],
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			assertRecordedDeliveryRoot(ctx, state);
+			refreshGitInfo(ctx, state);
 			updateUi(ctx, state);
 			const action = nextAction(state);
 			recordPlannedSteps(state, ctx, action);
@@ -2627,6 +2754,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		],
 		parameters: REPORT_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			assertRecordedDeliveryRoot(ctx, state);
 			const reportParams = { ...(params as DeliveryReportInput) };
 			validateReportInput(state, reportParams);
 			const candidate = cloneState(state);
@@ -2654,6 +2782,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		],
 		parameters: DECIDE_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			assertRecordedDeliveryRoot(ctx, state);
 			applyDecision(state, params.decision as Decision, params.rationale);
 			synchronizeCloseReadiness(state);
 			persist();
@@ -2670,6 +2799,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptGuidelines: ["Use delivery_status when resuming or checking a delivery workflow."],
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			assertRecordedDeliveryRoot(ctx, state);
+			refreshGitInfo(ctx, state);
 			updateUi(ctx, state);
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
 			const fullOutputPath = shouldShowSummary(state) && state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;

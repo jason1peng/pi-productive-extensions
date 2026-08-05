@@ -131,7 +131,8 @@ delivery_next tool result (NEW)
 │                      branch: x | next: launch fresh-verifier → details.next"
 └── details
     ├── state         SLIM: { phase, verifyRound, reviewRound, readyToClose,
-    │                     pendingIssue, artifactDir, gitBranch, gitRoot }
+    │                     pendingIssue, artifactDir, cwd, gitBranch, gitRoot,
+    │                     deliveryRoot, worktreePolicy }
     │                     (full history/steps only via delivery_status / delivery_summary)
     └── next
         ├── phase, agent, model, thinking, context
@@ -154,7 +155,8 @@ delivery_report tool result (NEW)
 | Rule | Lives in (single source) | Removed from |
 |---|---|---|
 | Loop protocol (launch, report, artifact checks) | `prompts/deliver.md` | tool `promptGuidelines` (one-line pointers only) |
-| Worktree policy | `prompts/deliver.md` | `worktreePolicyInstruction()`, `delivery_start` guidelines |
+| Worktree policy (how the worktree is supplied, and that enforcement has no opt-out) | `prompts/deliver.md` | `worktreePolicyInstruction()` |
+| Delivery root (authoritative cwd/gitRoot for every phase) | `delivery_start`'s `deliveryRoot` parameter, stored as sticky `state.deliveryRoot` and re-derived by `refreshGitInfo()`; refused unconditionally when it is the repository's main working tree | the session `ctx.cwd` on the status/journey paths |
 | Artifact headings + RESULT | `phaseArtifactContractMarkdown()` | `artifactGuidance` restatement |
 | Harness/workflow/authority boilerplate | compressed constants (later: agent system prompts, pending P3 stack decision) | — |
 | Adjudication / must-fix classification | one canonical wording per phase file | 2nd–4th restatements in verify.md/review.md/deliver.md |

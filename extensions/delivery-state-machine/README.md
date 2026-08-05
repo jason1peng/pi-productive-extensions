@@ -90,6 +90,8 @@ Feasibility: clear
 Clarifications: none
 ```
 
+Pass the dedicated worktree you already created as `deliveryRoot` (absolute path). It becomes the sticky root for every phase: child `cwd`, the resolved project-harness root, the artifact root, and the CLOSE push all follow it, and `delivery_status` cannot move it back to the session cwd. Delivery never creates or names worktrees, and a delivery rooted at the repository's main working tree is refused unconditionally — on the default branch, on a feature branch, and detached — with no opt-out parameter. Omit `deliveryRoot` when the session cwd already is that worktree; non-git work starts with the policy recorded as not applicable.
+
 `delivery_start` uses a deterministic admission heuristic to reject empty tasks and bare identifiers, URLs, or filesystem paths. It cannot classify every vague brief. A prepared brief must be resolved by the parent; the state machine does not resolve references or validate the source's product meaning. After state creation, `delivery_start` returns the existing delivery playbook and first IMPLEMENT action.
 
 Every runnable phase reads any named authoritative source before acting. A missing, unreadable, or contradictory source is reported as a blocker rather than guessed, and repair attempts reuse the same prepared brief/source.

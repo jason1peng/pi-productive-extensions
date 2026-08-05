@@ -38,6 +38,39 @@ interface FakeContext {
 }
 
 const artifactDirs = new Set<string>();
+const temporaryRepoRoots = new Set<string>();
+
+function gitInit(root: string, branch = "main") {
+	fs.mkdirSync(root, { recursive: true });
+	execFileSync("git", ["init", "-b", branch], { cwd: root, stdio: "ignore" });
+	fs.writeFileSync(path.join(root, "README.md"), "root\n", "utf8");
+	execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"], { cwd: root, stdio: "ignore" });
+}
+
+/**
+ * Create a throwaway repository plus one linked worktree. The D2/D2a gate refuses a delivery rooted
+ * at a repository's main working tree, so any test that needs a git-rooted delivery must run it in a
+ * linked worktree. Both paths are registered for cleanup.
+ */
+function createTemporaryRepoWithWorktree(prefix: string, options: { branch?: string; worktreeBranch?: string } = {}) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	const worktree = `${root}-worktree`;
+	temporaryRepoRoots.add(root);
+	temporaryRepoRoots.add(worktree);
+	gitInit(root, options.branch ?? "main");
+	execFileSync("git", ["worktree", "add", "-b", options.worktreeBranch ?? "delivery", worktree], { cwd: root, stdio: "ignore" });
+	return { root, worktree };
+}
+
+// Default harness cwd. Tests that do not exercise delivery-root targeting must not depend on whether
+// the suite happens to run from a primary checkout (CI) or from a linked worktree (local delivery),
+// so they run in a dedicated linked worktree that always satisfies the worktree policy.
+let sharedWorktreeCache: string | undefined;
+function sharedDeliveryWorktree(): string {
+	if (!sharedWorktreeCache) sharedWorktreeCache = createTemporaryRepoWithWorktree("delivery-sm-shared-repo-").worktree;
+	return sharedWorktreeCache;
+}
 
 function processIsLive(pid: number): boolean {
 	try {
@@ -92,7 +125,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 	};
 
 	const ctx: FakeContext = {
-		cwd: options.cwd ?? process.cwd(),
+		cwd: options.cwd ?? sharedDeliveryWorktree(),
 		hasUI: false,
 		isProjectTrusted: () => options.projectTrusted ?? true,
 		ui: {
@@ -1690,12 +1723,11 @@ await runTest("project launch override is ignored in favor of global profile con
 });
 
 await runTest("project prompt and launch overrides are ignored when cwd is a git subdirectory", async () => {
-	const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-git-root-"));
+	const { root: repoRoot, worktree } = createTemporaryRepoWithWorktree("delivery-sm-git-root-");
 	try {
-		execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
-		const cwd = path.join(repoRoot, "packages", "app");
+		const cwd = path.join(worktree, "packages", "app");
 		fs.mkdirSync(cwd, { recursive: true });
-		const projectConfigDir = path.join(repoRoot, ".pi", "delivery-state-machine");
+		const projectConfigDir = path.join(worktree, ".pi", "delivery-state-machine");
 		fs.mkdirSync(path.join(projectConfigDir, "phases"), { recursive: true });
 		fs.writeFileSync(path.join(projectConfigDir, "phase-launches.json"), JSON.stringify({
 			IMPLEMENT: { agent: "worker", model: "repo-root/model" },
@@ -1704,13 +1736,14 @@ await runTest("project prompt and launch overrides are ignored when cwd is a git
 
 		const harness = createHarness({ cwd });
 		let result = await harness.tool("delivery_start", { task: "subdirectory override smoke" });
-		assert.equal(result.details.state.gitRoot, fs.realpathSync(repoRoot));
+		assert.equal(result.details.state.gitRoot, fs.realpathSync(worktree));
 		assert.notEqual(result.details.next.model, "repo-root/model");
 
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		result = await harness.tool("delivery_next");
 		assert.doesNotMatch(result.details.next.childPrompt, /REPO ROOT VERIFY PROMPT/);
 	} finally {
+		fs.rmSync(worktree, { recursive: true, force: true });
 		fs.rmSync(repoRoot, { recursive: true, force: true });
 	}
 });
@@ -1785,14 +1818,12 @@ await runTest("artifact root can be configured from project .pi config", async (
 });
 
 await runTest("trusted project config resolves from git root when cwd is a subdirectory", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-trusted-root-"));
+	const { root: repoRoot, worktree: root } = createTemporaryRepoWithWorktree("delivery-sm-trusted-root-");
 	const cwd = path.join(root, "packages", "app");
-	const configuredRoot = path.join(root, "trusted-artifacts");
 	fs.mkdirSync(path.join(root, ".pi"), { recursive: true });
 	fs.mkdirSync(cwd, { recursive: true });
 	fs.writeFileSync(path.join(root, ".pi", "delivery-state-machine.json"), JSON.stringify({ artifactRoot: "trusted-artifacts", maxRounds: { IMPLEMENT: 4 } }), "utf8");
 	try {
-		execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
 		const harness = createHarness({ cwd, projectTrusted: true });
 		const result = await harness.tool("delivery_start", { task: "trusted root config" });
 		const realRoot = fs.realpathSync(root);
@@ -1801,6 +1832,7 @@ await runTest("trusted project config resolves from git root when cwd is a subdi
 		assert.equal(path.relative(path.join(realRoot, "trusted-artifacts"), result.details.state.artifactDir).startsWith("projects"), true);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(repoRoot, { recursive: true, force: true });
 	}
 });
 
@@ -2323,21 +2355,17 @@ await runTest("planned unresolved child keeps usage totals and overhead unavaila
 });
 
 await runTest("pi-subagents meta scan discovers metadata in git worktrees", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-meta-worktree-root-"));
-	const worktree = `${root}-child-worktree`;
+	const { root, worktree } = createTemporaryRepoWithWorktree("delivery-sm-meta-worktree-root-", { worktreeBranch: "child" });
 	const sessionFile = path.join(root, "session.jsonl");
 	fs.writeFileSync(sessionFile, "", "utf8");
 	try {
-		execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
-		fs.writeFileSync(path.join(root, "README.md"), "root\n", "utf8");
-		execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
-		execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"], { cwd: root, stdio: "ignore" });
-		execFileSync("git", ["worktree", "add", "-b", "child", worktree], { cwd: root, stdio: "ignore" });
-		const harness = createHarness({ cwd: root, sessionFile });
+		// The delivery is rooted in the linked worktree (the only shape the worktree policy allows);
+		// the metadata lives in the sibling main working tree, which the scan must still discover.
+		const harness = createHarness({ cwd: worktree, sessionFile });
 		let result = await harness.tool("delivery_start", { task: "meta scan worktree smoke" });
 		result = await harness.tool("delivery_next");
 		const plannedStep = (await harness.tool("delivery_status")).details.state.steps.find((s: any) => s.phase === "IMPLEMENT" && s.status === "planned");
-		const artifactsDir = path.join(worktree, ".pi-subagents", "artifacts");
+		const artifactsDir = path.join(root, ".pi-subagents", "artifacts");
 		writePiSubagentMeta(artifactsDir, {
 			runId: "worktree1",
 			agent: "worker",
@@ -3083,6 +3111,205 @@ await runTest("delivery tool content is bounded while full reports and structure
 	const fullReport = fs.readFileSync(path.join(result.details.state.artifactDir, "00-delivery-summary.md"), "utf8");
 	assert.match(fullReport, /row-2599-/);
 });
+
+await runTest("PPE-004 reproducer: a supplied delivery root targets the worktree for every consumer", async () => {
+	const { root, worktree } = createTemporaryRepoWithWorktree("delivery-sm-ppe005-target-");
+	// The session sits in the primary checkout, exactly as in the PPE-004 reproducer.
+	const harness = createHarness({ cwd: root });
+	const started = await harness.tool("delivery_start", { task: "worktree targeting regression", deliveryRoot: worktree });
+	const realWorktree = fs.realpathSync(worktree);
+	assert.equal(started.details.state.deliveryRoot, worktree);
+	assert.equal(started.details.state.cwd, worktree);
+	assert.equal(started.details.state.gitRoot, realWorktree);
+	assert.notEqual(started.details.state.gitRoot, fs.realpathSync(root));
+	assert.match(started.details.state.worktreePolicy, /worktree policy satisfied: linked git worktree/);
+	assert.equal(started.details.next.childPrompt.includes(`Project harness resolved root for this run: ${realWorktree}`), true);
+
+	const input: any = { agent: "worker", task: started.details.next.launchRef };
+	assert.equal(await harness.emit("tool_call", { toolName: "subagent", input }), undefined);
+	assert.equal(input.cwd, worktree, "child cwd must be the delivery worktree");
+	assert.notEqual(input.cwd, root);
+
+	// An intervening status call must not move the delivery root back to the session cwd.
+	const status = await harness.tool("delivery_status");
+	assert.equal(status.details.state.cwd, worktree);
+	assert.equal(status.details.state.deliveryRoot, worktree);
+	assert.ok(status.content[0].text.includes(`deliveryRoot: ${worktree}`), "status output must name the delivery root");
+
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_status");
+	const verifyNext = await harness.tool("delivery_next");
+	assert.equal(verifyNext.details.state.cwd, worktree);
+	assert.equal(verifyNext.details.state.deliveryRoot, worktree);
+	const verifyInput: any = { agent: "fresh-verifier", task: verifyNext.details.next.launchRef };
+	assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: verifyInput }), undefined);
+	assert.equal(verifyInput.cwd, worktree);
+
+	// Branch information still tracks the delivery root rather than freezing at start.
+	execFileSync("git", ["checkout", "-q", "-b", "deliver/moved"], { cwd: worktree, stdio: "ignore" });
+	const afterBranchChange = await harness.tool("delivery_status");
+	assert.equal(afterBranchChange.details.state.gitBranch, "deliver/moved");
+	assert.equal(afterBranchChange.details.state.cwd, worktree);
+});
+
+await runTest("PPE-005: a delivery rooted at the main working tree is refused in every branch state", async () => {
+	const { root, worktree } = createTemporaryRepoWithWorktree("delivery-sm-ppe005-refuse-");
+	const subdirectory = path.join(root, "packages", "app");
+	fs.mkdirSync(subdirectory, { recursive: true });
+	const branchStates: Array<[string, string[]]> = [
+		["default branch", ["checkout", "-q", "main"]],
+		["feature branch", ["checkout", "-q", "-B", "feature/hand-made"]],
+		["detached HEAD", ["checkout", "-q", "--detach", "HEAD"]],
+	];
+	for (const [label, checkout] of branchStates) {
+		execFileSync("git", checkout, { cwd: root, stdio: "ignore" });
+		const explicit = createHarness({ cwd: worktree });
+		await assert.rejects(
+			() => explicit.tool("delivery_start", { task: `refuse main working tree on ${label}`, deliveryRoot: root }),
+			/main working tree/,
+			`explicit main-working-tree root must be refused on ${label}`,
+		);
+		assert.equal((await explicit.tool("delivery_status")).details.state.active, false, "a refused start must not create state");
+
+		const inherited = createHarness({ cwd: root });
+		await assert.rejects(
+			() => inherited.tool("delivery_start", { task: `refuse inherited main working tree on ${label}` }),
+			/main working tree/,
+			`inherited main-working-tree cwd must be refused on ${label}`,
+		);
+
+		const inheritedSubdirectory = createHarness({ cwd: subdirectory });
+		await assert.rejects(
+			() => inheritedSubdirectory.tool("delivery_start", { task: `refuse main working tree subdirectory on ${label}` }),
+			/main working tree/,
+			`a subdirectory of the main working tree must be refused on ${label}`,
+		);
+	}
+	const refusal = await createHarness({ cwd: root })
+		.tool("delivery_start", { task: "refusal message shape" })
+		.then(() => "<not refused>", (error: Error) => error.message);
+	assert.match(refusal, /no opt-out parameter or reason-string override/);
+	assert.match(refusal, /git worktree add -b <branch>/);
+});
+
+await runTest("PPE-005: a linked worktree passes whether supplied explicitly or inherited from the session cwd", async () => {
+	const { worktree } = createTemporaryRepoWithWorktree("delivery-sm-ppe005-linked-");
+	const inherited = await createHarness({ cwd: worktree }).tool("delivery_start", { task: "inherited linked worktree" });
+	assert.equal(inherited.details.state.deliveryRoot, worktree);
+	assert.match(inherited.details.state.worktreePolicy, /inherited from the session cwd/);
+
+	const explicit = await createHarness({ cwd: worktree }).tool("delivery_start", { task: "explicit linked worktree", deliveryRoot: worktree });
+	assert.equal(explicit.details.state.deliveryRoot, worktree);
+	assert.equal(explicit.details.state.cwd, worktree);
+});
+
+await runTest("PPE-005: a non-git delivery root starts with the worktree policy recorded as not applicable", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-ppe005-nongit-"));
+	try {
+		const harness = createHarness({ cwd });
+		const started = await harness.tool("delivery_start", { task: "non-git delivery smoke" });
+		assert.equal(started.details.state.active, true);
+		assert.equal(started.details.state.deliveryRoot, undefined);
+		assert.equal(started.details.state.cwd, cwd);
+		assert.equal(started.details.state.gitRoot, undefined);
+		assert.equal(started.details.state.worktreePolicy, "worktree policy not applicable: not a git work tree");
+		const status = await harness.tool("delivery_status");
+		assert.match(status.content[0].text, /worktreePolicy: worktree policy not applicable: not a git work tree/);
+		assert.equal(status.details.state.cwd, cwd);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("PPE-005: invalid delivery roots are rejected with actionable messages", async () => {
+	const { worktree } = createTemporaryRepoWithWorktree("delivery-sm-ppe005-invalid-");
+	const foreign = createTemporaryRepoWithWorktree("delivery-sm-ppe005-foreign-");
+	const nonGit = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-ppe005-plain-"));
+	try {
+		const harness = createHarness({ cwd: worktree });
+		await assert.rejects(
+			() => harness.tool("delivery_start", { task: "missing root", deliveryRoot: path.join(worktree, "does-not-exist") }),
+			/does not exist or is not a directory/,
+		);
+		await assert.rejects(() => harness.tool("delivery_start", { task: "relative root", deliveryRoot: "../sibling" }), /must be an absolute path/);
+		await assert.rejects(() => harness.tool("delivery_start", { task: "blank root", deliveryRoot: "   " }), /non-empty absolute path/);
+		await assert.rejects(() => harness.tool("delivery_start", { task: "non-git root", deliveryRoot: nonGit }), /is not a git work tree/);
+		await assert.rejects(
+			() => harness.tool("delivery_start", { task: "foreign root", deliveryRoot: foreign.worktree }),
+			/belongs to a different repository/,
+		);
+		assert.equal((await harness.tool("delivery_status")).details.state.active, false);
+
+		const nonGitSession = createHarness({ cwd: nonGit });
+		await assert.rejects(
+			() => nonGitSession.tool("delivery_start", { task: "root without a git session", deliveryRoot: worktree }),
+			/is not inside a git repository/,
+		);
+	} finally {
+		fs.rmSync(nonGit, { recursive: true, force: true });
+	}
+});
+
+await runTest("PPE-005: a resumed session re-validates the recorded delivery root instead of falling back", async () => {
+	const { root, worktree } = createTemporaryRepoWithWorktree("delivery-sm-ppe005-resume-");
+	const original = createHarness({ cwd: root });
+	const started = await original.tool("delivery_start", { task: "resumed delivery root", deliveryRoot: worktree });
+	assert.equal(started.details.state.deliveryRoot, worktree);
+
+	// Resuming from a different cwd in the same repository keeps the recorded root.
+	const resumed = createHarness({ cwd: root, branchEntries: original.appendedEntries });
+	await resumed.emit("session_start");
+	const resumedStatus = await resumed.tool("delivery_status");
+	assert.equal(resumedStatus.details.state.deliveryRoot, worktree);
+	assert.equal(resumedStatus.details.state.cwd, worktree);
+	const resumedInput: any = { agent: "worker", task: (await resumed.tool("delivery_next")).details.next.launchRef };
+	assert.equal(await resumed.emit("tool_call", { toolName: "subagent", input: resumedInput }), undefined);
+	assert.equal(resumedInput.cwd, worktree);
+
+	// A recorded root that no longer exists fails loudly instead of silently falling back to ctx.cwd.
+	const orphanState = structuredClone(started.details.state);
+	orphanState.deliveryRoot = `${worktree}-removed`;
+	const orphan = createHarness({ cwd: root, branchEntries: [{ type: "custom", customType: "delivery-state-machine", data: orphanState }] });
+	await orphan.emit("session_start");
+	for (const toolName of ["delivery_status", "delivery_next"]) {
+		await assert.rejects(() => orphan.tool(toolName), /recorded delivery root .* no longer exists/);
+	}
+	await assert.rejects(
+		() => orphan.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented", __omitArtifact: true }),
+		/recorded delivery root .* no longer exists/,
+	);
+
+	// A recorded root that is the repository's main working tree is refused on resume, too.
+	const mainRootState = structuredClone(started.details.state);
+	mainRootState.deliveryRoot = root;
+	const mainRooted = createHarness({ cwd: worktree, branchEntries: [{ type: "custom", customType: "delivery-state-machine", data: mainRootState }] });
+	await mainRooted.emit("session_start");
+	await assert.rejects(() => mainRooted.tool("delivery_status"), /main working tree/);
+
+	// Revalidation also applies when the resumed session cwd happens to equal the recorded root;
+	// do not allow a stale/tampered root to bypass the main-working-tree refusal.
+	const mainRootedAtSameCwd = createHarness({ cwd: root, branchEntries: [{ type: "custom", customType: "delivery-state-machine", data: mainRootState }] });
+	await mainRootedAtSameCwd.emit("session_start");
+	await assert.rejects(() => mainRootedAtSameCwd.tool("delivery_status"), /main working tree/);
+});
+
+await runTest("PPE-005: a configured artifact root resolves against the delivery root and is stable across phases", async () => {
+	const { root, worktree } = createTemporaryRepoWithWorktree("delivery-sm-ppe005-artifacts-");
+	fs.mkdirSync(path.join(worktree, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(worktree, ".pi", "delivery-state-machine.json"), JSON.stringify({ artifactRoot: "delivery-artifacts" }), "utf8");
+	const harness = createHarness({ cwd: root, projectTrusted: true });
+	const started = await harness.tool("delivery_start", { task: "artifact root follows delivery root", deliveryRoot: worktree });
+	const expectedRoot = path.join(fs.realpathSync(worktree), "delivery-artifacts");
+	const artifactDir = started.details.state.artifactDir as string;
+	assert.equal(artifactDir.startsWith(`${expectedRoot}${path.sep}`), true, `expected ${artifactDir} under ${expectedRoot}`);
+	assert.equal(fs.existsSync(artifactDir), true);
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	const afterPhase = await harness.tool("delivery_status");
+	assert.equal(afterPhase.details.state.artifactDir, artifactDir, "artifact directory must be stable across phases");
+});
+
+for (const dir of temporaryRepoRoots) fs.rmSync(dir, { recursive: true, force: true });
+temporaryRepoRoots.clear();
 
 if (testFailures.length > 0) {
 	throw new AggregateError(testFailures.map(({ error }) => error), `${testFailures.length} delivery-state-machine test(s) failed`);

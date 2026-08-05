@@ -63,6 +63,7 @@ All parameter objects use the following TypeBox shapes as currently registered.
 ### `delivery_start`
 
 - `task`: required string
+- `deliveryRoot`: optional string; absolute path of the pre-created dedicated git worktree that roots every phase of the delivery. Validated strictly and recorded as sticky state; a root that is the repository's main working tree is refused unconditionally
 - `maxRepairRounds`: optional number; legacy all-phase round override
 - `maxRounds`: optional object with optional numeric `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO` values
 
@@ -98,7 +99,7 @@ A usage object has optional numeric `input`, `output`, `cacheRead`, `cacheWrite`
 State-bearing tools return a JSON-cloned state with these stable fields:
 
 - `active`, `phase`, `verifyRound`, `reviewRound`, `maxRepairRounds`, `maxPhaseRounds`, `readyToClose`, `acceptedRisks`, `history`, `steps`, and `updatedAt`
-- optional `task`, `artifactDir`, `usageAtStart`, `cwd`, `gitBranch`, `gitRoot`, `lastVerificationVerdict`, `lastReviewVerdict`, `pendingIssue`, `phaseLaunches`, `launchProfile`, and `project`
+- optional `task`, `artifactDir`, `usageAtStart`, `cwd`, `gitBranch`, `gitRoot`, `deliveryRoot`, `worktreePolicy`, `lastVerificationVerdict`, `lastReviewVerdict`, `pendingIssue`, `phaseLaunches`, `launchProfile`, and `project`
 
 `maxPhaseRounds` has `IMPLEMENT`, `VERIFY`, `REVIEW`, `CLOSE`, and `RETRO` numeric members. Existing state, history, step, pending-issue, project, profile, and usage field names remain compatibility-sensitive.
 

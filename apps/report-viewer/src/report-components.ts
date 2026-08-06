@@ -6,7 +6,7 @@ import type { UsageTotals } from "../../../shared/session-usage.ts";
 import { parseArtifactContract, type ParsedArtifact, type RetroCandidate } from "./artifact-contract.ts";
 import { escapeHtml, renderMarkdownSafe } from "./markdown-renderer.ts";
 import { badgeClass, page } from "./report-renderer.ts";
-import { buildArtifactPageViewModel, buildReportDetailPageViewModel, buildReportListPageViewModel, compactTaskTitle, type DeliveryProfilePanelViewModel, type DeliveryProfileStateViewModel, type ReportDetailPageViewModel, type ReportListPageViewModel } from "./report-view-model.ts";
+import { buildArtifactPageViewModel, buildReportDetailPageViewModel, buildReportListPageViewModel, compactTaskTitle, shortenPathForDisplay, type DeliveryProfilePanelViewModel, type DeliveryProfileStateViewModel, type ReportDetailPageViewModel, type ReportListPageViewModel } from "./report-view-model.ts";
 import type { AgentRunRecord, LoadedReport, ProjectReportGroup, ReportSummary, ReportViewerConfig, RetroImprovement } from "./server.ts";
 
 export type ArtifactResolution =
@@ -197,8 +197,11 @@ function selectedProfileSetupHtml(state: DeliveryProfileStateViewModel): string 
 	if (!definition) return `<p class="muted">No setup details available for selected profile.</p>`;
 	const rows = DELIVERY_PHASES.map((phase) => {
 		const phaseLaunch = definition[phase];
+		const launchItems = Array.isArray(phaseLaunch)
+			? phaseLaunch.map((launch, index) => `<div><strong>${index + 1}.</strong> ${launchSummaryHtml(launch)}</div>`)
+			: [];
 		const launchHtml = Array.isArray(phaseLaunch)
-			? phaseLaunch.map((launch, index) => `<div><strong>${index + 1}.</strong> ${launchSummaryHtml(launch)}</div>`).join("")
+			? limitedListHtml(launchItems, "launches")
 			: launchSummaryHtml(phaseLaunch);
 		return `<tr><th>${escapeHtml(phase)}</th><td>${launchHtml}</td></tr>`;
 	}).join("");
@@ -243,15 +246,22 @@ function reportRowHtml(config: Pick<ReportViewerConfig, "reportRoots">, report: 
 	return `<article class="report-row"><div class="report-row-main"><a class="task-link report-title" href="${href}" title="${escapeHtml(report.task)}">${escapeHtml(title)}</a><div class="muted report-meta"><code>${escapeHtml(report.extensionReportId)}</code> · ${escapeHtml(new Date(report.updatedAt).toISOString())}</div><p class="report-brief">${escapeHtml(reportBrief(config, report))}</p>${reportSignalsHtml(config, report)}</div><div class="report-row-aside"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span><span class="source-${escapeHtml(report.source)}">${escapeHtml(report.source === "json" ? "structured JSON" : "legacy Markdown")}</span><a class="button secondary" href="${href}">Open details</a></div></article>`;
 }
 
+function projectPathHtml(label: string, value: string): string {
+	return `<div>${escapeHtml(label)}: <code class="path" title="${escapeHtml(value)}">${escapeHtml(shortenPathForDisplay(value))}</code></div>`;
+}
+
 function projectGroupHtml(config: Pick<ReportViewerConfig, "reportRoots">, group: ProjectReportGroup): string {
 	const projectPath = group.projectRoot ?? group.gitRoot;
-	const pathHtml = projectPath ? `<div>Path: <code>${escapeHtml(projectPath)}</code></div>` : "";
-	const rootHtml = group.gitRoot && group.gitRoot !== projectPath ? `<div>Git root: <code>${escapeHtml(group.gitRoot)}</code></div>` : "";
-	const remoteHtml = group.gitRemote ? `<div>Remote: <code>${escapeHtml(group.gitRemote)}</code></div>` : "";
+	const pathHtml = projectPath ? projectPathHtml("Path", projectPath) : "";
+	const rootHtml = group.gitRoot && group.gitRoot !== projectPath ? projectPathHtml("Git root", group.gitRoot) : "";
+	const remoteHtml = group.gitRemote ? `<div title="${escapeHtml(group.gitRemote)}">Remote: <code>${escapeHtml(shortenPathForDisplay(group.gitRemote))}</code></div>` : "";
 	const detailsHtml = pathHtml || rootHtml || remoteHtml ? `<details class="project-metadata"><summary>Project metadata</summary><div class="muted">Project id: <code>${escapeHtml(group.projectId)}</code></div>${pathHtml}${rootHtml}${remoteHtml}</details>` : `<div class="muted">Project id: <code>${escapeHtml(group.projectId)}</code></div>`;
-	const warningsHtml = group.warnings.length ? `<p>${group.warnings.map((warning) => `<span class="badge warn">${escapeHtml(warning)}</span>`).join(" ")}</p>` : "";
-	const rows = group.reports.map((report) => reportRowHtml(config, report)).join("");
-	return `<section class="section-card project-group" id="project-${escapeHtml(group.viewerProjectId)}"><div class="project-heading"><h2>${escapeHtml(group.projectName)}</h2><div class="muted">Visible runs: ${group.runCount} · Latest: ${escapeHtml(new Date(group.latestUpdatedAt).toISOString())}</div></div>${warningsHtml}${detailsHtml}<div class="report-list">${rows}</div></section>`;
+	const warningItems = group.warnings.map((warning) => `<span class="badge warn">${escapeHtml(warning)}</span>`);
+	const warningsHtml = warningItems.length ? `<div class="signal-list">${limitedListHtml(warningItems, "warnings")}</div>` : "";
+	const rowItems = group.reports.map((report) => reportRowHtml(config, report));
+	const rows = limitedListHtml(rowItems, "reports");
+	const projectName = shortenPathForDisplay(group.projectName);
+	return `<section class="section-card project-group" id="project-${escapeHtml(group.viewerProjectId)}"><div class="project-heading"><h2 title="${escapeHtml(group.projectName)}">${escapeHtml(projectName)}</h2><div class="muted">Visible runs: ${group.runCount} · Latest: ${escapeHtml(new Date(group.latestUpdatedAt).toISOString())}</div></div>${warningsHtml}${detailsHtml}<div class="report-list">${rows}</div></section>`;
 }
 
 function reportListPageViewModel(config: ReportViewerConfig, query = new URLSearchParams()): ReportListPageViewModel {
@@ -266,7 +276,7 @@ function reportsHtml(config: ReportViewerConfig, query = new URLSearchParams()):
 	const viewModel = reportListPageViewModel(config, query);
 	const source = viewModel.query.source;
 	const filterForm = `<form class="panel filters" method="get" action="/reports"><label>Status <input name="status" value="${escapeHtml(viewModel.query.status)}" placeholder="DONE, FAIL, REVIEW"></label><label>Source <select name="source"><option value="">Any</option><option value="json" ${source === "json" ? "selected" : ""}>JSON</option><option value="legacy-markdown" ${source === "legacy-markdown" ? "selected" : ""}>Legacy Markdown</option></select></label><label>Task search <input name="task" value="${escapeHtml(viewModel.query.task)}" placeholder="task text"></label><label>Recent days <input name="recentDays" type="number" min="1" value="${escapeHtml(viewModel.query.recentDays)}"></label><button type="submit">Apply filters</button><a class="button secondary" href="/reports">Reset</a></form>`;
-	const groups = viewModel.groups.map((group) => projectGroupHtml(config, group)).join("");
+	const groups = limitedListHtml(viewModel.groups.map((group) => projectGroupHtml(config, group)), "project groups");
 	return page(viewModel.title, `<h1>Pi delivery reports</h1><p class="muted">Find reports by status, source, recency, or task text. Reports are grouped by project and shown as compact rows for easier scanning.</p>${deliveryProfilePanelHtml(viewModel.profilePanel)}${filterForm}<div class="project-groups">${groups || `<div class="panel">No reports found.</div>`}</div>`, config);
 }
 
@@ -278,11 +288,43 @@ function formatUsageCost(value: unknown): string {
 	return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(4)}` : "unavailable";
 }
 
+const GENERATED_ROW_LIMIT = 8;
+
+function limitedListHtml(items: string[], label: string): string {
+	if (items.length <= GENERATED_ROW_LIMIT) return items.join("");
+	const visible = items.slice(0, GENERATED_ROW_LIMIT).join("");
+	const hidden = items.slice(GENERATED_ROW_LIMIT).join("");
+	return `${visible}<details class="overflow-details"><summary class="show-all-summary">Show all ${items.length} ${escapeHtml(label)}</summary><div>${hidden}</div></details>`;
+}
+
+function limitedListItemsHtml(items: string[], label: string): string {
+	if (items.length <= GENERATED_ROW_LIMIT) return items.join("");
+	const visible = items.slice(0, GENERATED_ROW_LIMIT).join("");
+	const hidden = items.slice(GENERATED_ROW_LIMIT).join("");
+	return `${visible}<li class="overflow-row"><details class="overflow-details"><summary class="show-all-summary">Show all ${items.length} ${escapeHtml(label)}</summary><ul>${hidden}</ul></details></li>`;
+}
+
+function limitedTableRowsHtml(rows: string[], columnCount: number, label: string): string {
+	if (rows.length <= GENERATED_ROW_LIMIT) return rows.join("");
+	const visible = rows.slice(0, GENERATED_ROW_LIMIT).join("");
+	const hidden = rows.slice(GENERATED_ROW_LIMIT).join("");
+	return `${visible}<tr class="overflow-row"><td colspan="${columnCount}"><details class="overflow-details"><summary class="show-all-summary">Show all ${rows.length} ${escapeHtml(label)}</summary><div class="wide-table"><table><tbody>${hidden}</tbody></table></div></details></td></tr>`;
+}
+
+function limitedOrderedItemsHtml(items: string[], label: string): string {
+	if (items.length <= GENERATED_ROW_LIMIT) return items.join("");
+	const visible = items.slice(0, GENERATED_ROW_LIMIT).join("");
+	const hidden = items.slice(GENERATED_ROW_LIMIT).join("");
+	return `${visible}<li class="overflow-row"><details class="overflow-details"><summary class="show-all-summary">Show all ${items.length} ${escapeHtml(label)}</summary><ol start="${GENERATED_ROW_LIMIT + 1}">${hidden}</ol></details></li>`;
+}
+
 function usageCardsHtml(usage: UsageTotals | undefined): string {
-	return `<section id="usage-overview"><h2>Usage</h2><div class="grid"><div class="card"><div class="label">Total cost</div><div class="value">${escapeHtml(formatUsageCost(usage?.cost))}</div></div><div class="card"><div class="label">Total tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.totalTokens))}</div></div><div class="card"><div class="label">Input tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.input))}</div></div><div class="card"><div class="label">Output tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.output))}</div></div><div class="card"><div class="label">Cache read tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.cacheRead))}</div></div><div class="card"><div class="label">Cache write tokens</div><div class="value">${escapeHtml(formatUsageNumber(usage?.cacheWrite))}</div></div></div><p class="muted">Cost is shown only from total recorded session usage; cached input appears when usage records include cache read/write token fields.</p></section>`;
+	return `<section id="usage-overview"><h2>Usage</h2><div class="grid"><div class="card"><div class="label">Total cost</div><div class="value">${escapeHtml(formatUsageMetric(usage, "cost"))}</div></div><div class="card"><div class="label">Total tokens</div><div class="value">${escapeHtml(formatUsageMetric(usage, "totalTokens"))}</div></div><div class="card"><div class="label">Input tokens</div><div class="value">${escapeHtml(formatUsageMetric(usage, "input"))}</div></div><div class="card"><div class="label">Output tokens</div><div class="value">${escapeHtml(formatUsageMetric(usage, "output"))}</div></div><div class="card"><div class="label">Cache read tokens</div><div class="value">${escapeHtml(formatUsageMetric(usage, "cacheRead"))}</div></div><div class="card"><div class="label">Cache write tokens</div><div class="value">${escapeHtml(formatUsageMetric(usage, "cacheWrite"))}</div></div></div><p class="muted">Cost is shown only from total recorded session usage; cached input appears when usage records include cache read/write token fields.</p></section>`;
 }
 
 type UsageBreakdownMetric = "totalTokens" | "input" | "output" | "cost";
+
+type UsageMetricMeasurement = Record<UsageBreakdownMetric, boolean>;
 
 interface UsageBreakdownRow {
 	phase: string;
@@ -294,6 +336,7 @@ interface UsageBreakdownRow {
 	cacheWrite: number;
 	totalTokens: number;
 	cost: number;
+	measured: UsageMetricMeasurement;
 }
 
 interface UsagePhaseSummary {
@@ -304,6 +347,7 @@ interface UsagePhaseSummary {
 	cacheWrite: number;
 	totalTokens: number;
 	cost: number;
+	measured: UsageMetricMeasurement;
 }
 
 const USAGE_BREAKDOWN_COLORS = ["#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#7c3aed", "#0891b2", "#db2777"];
@@ -314,24 +358,34 @@ const USAGE_METRIC_LABELS: Record<UsageBreakdownMetric, string> = {
 	cost: "Cost",
 };
 
+type UsageMetricRow = Pick<UsageBreakdownRow, UsageBreakdownMetric | "measured">;
+
 function usageNumber(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function usageMetricValue(row: Pick<UsageBreakdownRow, UsageBreakdownMetric>, metric: UsageBreakdownMetric): number {
-	return usageNumber(row[metric]);
+function usageMetricValue(row: UsageMetricRow, metric: UsageBreakdownMetric): number {
+	return row.measured[metric] ? usageNumber(row[metric]) : 0;
+}
+
+function formatUsageBreakdownMetric(row: UsageMetricRow, metric: UsageBreakdownMetric): string {
+	if (!row.measured[metric]) return "unavailable";
+	if (metric === "cost") return formatUsageCost(row.cost);
+	return formatUsageNumber(metric === "totalTokens" ? row.totalTokens : row[metric]);
 }
 
 function usageForStep(step: DeliveryReportStep): UsageBreakdownRow | undefined {
 	const usage = step.usageDelta;
-	if (!usage) return undefined;
+	if (!usage || step.usageAttribution === "unavailable") return undefined;
+	const measured = usageMetricMeasurements(usage, step.usageAttribution);
+	if (!Object.values(measured).some(Boolean)) return undefined;
 	const input = usageNumber(usage.input);
 	const output = usageNumber(usage.output);
 	const cacheRead = usageNumber(usage.cacheRead);
 	const cacheWrite = usageNumber(usage.cacheWrite);
-	const totalTokens = usageNumber(usage.totalTokens) || input + output + cacheRead + cacheWrite;
+	const componentTotal = input + output + cacheRead + cacheWrite;
+	const totalTokens = usageNumber(usage.totalTokens) || componentTotal;
 	const cost = usageNumber(usage.cost);
-	if (!totalTokens && !cost) return undefined;
 	return {
 		phase: stepPhase(step) || "UNKNOWN",
 		attemptLabel: stepArtifactLabel(step),
@@ -342,19 +396,21 @@ function usageForStep(step: DeliveryReportStep): UsageBreakdownRow | undefined {
 		cacheWrite,
 		totalTokens,
 		cost,
+		measured,
 	};
 }
 
 function usageRowFromTotals(phase: string, attemptLabel: string, agent: string, usage: UsageTotals | null | undefined): UsageBreakdownRow | undefined {
 	if (!usage) return undefined;
+	const measured = usageMetricMeasurements(usage);
+	if (!Object.values(measured).some(Boolean)) return undefined;
 	const input = usageNumber(usage.input);
 	const output = usageNumber(usage.output);
 	const cacheRead = usageNumber(usage.cacheRead);
 	const cacheWrite = usageNumber(usage.cacheWrite);
 	const totalTokens = usageNumber(usage.totalTokens) || input + output + cacheRead + cacheWrite;
 	const cost = usageNumber(usage.cost);
-	if (!totalTokens && !cost) return undefined;
-	return { phase, attemptLabel, agent, input, output, cacheRead, cacheWrite, totalTokens, cost };
+	return { phase, attemptLabel, agent, input, output, cacheRead, cacheWrite, totalTokens, cost, measured };
 }
 
 function usageStepsForBreakdown(steps: DeliveryReportStep[]): DeliveryReportStep[] {
@@ -400,13 +456,14 @@ function usageUnavailableSteps(steps: DeliveryReportStep[]): DeliveryReportStep[
 function usagePhaseSummaries(rows: UsageBreakdownRow[]): UsagePhaseSummary[] {
 	const summaries = new Map<string, UsagePhaseSummary>();
 	for (const row of rows) {
-		const existing = summaries.get(row.phase) ?? { phase: row.phase, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 };
+		const existing = summaries.get(row.phase) ?? { phase: row.phase, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, measured: { totalTokens: false, input: false, output: false, cacheRead: false, cacheWrite: false, cost: false } };
 		existing.input += row.input;
 		existing.output += row.output;
 		existing.cacheRead += row.cacheRead;
 		existing.cacheWrite += row.cacheWrite;
 		existing.totalTokens += row.totalTokens;
 		existing.cost += row.cost;
+		for (const metric of Object.keys(existing.measured) as UsageBreakdownMetric[]) existing.measured[metric] ||= row.measured[metric];
 		summaries.set(row.phase, existing);
 	}
 	return [...summaries.values()].sort((a, b) => b.totalTokens - a.totalTokens || a.phase.localeCompare(b.phase));
@@ -414,6 +471,10 @@ function usagePhaseSummaries(rows: UsageBreakdownRow[]): UsagePhaseSummary[] {
 
 function percentOf(value: number, total: number): string {
 	return total > 0 ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
+}
+
+function formatUsageMetricPercent(row: UsageMetricRow, metric: UsageBreakdownMetric, total: number): string {
+	return row.measured[metric] ? percentOf(usageMetricValue(row, metric), total) : "unavailable";
 }
 
 function pieSlices(summary: UsagePhaseSummary[], metric: UsageBreakdownMetric): string {
@@ -432,8 +493,8 @@ function usageUnavailableHtml(steps: DeliveryReportStep[]): string {
 	const unavailable = usageUnavailableSteps(steps);
 	if (!unavailable.length) return "";
 	const phases = [...new Set(unavailable.map((step) => stepPhase(step) || "UNKNOWN"))].join(", ");
-	const items = unavailable.map((step) => `<li><strong>${escapeHtml(stepArtifactLabel(step))}</strong> — ${escapeHtml(String(step.agent ?? "default"))}; no per-step usage delta recorded, so this step is excluded from chart totals.</li>`).join("");
-	return `<details class="usage-unavailable" open><summary>Usage unavailable for recorded steps: ${escapeHtml(phases)}</summary><p class="muted">These phases still consume tokens, but this report does not contain attributable usage deltas for them. They remain visible here instead of silently disappearing from the breakdown.</p><ul>${items}</ul></details>`;
+	const items = unavailable.map((step) => `<li><strong>${escapeHtml(stepArtifactLabel(step))}</strong> — ${escapeHtml(String(step.agent ?? "default"))}; no per-step usage delta recorded, so this step is excluded from chart totals.</li>`);
+	return `<details class="usage-unavailable" open><summary>Usage unavailable for recorded steps: ${escapeHtml(phases)}</summary><p class="muted">These phases still consume tokens, but this report does not contain attributable usage deltas for them. They remain visible here instead of silently disappearing from the breakdown.</p><ul>${limitedListItemsHtml(items, "unavailable steps")}</ul></details>`;
 }
 
 function usageBreakdownHtml(steps: DeliveryReportStep[], parentOverhead?: UsageTotals | null): string {
@@ -443,32 +504,99 @@ function usageBreakdownHtml(steps: DeliveryReportStep[], parentOverhead?: UsageT
 	const summary = usagePhaseSummaries(rows);
 	const metric: UsageBreakdownMetric = "totalTokens";
 	const total = summary.reduce((sum, row) => sum + usageMetricValue(row, metric), 0);
-	const maxTokens = Math.max(...summary.map((row) => row.totalTokens), 1);
-	const phaseOptions = summary.map((row) => `<label><input type="checkbox" name="phase" value="${escapeHtml(row.phase)}" checked> ${escapeHtml(row.phase)}</label>`).join("");
+	const maxTokens = Math.max(...summary.map((row) => usageMetricValue(row, "totalTokens")), 1);
+	const phaseOptions = limitedListHtml(summary.map((row) => `<label><input type="checkbox" name="phase" value="${escapeHtml(row.phase)}" checked> ${escapeHtml(row.phase)}</label>`), "phases");
 	const metricOptions = (Object.keys(USAGE_METRIC_LABELS) as UsageBreakdownMetric[]).map((item) => `<option value="${item}" ${item === metric ? "selected" : ""}>${escapeHtml(USAGE_METRIC_LABELS[item])}</option>`).join("");
-	const legend = summary.map((row, index) => `<span class="usage-legend-item" data-phase="${escapeHtml(row.phase)}"><span class="usage-swatch" style="background:${USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length]}"></span>${escapeHtml(row.phase)} ${escapeHtml(percentOf(usageMetricValue(row, metric), total))}</span>`).join("");
-	const phaseRows = summary.map((row, index) => {
-		const tokenWidth = Math.max(2, (row.totalTokens / maxTokens) * 100);
+	const legend = summary.map((row, index) => `<span class="usage-legend-item" data-phase="${escapeHtml(row.phase)}"><span class="usage-swatch" style="background:${USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length]}"></span>${escapeHtml(row.phase)} ${escapeHtml(formatUsageMetricPercent(row, metric, total))}</span>`).join("");
+	const phaseRowItems = summary.map((row, index) => {
+		const tokenWidth = row.measured.totalTokens ? Math.max(2, (row.totalTokens / maxTokens) * 100) : 0;
 		const tokenTotal = row.totalTokens || row.input + row.output + row.cacheRead + row.cacheWrite || 1;
-		return `<tr data-phase="${escapeHtml(row.phase)}" data-totalTokens="${row.totalTokens}" data-input="${row.input}" data-output="${row.output}" data-cost="${row.cost}"><td><span class="usage-swatch" style="background:${USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length]}"></span>${escapeHtml(row.phase)}</td><td>${escapeHtml(formatUsageNumber(row.totalTokens))}</td><td>${escapeHtml(formatUsageNumber(row.input))}</td><td>${escapeHtml(formatUsageNumber(row.output))}</td><td>${escapeHtml(formatUsageCost(row.cost))}</td><td><div class="usage-stack" title="input/output/cache"><span class="usage-stack-input" style="width:${(row.input / tokenTotal) * tokenWidth}%"></span><span class="usage-stack-output" style="width:${(row.output / tokenTotal) * tokenWidth}%"></span><span class="usage-stack-cache" style="width:${((row.cacheRead + row.cacheWrite) / tokenTotal) * tokenWidth}%"></span></div></td></tr>`;
-	}).join("");
-	const offenderRows = [...rows].sort((a, b) => b.totalTokens - a.totalTokens || b.cost - a.cost).slice(0, 5).map((row, index) => `<li data-phase="${escapeHtml(row.phase)}" data-totalTokens="${row.totalTokens}" data-input="${row.input}" data-output="${row.output}" data-cost="${row.cost}"><strong>${index + 1}. ${escapeHtml(row.attemptLabel)}</strong> — ${escapeHtml(formatUsageNumber(row.totalTokens))} tokens (${escapeHtml(percentOf(row.totalTokens, rows.reduce((sum, item) => sum + item.totalTokens, 0)))}) · input ${escapeHtml(formatUsageNumber(row.input))} / output ${escapeHtml(formatUsageNumber(row.output))} · ${escapeHtml(formatUsageCost(row.cost))} · ${escapeHtml(row.agent)}</li>`).join("");
+		const tokenData = row.measured.totalTokens ? `data-totalTokens="${row.totalTokens}"` : "";
+		const costData = row.measured.cost ? `data-cost="${row.cost}"` : "";
+		return `<tr data-phase="${escapeHtml(row.phase)}" ${tokenData} ${costData}><td><span class="usage-swatch" style="background:${USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length]}"></span>${escapeHtml(row.phase)}</td><td class="numeric">${escapeHtml(formatUsageBreakdownMetric(row, "totalTokens"))}</td><td class="numeric">${escapeHtml(formatUsageBreakdownMetric(row, "input"))}</td><td class="numeric">${escapeHtml(formatUsageBreakdownMetric(row, "output"))}</td><td class="numeric">${escapeHtml(formatUsageBreakdownMetric(row, "cost"))}</td><td><div class="usage-stack" title="input/output/cache"><span class="usage-stack-input" style="width:${(row.input / tokenTotal) * tokenWidth}%"></span><span class="usage-stack-output" style="width:${(row.output / tokenTotal) * tokenWidth}%"></span><span class="usage-stack-cache" style="width:${((row.cacheRead + row.cacheWrite) / tokenTotal) * tokenWidth}%"></span></div></td></tr>`;
+	});
+	const phaseRows = limitedTableRowsHtml(phaseRowItems, 6, "phase rows");
+	const totalTokens = rows.reduce((sum, item) => sum + usageMetricValue(item, "totalTokens"), 0);
+	const offenderItems = [...rows].sort((a, b) => usageMetricValue(b, "totalTokens") - usageMetricValue(a, "totalTokens") || usageMetricValue(b, "cost") - usageMetricValue(a, "cost")).slice(0, 5).map((row, index) => {
+		const tokenSummary = row.measured.totalTokens ? `${formatUsageNumber(row.totalTokens)} tokens (${formatUsageMetricPercent(row, "totalTokens", totalTokens)})` : "unavailable token usage";
+		const detailSummary = `input ${formatUsageBreakdownMetric(row, "input")} / output ${formatUsageBreakdownMetric(row, "output")}`;
+		const costSummary = formatUsageBreakdownMetric(row, "cost");
+		const tokenData = row.measured.totalTokens ? `data-totalTokens="${row.totalTokens}"` : "";
+		const costData = row.measured.cost ? `data-cost="${row.cost}"` : "";
+		return `<li data-phase="${escapeHtml(row.phase)}" ${tokenData} ${costData}><strong>${index + 1}. ${escapeHtml(row.attemptLabel)}</strong> — ${escapeHtml(tokenSummary)} · ${escapeHtml(detailSummary)} · ${escapeHtml(costSummary)} · ${escapeHtml(row.agent)}</li>`;
+	});
+	const offenderRows = limitedListHtml(offenderItems, "token offenders");
 	const data = escapeHtml(JSON.stringify(summary.map((row, index) => ({ ...row, color: USAGE_BREAKDOWN_COLORS[index % USAGE_BREAKDOWN_COLORS.length] }))));
-	return `<section id="usage-breakdown" class="panel" data-usage-summary="${data}"><h2>Usage breakdown by phase</h2><p class="muted">Use this to identify whether delivery cost is dominated by a phase, by prompt input, by model output, or by repeated repair loops.</p><form class="filters" id="usage-breakdown-filters"><label>Metric <select name="metric">${metricOptions}</select></label><fieldset class="usage-phase-filter"><legend class="label">Phases with recorded usage</legend>${phaseOptions}</fieldset><button type="button" data-action="all">All phases</button><button type="button" data-action="none">No phases</button></form><div class="section-grid"><div class="card"><div class="label" id="usage-pie-title">${escapeHtml(USAGE_METRIC_LABELS[metric])} by phase</div><div class="usage-pie" role="img" aria-label="Pie chart of delivery usage by phase" style="background:conic-gradient(${escapeHtml(pieSlices(summary, metric))})"></div><div class="usage-legend">${legend}</div></div><div class="card"><div class="label">Top token offenders</div><ol class="usage-offenders">${offenderRows}</ol></div></div><div class="wide-table"><table id="usage-breakdown-table"><thead><tr><th>Phase</th><th>Total tokens</th><th>Input</th><th>Output</th><th>Cost</th><th>Input/output/cache bar</th></tr></thead><tbody>${phaseRows}</tbody></table></div>${unavailableHtml}<p class="muted">Stacked bars show input (blue), output (green), and cache read/write (amber) token proportions per phase. Percent labels and the pie chart update in-browser when filters change. Steps without per-step usage deltas are listed separately because they cannot be safely included in chart totals.</p>${usageBreakdownScriptHtml()}</section>`;
+	return `<section id="usage-breakdown" class="panel" data-usage-summary="${data}"><h2>Usage breakdown by phase</h2><p class="muted">Use this to identify whether delivery cost is dominated by a phase, by prompt input, by model output, or by repeated repair loops.</p><form class="filters" id="usage-breakdown-filters"><label>Metric <select name="metric">${metricOptions}</select></label><fieldset class="usage-phase-filter"><legend class="label">Phases with recorded usage</legend>${phaseOptions}</fieldset><button type="button" data-action="all">All phases</button><button type="button" data-action="none">No phases</button></form><div class="section-grid"><div class="card"><div class="label" id="usage-pie-title">${escapeHtml(USAGE_METRIC_LABELS[metric])} by phase</div><div class="usage-pie" role="img" aria-label="Pie chart of delivery usage by phase" style="background:conic-gradient(${escapeHtml(pieSlices(summary, metric))})"></div><div class="usage-legend">${legend}</div></div><div class="card"><div class="label">Top token offenders</div><ol class="usage-offenders">${offenderRows}</ol></div></div><div class="wide-table"><table id="usage-breakdown-table"><thead><tr><th>Phase</th><th class="numeric">Total tokens</th><th class="numeric">Input</th><th class="numeric">Output</th><th class="numeric">Cost</th><th>Input/output/cache bar</th></tr></thead><tbody>${phaseRows}</tbody></table></div>${unavailableHtml}<p class="muted">Stacked bars show input (blue), output (green), and cache read/write (amber) token proportions per phase. Percent labels and the pie chart update in-browser when filters change. Steps without per-step usage deltas are listed separately because they cannot be safely included in chart totals.</p>${usageBreakdownScriptHtml()}</section>`;
 }
 
 function usageBreakdownScriptHtml(): string {
-	return `<script>(()=>{const section=document.getElementById('usage-breakdown');if(!section)return;const data=JSON.parse(section.dataset.usageSummary||'[]');const form=document.getElementById('usage-breakdown-filters');const pie=section.querySelector('.usage-pie');const title=document.getElementById('usage-pie-title');const labels={totalTokens:'Total tokens',input:'Input tokens',output:'Output tokens',cost:'Cost'};function enabled(){return new Set([...form.querySelectorAll('input[name="phase"]')].filter((input)=>input.checked).map((input)=>input.value));}function fmt(value,metric){return metric==='cost'?'$'+Number(value||0).toFixed(4):Math.round(Number(value||0)).toLocaleString('en-US');}function render(){const metric=form.elements.metric.value;const phases=enabled();const visible=data.filter((row)=>phases.has(row.phase));const total=visible.reduce((sum,row)=>sum+Number(row[metric]||0),0);let cursor=0;const slices=visible.map((row)=>{const start=cursor;cursor+=total>0?Number(row[metric]||0)/total*360:0;return row.color+' '+start.toFixed(2)+'deg '+cursor.toFixed(2)+'deg';});pie.style.background='conic-gradient('+(slices.length?slices.join(', '):'#d0d5dd 0deg 360deg')+')';title.textContent=labels[metric]+' by phase';section.querySelectorAll('[data-phase]').forEach((node)=>{const show=phases.has(node.dataset.phase);node.style.display=show?'':'none';});section.querySelectorAll('.usage-legend-item').forEach((node)=>{const row=data.find((item)=>item.phase===node.dataset.phase);const pct=total>0&&row?(Number(row[metric]||0)/total*100).toFixed(1):'0.0';node.lastChild.textContent=row.phase+' '+pct+'%';});}form.addEventListener('change',render);form.querySelector('[data-action="all"]').addEventListener('click',()=>{form.querySelectorAll('input[name="phase"]').forEach((input)=>input.checked=true);render();});form.querySelector('[data-action="none"]').addEventListener('click',()=>{form.querySelectorAll('input[name="phase"]').forEach((input)=>input.checked=false);render();});render();})();</script>`;
+	return `<script>(()=>{const section=document.getElementById('usage-breakdown');if(!section)return;const data=JSON.parse(section.dataset.usageSummary||'[]');const form=document.getElementById('usage-breakdown-filters');const pie=section.querySelector('.usage-pie');const title=document.getElementById('usage-pie-title');const labels={totalTokens:'Total tokens',input:'Input tokens',output:'Output tokens',cost:'Cost'};function enabled(){return new Set([...form.querySelectorAll('input[name="phase"]')].filter((input)=>input.checked).map((input)=>input.value));}function measured(row,metric){return Boolean(row.measured&&row.measured[metric]);}function render(){const metric=form.elements.metric.value;const phases=enabled();const visible=data.filter((row)=>phases.has(row.phase));const total=visible.reduce((sum,row)=>sum+Number(row[metric]||0),0);let cursor=0;const slices=visible.map((row)=>{const start=cursor;cursor+=total>0?Number(row[metric]||0)/total*360:0;return row.color+' '+start.toFixed(2)+'deg '+cursor.toFixed(2)+'deg';});pie.style.background='conic-gradient('+(slices.length?slices.join(', '):'#d0d5dd 0deg 360deg')+')';title.textContent=labels[metric]+' by phase';section.querySelectorAll('[data-phase]').forEach((node)=>{const show=phases.has(node.dataset.phase);node.style.display=show?'':'none';});section.querySelectorAll('.usage-legend-item').forEach((node)=>{const row=data.find((item)=>item.phase===node.dataset.phase);const pct=total>0&&row&&measured(row,metric)?(Number(row[metric]||0)/total*100).toFixed(1)+'%':'unavailable';node.lastChild.textContent=row.phase+' '+pct;});}form.addEventListener('change',render);form.querySelector('[data-action="all"]').addEventListener('click',()=>{form.querySelectorAll('input[name="phase"]').forEach((input)=>input.checked=true);render();});form.querySelector('[data-action="none"]').addEventListener('click',()=>{form.querySelectorAll('input[name="phase"]').forEach((input)=>input.checked=false);render();});render();})();</script>`;
+}
+
+function validUsageRecord(usage: unknown, attribution?: string): usage is Record<string, unknown> {
+	return !!usage && typeof usage === "object" && !Array.isArray(usage) && attribution !== "unavailable";
+}
+
+function positiveUsageValue(usage: Record<string, unknown>, key: string): boolean {
+	const value = usage[key];
+	return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function usageMetricWasMeasured(usage: unknown, metric: UsageBreakdownMetric, attribution?: string): boolean {
+	if (!validUsageRecord(usage, attribution)) return false;
+	if (metric === "totalTokens" && usage.totalTokens === undefined) {
+		// Preserve the existing partial-record fallback when a total is absent;
+		// an explicit zero remains unavailable because normalized records use zero
+		// for fields that were not measured.
+		return ["input", "output", "cacheRead", "cacheWrite"].some((key) => positiveUsageValue(usage, key));
+	}
+	return positiveUsageValue(usage, metric);
+}
+
+function tokenUsageWasMeasured(usage: unknown, attribution?: string): usage is Record<string, unknown> {
+	return ["totalTokens", "input", "output", "cacheRead", "cacheWrite"].some((metric) => usageMetricWasMeasured(usage, metric as UsageBreakdownMetric, attribution));
+}
+
+function costUsageWasMeasured(usage: unknown, attribution?: string): boolean {
+	return usageMetricWasMeasured(usage, "cost", attribution);
+}
+
+function usageMetricMeasurements(usage: unknown, attribution?: string): UsageMetricMeasurement {
+	return {
+		totalTokens: usageMetricWasMeasured(usage, "totalTokens", attribution),
+		input: usageMetricWasMeasured(usage, "input", attribution),
+		output: usageMetricWasMeasured(usage, "output", attribution),
+		cacheRead: usageMetricWasMeasured(usage, "cacheRead", attribution),
+		cacheWrite: usageMetricWasMeasured(usage, "cacheWrite", attribution),
+		cost: usageMetricWasMeasured(usage, "cost", attribution),
+	};
+}
+
+function measuredUsageTotal(usage: Record<string, unknown>): number | undefined {
+	const total = typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens) ? usage.totalTokens : undefined;
+	const fields = ["input", "output", "cacheRead", "cacheWrite"];
+	const numbers = fields.map((field) => usage[field]).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+	const components = numbers.reduce((sum, value) => sum + value, 0);
+	if (total === undefined) return numbers.length ? components : undefined;
+	return total > 0 || components === 0 ? total : components;
+}
+
+function formatUsageMetric(usage: UsageTotals | undefined, metric: UsageBreakdownMetric, attribution?: string): string {
+	if (!usageMetricWasMeasured(usage, metric, attribution)) return "unavailable";
+	if (metric === "cost") return formatUsageCost(usage.cost);
+	if (metric === "totalTokens") return formatUsageNumber(measuredUsageTotal(usage));
+	return formatUsageNumber(usage[metric]);
 }
 
 function phaseTokenUsage(step: DeliveryReportStep): string {
-	return formatUsageNumber(step?.usageDelta?.totalTokens);
+	return formatUsageMetric(step?.usageDelta, "totalTokens", step.usageAttribution);
 }
 
 function phaseTokenDetail(step: DeliveryReportStep): string {
 	const usage = step?.usageDelta;
-	if (!usage) return "input unavailable / output unavailable / cache read unavailable / cache write unavailable";
-	return `input ${formatUsageNumber(usage.input)} / output ${formatUsageNumber(usage.output)} / cache read ${formatUsageNumber(usage.cacheRead)} / cache write ${formatUsageNumber(usage.cacheWrite)}`;
+	if (!tokenUsageWasMeasured(usage, step.usageAttribution)) return "input unavailable / output unavailable / cache read unavailable / cache write unavailable";
+	return `input ${formatUsageMetric(usage, "input", step.usageAttribution)} / output ${formatUsageMetric(usage, "output", step.usageAttribution)} / cache read ${formatUsageMetric(usage, "cacheRead", step.usageAttribution)} / cache write ${formatUsageMetric(usage, "cacheWrite", step.usageAttribution)}`;
 }
 
 function shortSummary(value: unknown): string {
@@ -493,8 +621,8 @@ function artifactLinksHtml(config: Pick<ReportViewerConfig, "reportRoots">, view
 	const links = refs.map((ref, index) => {
 		const label = refs.length > 1 ? `Artifact ${index + 1}` : "Open artifact/detail";
 		return `<li>${artifactLinkHtml(config, viewerReportId, ref, label)}${refs.length > 1 ? ` <code>${escapeHtml(ref)}</code>` : ""}</li>`;
-	}).join("");
-	return `<ul class="artifact-links">${links}</ul>`;
+	});
+	return `<ul class="artifact-links">${limitedListItemsHtml(links, "artifact links")}</ul>`;
 }
 
 function stepDisplaySummary(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, step: DeliveryReportStep): string {
@@ -551,24 +679,26 @@ function phaseDisplaySummaries(config: Pick<ReportViewerConfig, "reportRoots">, 
 function phaseSummariesHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: DeliveryReportStep[]): string {
 	const summaries = phaseDisplaySummaries(config, viewerReportId, steps);
 	if (!summaries.length) return `<p class="muted">No structured phase summaries are available.</p>`;
-	return `<div class="phase-summary-list">${summaries.map((summary) => {
+	const cards = summaries.map((summary) => {
 		const summaryCount = summary.summaries.length;
 		const meta = `${summary.attempts} ${summary.attempts === 1 ? "attempt" : "attempts"} · ${summaryCount} unique ${summaryCount === 1 ? "summary" : "summaries"}`;
 		const verdicts = summary.verdicts.map((verdict) => `<span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span>`).join(" ");
 		const items = summary.summaries.length
-			? `<ul>${summary.summaries.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+			? `<ul>${limitedListItemsHtml(summary.summaries.map((item) => `<li>${escapeHtml(item)}</li>`), "summaries")}</ul>`
 			: `<p class="muted">No summary recorded.</p>`;
 		return `<article class="card phase-summary-card" data-phase="${escapeHtml(summary.phase)}" data-summary-count="${summaryCount}"><h3>${escapeHtml(summary.phase)}</h3><div class="phase-summary-meta"><span class="muted">${escapeHtml(meta)}</span> ${verdicts}</div>${items}</article>`;
-	}).join("")}</div>`;
+	});
+	return `<div class="phase-summary-list">${limitedListHtml(cards, "phase summaries")}</div>`;
 }
 
 function phaseTimelineHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: DeliveryReportStep[]): string {
 	if (!steps.length) return `<p class="muted">No structured timeline is available.</p>`;
-	return `<ol class="phase-timeline" aria-label="Compact phase timeline">${steps.map((step) => {
+	const items = steps.map((step) => {
 		const verdict = stepVerdict(step, config, viewerReportId);
 		const summary = stepDisplaySummary(config, viewerReportId, step);
 		return `<li><div class="timeline-label"><strong>${escapeHtml(stepArtifactLabel(step))}</strong><span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="timeline-summary muted">${summary ? escapeHtml(summary) : "No summary"}</div></li>`;
-	}).join("")}</ol>`;
+	});
+	return `<ol class="phase-timeline" aria-label="Compact phase timeline">${limitedOrderedItemsHtml(items, "phase timeline entries")}</ol>`;
 }
 
 function outcomeSummaryHtml(config: Pick<ReportViewerConfig, "reportRoots">, report: LoadedReport, steps: DeliveryReportStep[]): string {
@@ -584,7 +714,13 @@ function outcomeSummaryHtml(config: Pick<ReportViewerConfig, "reportRoots">, rep
 				? `Outcome: ${report.status}${report.phase && report.phase !== report.status ? ` (${report.phase})` : ""}`
 				: `Outcome: ${report.status} legacy Markdown report`;
 	const detail = pendingIssue?.summary ?? latestSummary ?? reportBrief(config, report);
-	return `<section id="outcome-summary" class="panel outcome-summary"><h2>Outcome summary</h2><p class="outcome-line"><strong>${escapeHtml(headline)}</strong>${detail ? ` — ${escapeHtml(shortSummary(detail))}` : ""}</p><div class="signal-list"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span><span class="badge">${escapeHtml(steps.length ? `${steps.length} phase steps` : "No phase steps")}</span>${failedQualitySteps.length ? `<span class="badge bad">${failedQualitySteps.length} failed quality gate${failedQualitySteps.length === 1 ? "" : "s"}</span>` : `<span class="badge ok">No failed quality gates</span>`}</div></section>`;
+	const reportUsage = report.structuredReport?.usage;
+	const usage = reportUsage?.sinceDeliveryStart;
+	const cost = costUsageWasMeasured(usage, reportUsage?.attribution) ? formatUsageCost(usage.cost) : "unavailable";
+	const implementationAttempts = steps.filter((step) => stepPhase(step) === "IMPLEMENT").length;
+	const repairRounds = Math.max(0, implementationAttempts - 1);
+	const pendingLabel = pendingIssue ? `${String(pendingIssue.source ?? "issue")} decision required` : "none";
+	return `<section id="outcome-summary" class="panel outcome-summary"><h2>Outcome summary</h2><p class="outcome-line"><strong>${escapeHtml(headline)}</strong>${detail ? ` — ${escapeHtml(shortSummary(detail))}` : ""}</p><div class="outcome-metrics"><div><span class="label">Cost</span><strong>${escapeHtml(cost)}</strong></div><div><span class="label">Repair rounds</span><strong>${repairRounds}</strong></div><div><span class="label">Pending decisions</span><strong>${escapeHtml(pendingLabel)}</strong></div></div><div class="signal-list"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span><span class="badge">${escapeHtml(steps.length ? `${steps.length} phase steps` : "No phase steps")}</span>${failedQualitySteps.length ? `<span class="badge bad">${failedQualitySteps.length} failed quality gate${failedQualitySteps.length === 1 ? "" : "s"}</span>` : `<span class="badge ok">No failed quality gates</span>`}</div></section>`;
 }
 
 function pendingIssueSummaryHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, pendingIssue: unknown): string {
@@ -597,8 +733,8 @@ function pendingIssueSummaryHtml(config: Pick<ReportViewerConfig, "reportRoots">
 }
 
 function attentionFollowUpsHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, acceptedRisks: unknown[], pendingIssue: unknown, improvements: RetroImprovement[], retroArtifact: { path: string } | undefined, retroCandidates: RetroCandidate[], steps: DeliveryReportStep[]): string {
-	const risksHtml = acceptedRisks.length ? `<ul>${acceptedRisks.map((risk: unknown) => `<li>${escapeHtml(String(risk))}</li>`).join("")}</ul>` : `<p class="muted">No accepted risks recorded.</p>`;
-	const improvementsHtml = improvements.length ? `<ul>${improvements.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> <span class="badge ${badgeClass(item.status)}">${escapeHtml(item.status)}</span><div class="muted">${escapeHtml(item.description)}</div></li>`).join("")}</ul>` : `<p class="muted">No app-owned retro improvements saved yet.</p>`;
+	const risksHtml = acceptedRisks.length ? `<ul>${limitedListItemsHtml(acceptedRisks.map((risk: unknown) => `<li>${escapeHtml(String(risk))}</li>`), "accepted risks")}</ul>` : `<p class="muted">No accepted risks recorded.</p>`;
+	const improvementsHtml = improvements.length ? `<ul>${limitedListItemsHtml(improvements.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> <span class="badge ${badgeClass(item.status)}">${escapeHtml(item.status)}</span><div class="muted">${escapeHtml(item.description)}</div></li>`), "improvements")}</ul>` : `<p class="muted">No app-owned retro improvements saved yet.</p>`;
 	const retroCandidatesHtml = retroArtifact && retroCandidates.length ? retroCandidateHtml(viewerReportId, retroArtifact.path, retroCandidates) : `<p class="muted">No unsaved retro candidate rows found.</p>`;
 	const retroLink = retroArtifact ? `<p>${artifactLinkHtml(config, viewerReportId, retroArtifact.path, "Open retro artifact")}</p>` : `<p class="muted">No retro artifact found.</p>`;
 	return `<section id="attention-follow-ups" class="panel"><h2>Attention and follow-ups</h2><div class="attention-grid"><div class="attention-card"><h3>Failures and repairs</h3>${failureRepairHtml(config, viewerReportId, steps)}</div><div class="attention-card"><h3>Pending issue</h3>${pendingIssueSummaryHtml(config, viewerReportId, pendingIssue)}</div><div class="attention-card"><h3>Retro / follow-ups</h3>${retroLink}${improvementsHtml}</div><div class="attention-card"><h3>Accepted risks</h3>${risksHtml}</div></div>${retroCandidatesHtml}</section>`;
@@ -607,7 +743,7 @@ function attentionFollowUpsHtml(config: Pick<ReportViewerConfig, "reportRoots">,
 function phaseStepCardHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, step: DeliveryReportStep): string {
 	const verdict = stepVerdict(step, config, viewerReportId);
 	const summary = stepDisplaySummary(config, viewerReportId, step);
-	return `<article class="phase-card"><div><strong>${escapeHtml(stepArtifactLabel(step))}</strong> <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="muted">Agent: ${escapeHtml(String(step.agent ?? "default"))}</div><div class="summary">${summary ? escapeHtml(summary) : `<span class="muted">No summary recorded.</span>`}</div><div class="muted">Tokens: ${escapeHtml(phaseTokenUsage(step))}</div><div class="muted">${escapeHtml(phaseTokenDetail(step))}</div>${artifactLinksHtml(config, viewerReportId, step?.artifact)}</article>`;
+	return `<article class="phase-card"><div><strong>${escapeHtml(stepArtifactLabel(step))}</strong> <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span></div><div class="muted">Agent: <span class="identifier">${escapeHtml(String(step.agent ?? "default"))}</span></div><div class="summary">${summary ? escapeHtml(summary) : `<span class="muted">No summary recorded.</span>`}</div><div class="muted usage-number">Tokens: ${escapeHtml(phaseTokenUsage(step))}</div><div class="muted">${escapeHtml(phaseTokenDetail(step))}</div>${artifactLinksHtml(config, viewerReportId, step?.artifact)}</article>`;
 }
 
 function phaseJourneyHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: DeliveryReportStep[]): string {
@@ -619,21 +755,23 @@ function phaseJourneyHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewe
 		existing.push(step);
 		groupedSteps.set(phase, existing);
 	}
-	const groups = [...groupedSteps.entries()].map(([phase, phaseSteps]) => {
+	const groups = limitedListHtml([...groupedSteps.entries()].map(([phase, phaseSteps]) => {
 		const repairNote = phaseSteps.length > 1 ? `<p class="muted">Repair loop: ${phaseSteps.length} attempts recorded.</p>` : "";
-		return `<section class="section-card phase-group"><h3>${escapeHtml(phase)} attempts (${phaseSteps.length})</h3>${repairNote}<div class="phase-grid">${phaseSteps.map((step) => phaseStepCardHtml(config, viewerReportId, step)).join("")}</div></section>`;
-	}).join("");
-	return `${phaseTimelineHtml(config, viewerReportId, steps)}<details><summary>Phase attempt details</summary><div class="phase-groups">${groups}</div></details>`;
+		const cards = limitedListHtml(phaseSteps.map((step) => phaseStepCardHtml(config, viewerReportId, step)), "phase attempts");
+		return `<section class="section-card phase-group"><h3>${escapeHtml(phase)} attempts (${phaseSteps.length})</h3>${repairNote}<div class="phase-grid">${cards}</div></section>`;
+	}), "phase groups");
+	return `${phaseTimelineHtml(config, viewerReportId, steps)}<details class="phase-attempt-details"><summary>Phase attempt details</summary><div class="phase-groups">${groups}</div></details>`;
 }
 
 function failureRepairHtml(config: Pick<ReportViewerConfig, "reportRoots">, viewerReportId: string, steps: DeliveryReportStep[]): string {
 	const failures = steps.filter((step) => stepVerdict(step, config, viewerReportId).includes("FAIL") || String(step.summary ?? "").toLowerCase().includes("repair"));
 	if (!failures.length) return `<p class="muted">No failed verification/review or repair loop is recorded.</p>`;
-	return `<ul>${failures.map((step) => {
+	const items = failures.map((step) => {
 		const verdict = stepVerdict(step, config, viewerReportId);
 		const summary = stepDisplaySummary(config, viewerReportId, step);
 		return `<li><strong>${escapeHtml(stepArtifactLabel(step))}</strong>: <span class="badge ${badgeClass(verdict)}">${escapeHtml(verdict)}</span> ${escapeHtml(summary)}</li>`;
-	}).join("")}</ul>`;
+	});
+	return `<ul>${limitedListItemsHtml(items, "failure and repair entries")}</ul>`;
 }
 
 function reportDetailPageViewModel(config: ReportViewerConfig, viewerReportId: string): ReportDetailPageViewModel {
@@ -647,19 +785,20 @@ function reportDetailPageViewModel(config: ReportViewerConfig, viewerReportId: s
 function reportHtml(config: ReportViewerConfig, viewerReportId: string): string {
 	const viewModel = reportDetailPageViewModel(config, viewerReportId);
 	const { report, steps, usage, displayUsage, acceptedRisks, pendingIssue, improvements, retroArtifact, retroCandidates } = viewModel;
-	const artifacts = report.artifacts.map((artifact) => `<tr><td>${artifactLinkHtml(config, viewerReportId, artifact.path, artifact.label)}</td><td><code>${escapeHtml(artifact.path)}</code></td></tr>`).join("");
+	const artifactRows = report.artifacts.map((artifact) => `<tr><td>${artifactLinkHtml(config, viewerReportId, artifact.path, artifact.label)}</td><td><code class="path" title="${escapeHtml(artifact.path)}">${escapeHtml(shortenPathForDisplay(artifact.path))}</code></td></tr>`);
+	const artifacts = limitedTableRowsHtml(artifactRows, 2, "artifacts");
 	const sourceNote = report.source === "json"
 		? `<p><span class="badge ok">Structured JSON source</span> <span class="muted">Rendered from <code>delivery-report.json</code>; raw JSON stays collapsed below.</span></p>`
 		: `<div class="panel"><span class="badge warn">Legacy Markdown source</span><p class="muted">This run does not have <code>delivery-report.json</code>, so only limited metadata is available.</p></div>`;
-	const cards = `<section id="overview"><h2>Overview</h2><div class="grid"><div class="card"><div class="label">Status</div><div class="value"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span></div></div><div class="card"><div class="label">Phase</div><div class="value">${escapeHtml(report.phase ?? "—")}</div></div><div class="card"><div class="label">Source</div><div class="value">${escapeHtml(report.source === "json" ? "JSON" : "Markdown")}</div></div><div class="card"><div class="label">Updated</div><div class="value">${escapeHtml(new Date(report.updatedAt).toLocaleString())}</div></div></div><div class="panel"><div class="label">Artifact directory</div><code>${escapeHtml(report.artifactDir)}</code></div></section>`;
+	const cards = `<section id="overview"><h2>Overview</h2><div class="grid"><div class="card"><div class="label">Status</div><div class="value"><span class="badge ${badgeClass(report.status)}">${escapeHtml(report.status)}</span></div></div><div class="card"><div class="label">Phase</div><div class="value">${escapeHtml(report.phase ?? "—")}</div></div><div class="card"><div class="label">Source</div><div class="value">${escapeHtml(report.source === "json" ? "JSON" : "Markdown")}</div></div><div class="card"><div class="label">Updated</div><div class="value">${escapeHtml(new Date(report.updatedAt).toLocaleString())}</div></div></div><div class="panel"><div class="label">Artifact directory</div><code class="path" title="${escapeHtml(report.artifactDir)}">${escapeHtml(shortenPathForDisplay(report.artifactDir))}</code></div></section>`;
 	const usageHtml = usage ? `<pre>${escapeHtml(JSON.stringify(usage, null, 2))}</pre>` : `<p class="muted">No structured usage data.</p>`;
 	const pendingRawHtml = pendingIssue ? `<pre>${escapeHtml(JSON.stringify(pendingIssue, null, 2))}</pre>` : `<p class="muted">No pending issue.</p>`;
-	const fullTaskDetails = viewModel.fullTask ? `<details class="full-task"><summary>Full delivery task</summary><p>${escapeHtml(viewModel.fullTask)}</p></details>` : "";
+	const fullTaskDetails = report.task ? `<details class="full-task"><summary>Full delivery task</summary><p class="prose">${escapeHtml(report.task)}</p></details>` : "";
 	const structuredDisplay = `<section id="phase-summaries"><h2>Phase summaries</h2>${phaseSummariesHtml(config, viewerReportId, steps)}</section><section id="phase-journey"><h2>Compact phase timeline</h2>${phaseJourneyHtml(config, viewerReportId, steps)}</section>`;
 	const artifactsHtml = artifacts
 		? `<div class="wide-table"><table class="artifact-table"><thead><tr><th>Artifact</th><th>Path</th></tr></thead><tbody>${artifacts}</tbody></table></div>`
 		: `<p class="muted">No artifacts found.</p>`;
-	return page(report.task, `<p><a href="/reports">← Reports</a></p><h1 title="${escapeHtml(report.task)}">${escapeHtml(viewModel.title)}</h1>${fullTaskDetails}${sourceNote}${outcomeSummaryHtml(config, report, steps)}${cards}${usageCardsHtml(displayUsage)}${usageBreakdownHtml(steps, report.structuredReport?.usage?.parentOverhead)}${structuredDisplay}${attentionFollowUpsHtml(config, viewerReportId, acceptedRisks, pendingIssue, improvements, retroArtifact, retroCandidates, steps)}<section id="artifacts"><h2>Artifacts</h2>${artifactsHtml}</section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Pending issue JSON</summary>${pendingRawHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
+	return page(viewModel.title, `<p><a href="/reports">← Reports</a></p><h1>${escapeHtml(viewModel.title)}</h1>${fullTaskDetails}${sourceNote}${outcomeSummaryHtml(config, report, steps)}${cards}${usageCardsHtml(displayUsage)}${usageBreakdownHtml(steps, report.structuredReport?.usage?.parentOverhead)}${structuredDisplay}${attentionFollowUpsHtml(config, viewerReportId, acceptedRisks, pendingIssue, improvements, retroArtifact, retroCandidates, steps)}<section id="artifacts"><h2>Artifacts</h2>${artifactsHtml}</section><section id="debug-details"><h2>Debug details</h2><details><summary>Usage JSON</summary>${usageHtml}</details><details><summary>Pending issue JSON</summary>${pendingRawHtml}</details><details><summary>Summary Markdown</summary>${report.summaryHtml ?? `<p class="muted">No Markdown summary found.</p>`}</details><details><summary>Raw structured JSON</summary><pre>${escapeHtml(JSON.stringify(report.structuredReport ?? null, null, 2))}</pre></details></section>`, config);
 }
 
 function sectionBodyHtml(body: string): string {
@@ -669,7 +808,8 @@ function sectionBodyHtml(body: string): string {
 
 function structuredSectionsHtml(parsed: ParsedArtifact): string {
 	if (!parsed.sections.length) return "";
-	return `<div class="artifact-sections">${parsed.sections.map((section) => `<article class="section-card"><h2>${escapeHtml(section.heading)}</h2>${sectionBodyHtml(section.body)}</article>`).join("")}</div>`;
+	const sections = parsed.sections.map((section) => `<article class="section-card"><h2 title="${escapeHtml(section.heading)}">${escapeHtml(shortenPathForDisplay(section.heading))}</h2>${sectionBodyHtml(section.body)}</article>`);
+	return `<div class="artifact-sections">${limitedListHtml(sections, "artifact sections")}</div>`;
 }
 
 function sourceEvidenceHtml(viewerReportId: string, evidence: string): string {
@@ -693,7 +833,7 @@ function sourceEvidenceHtml(viewerReportId: string, evidence: string): string {
 
 function retroCandidateHtml(viewerReportId: string, artifactPath: string, candidates: RetroCandidate[]): string {
 	if (!candidates.length) return "";
-	const buttons = candidates.map((candidate) => {
+	const buttonItems = candidates.map((candidate) => {
 		const payload = {
 			title: candidate.title,
 			description: candidate.suggestedAction,
@@ -702,8 +842,8 @@ function retroCandidateHtml(viewerReportId: string, artifactPath: string, candid
 			sourceText: candidate.sourceText,
 		};
 		return `<article class="phase-card"><div><strong>${escapeHtml(candidate.title)}</strong> <span class="badge ${badgeClass(candidate.severity)}">${escapeHtml(candidate.severity)}</span></div><p>${escapeHtml(candidate.suggestedAction)}</p><div class="muted">Evidence: ${sourceEvidenceHtml(viewerReportId, candidate.sourceEvidence)}</div><div class="candidate-actions"><button class="create-improvement" data-report="${escapeHtml(viewerReportId)}" data-payload="${escapeHtml(JSON.stringify(payload))}">Create improvement</button></div></article>`;
-	}).join("");
-	return `<section id="retro-candidates"><h2>Actionable improvement candidates</h2><div class="phase-grid">${buttons}</div><script>document.querySelectorAll('.create-improvement').forEach((button)=>button.addEventListener('click',async()=>{const token=document.querySelector('meta[name="report-viewer-csrf-token"]').content;const report=button.getAttribute('data-report');const payload=JSON.parse(button.getAttribute('data-payload'));button.disabled=true;const response=await fetch('/api/reports/'+encodeURIComponent(report)+'/improvements',{method:'POST',headers:{'content-type':'application/json','x-report-viewer-token':token},body:JSON.stringify(payload)});button.textContent=response.ok?'Improvement saved':'Save failed';}));</script></section>`;
+	});
+	return `<section id="retro-candidates"><h2>Actionable improvement candidates</h2><div class="phase-grid">${limitedListHtml(buttonItems, "improvement candidates")}</div><script>document.querySelectorAll('.create-improvement').forEach((button)=>button.addEventListener('click',async()=>{const token=document.querySelector('meta[name="report-viewer-csrf-token"]').content;const report=button.getAttribute('data-report');const payload=JSON.parse(button.getAttribute('data-payload'));button.disabled=true;const response=await fetch('/api/reports/'+encodeURIComponent(report)+'/improvements',{method:'POST',headers:{'content-type':'application/json','x-report-viewer-token':token},body:JSON.stringify(payload)});button.textContent=response.ok?'Improvement saved':'Save failed';}));</script></section>`;
 }
 
 function artifactPageViewModel(config: ReportViewerConfig, viewerReportId: string, artifactPath: string) {
@@ -722,5 +862,5 @@ function artifactHtml(config: ReportViewerConfig, viewerReportId: string, artifa
 	const resultHeader = parsed.result ? `<span class="badge ${badgeClass(parsed.result)}">${escapeHtml(parsed.result)}</span>` : `<span class="badge warn">unparsed</span>`;
 	const note = parsed.isContract ? "" : `<div class="panel structured-note"><strong>Structured parsing unavailable for this artifact.</strong><p class="muted">Showing best-effort sections and raw Markdown fallback.</p></div>`;
 	const structured = parsed.sections.length ? structuredSectionsHtml(parsed) : renderMarkdownSafe(viewModel.text);
-	return page(viewModel.title, `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><h1>${escapeHtml(viewModel.title)} ${resultHeader}</h1><p><code>${escapeHtml(viewModel.path)}</code></p>${note}${retroCandidateHtml(viewerReportId, artifactPath, parsed.retroCandidates)}${structured}<details><summary>Raw Markdown</summary>${renderMarkdownSafe(viewModel.text)}</details>`, config);
+	return page(viewModel.title, `<p><a href="/reports/${encodeURIComponent(viewerReportId)}">← Report</a></p><h1>${escapeHtml(viewModel.title)} ${resultHeader}</h1><p><code class="path" title="${escapeHtml(viewModel.path)}">${escapeHtml(shortenPathForDisplay(viewModel.path))}</code></p>${note}${retroCandidateHtml(viewerReportId, artifactPath, parsed.retroCandidates)}${structured}<details><summary>Raw Markdown</summary>${renderMarkdownSafe(viewModel.text)}</details>`, config);
 }

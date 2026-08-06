@@ -179,17 +179,18 @@ Readers must prefer JSON when present, fall back to the Markdown report for lega
 
 ## Markdown summary structure
 
-`00-delivery-summary.md` keeps this order:
+Current `00-delivery-summary.md` projections keep this verdict-first order:
 
 1. `# Delivery summary`
-2. task, status, artifact directory, cwd, branch, overall usage totals, and usage-attribution note
-3. `## Journey` table
-4. `## Failure overview` table
-5. `## Critical fixes for future plans / delivery`
-6. `## Usage`
-7. `## Phase counts`
+2. `## Outcome` — status, target, branch, known merge-request/commit references, repair rounds, cost, pending decisions, and a one-line result
+3. Failure/repair narrative and the `## Journey` table
+4. `## Appendix` — the complete delivery brief, usage totals, attribution notes, phase counts, and step accounting
 
-The journey table columns remain `#`, `Phase`, `Agent`, `Model`, `Verdict`, `Token usage`, and `Detail`. The failure table columns remain `Failed step`, `Why it failed`, `Repair action`, and `Detail`. Legacy history-only runs must continue to render in this structure.
+The Journey table columns are `#`, `Phase`, `Attempt`, `Verdict`, and `Artifact`; the artifact link is owned by that table. The Appendix retains the historical agent/model/token accounting without repeating artifact links. Missing usage is `unavailable`, and narrative rows without a complete sentence are omitted. The stable projection details and unavailable-usage policy are documented in [docs/summary-output.md](docs/summary-output.md).
+
+### Historical pre-PPE-004 baseline
+
+Readers of legacy history-only summaries may encounter the former order: task/status/path and usage metadata, then `## Journey`, `## Failure overview`, `## Critical fixes for future plans / delivery`, `## Usage`, and `## Phase counts`. Its Journey columns were `#`, `Phase`, `Agent`, `Model`, `Verdict`, `Token usage`, and `Detail`; its failure columns were `Failed step`, `Why it failed`, `Repair action`, and `Detail`. That historical order and those columns remain readable for legacy runs, but do not constrain current summaries.
 
 ## Bounded verification and review behavior
 

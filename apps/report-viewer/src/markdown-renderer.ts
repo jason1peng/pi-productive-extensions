@@ -20,12 +20,23 @@ function isTableSeparator(line: string): boolean {
 	return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 }
 
+const MARKDOWN_ROW_LIMIT = 8;
+
+function renderTableRows(rows: string[]): string {
+	return rows.map((line) => `<tr>${splitTableRow(line).map((cell) => `<td>${renderInline(cell)}</td>`).join("")}</tr>`).join("");
+}
+
 function renderTable(rows: string[]): string {
-	const [headerLine, , ...bodyLines] = rows;
+	const headerLine = rows[0] ?? "";
+	const bodyLines = rows.slice(2);
 	const headers = splitTableRow(headerLine);
 	const headerHtml = headers.map((cell) => `<th>${renderInline(cell)}</th>`).join("");
-	const bodyHtml = bodyLines.map((line) => `<tr>${splitTableRow(line).map((cell) => `<td>${renderInline(cell)}</td>`).join("")}</tr>`).join("");
-	return `<table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`;
+	const visibleRows = bodyLines.slice(0, MARKDOWN_ROW_LIMIT);
+	const hiddenRows = bodyLines.slice(MARKDOWN_ROW_LIMIT);
+	const overflow = hiddenRows.length
+		? `<tr class="overflow-row"><td colspan="${headers.length}"><details class="overflow-details"><summary class="show-all-summary">Show all ${bodyLines.length} table rows</summary><div class="wide-table"><table><thead><tr>${headerHtml}</tr></thead><tbody>${renderTableRows(hiddenRows)}</tbody></table></div></details></td></tr>`
+		: "";
+	return `<table><thead><tr>${headerHtml}</tr></thead><tbody>${renderTableRows(visibleRows)}${overflow}</tbody></table>`;
 }
 
 export function renderMarkdownSafe(markdown: string): string {
@@ -43,7 +54,12 @@ export function renderMarkdownSafe(markdown: string): string {
 	};
 	const flushList = () => {
 		if (!listItems.length || !listTag) return;
-		html.push(`<${listTag}>${listItems.map((item) => `<li>${renderInline(item)}</li>`).join("")}</${listTag}>`);
+		const visibleItems = listItems.slice(0, MARKDOWN_ROW_LIMIT).map((item) => `<li>${renderInline(item)}</li>`).join("");
+		const hiddenItems = listItems.slice(MARKDOWN_ROW_LIMIT).map((item) => `<li>${renderInline(item)}</li>`).join("");
+		const overflow = hiddenItems
+			? `<li class="overflow-row"><details class="overflow-details"><summary class="show-all-summary">Show all ${listItems.length} list items</summary><${listTag}${listTag === "ol" ? ` start="${MARKDOWN_ROW_LIMIT + 1}"` : ""}>${hiddenItems}</${listTag}></details></li>`
+			: "";
+		html.push(`<${listTag}>${visibleItems}${overflow}</${listTag}>`);
 		listItems = [];
 		listTag = undefined;
 	};

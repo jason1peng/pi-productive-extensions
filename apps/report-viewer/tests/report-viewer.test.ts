@@ -21,7 +21,7 @@ import {
 	type ReportViewerConfig,
 } from "../src/server.ts";
 import { parseArtifactContract } from "../src/artifact-contract.ts";
-import { buildReportListPageViewModel } from "../src/report-view-model.ts";
+import { buildReportListPageViewModel, compactTaskTitle, shortenPathForDisplay } from "../src/report-view-model.ts";
 import { migrateDeliveryReports } from "../scripts/migrate-delivery-reports.ts";
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
@@ -437,6 +437,37 @@ await runTest("scanReports prefers JSON and keeps IDs unique across roots", () =
 	}
 });
 
+await runTest("Markdown-only fallback reads PPE-004 Outcome and Appendix fields", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-markdown-only-ppe-004-"));
+	try {
+		const dir = projectRunDir(root, "project-a-12345678", "ppe-004-markdown-only");
+		const task = "Deliver PPE-004 report readability and preserve the full task.";
+		writeJsonReport(dir, task);
+		fs.rmSync(path.join(dir, "delivery-report.json"));
+		fs.writeFileSync(path.join(dir, "00-delivery-summary.md"), `# Delivery summary\n\n## Outcome\n\n- Status: DONE\n- Target: Deliver PPE-004 report readability.\n- Result: Delivery completed.\n\n## Appendix\n\n### Delivery brief\n\nTask:\n> ${task}\n> Authoritative source: /Users/jpeng/private/projects/ready--PPE-004.md\n`, "utf8");
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		assert.equal(summary.source, "legacy-markdown");
+		assert.equal(summary.status, "DONE");
+		assert.equal(summary.task, `${task}\nAuthoritative source: /Users/jpeng/private/projects/ready--PPE-004.md`);
+		await withServer(config, async (baseUrl) => {
+			const list = await fetch(`${baseUrl}/reports?status=DONE&task=PPE-004`);
+			assert.equal(list.status, 200);
+			const listHtml = await list.text();
+			assert.match(listHtml, /Deliver PPE-004 report readability/);
+			assert.match(listHtml, /DONE/);
+
+			const detail = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(detail.status, 200);
+			const detailHtml = await detail.text();
+			assert.match(detailHtml, /Full delivery task/);
+			assert.match(detailHtml, /Authoritative source: \/Users\/jpeng\/private\/projects\/ready--PPE-004\.md/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("groupReportsByProject groups runs by project and sorts by latest run", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-grouping-"));
 	try {
@@ -541,6 +572,16 @@ await runTest("renderMarkdownSafe supports safe basic Markdown", () => {
 	assert.match(html, /<pre><code>&lt;b&gt;x&lt;\/b&gt;<\/code><\/pre>/);
 	assert.match(html, /<table><thead><tr><th>A<\/th><th>B<\/th><\/tr><\/thead><tbody><tr><td>1<\/td><td>&lt;script&gt;bad\(\)&lt;\/script&gt;<\/td><\/tr><\/tbody><\/table>/);
 	assert.doesNotMatch(html, /<script>/);
+});
+
+await runTest("renderMarkdownSafe collapses long generated lists and tables", () => {
+	const list = Array.from({ length: 9 }, (_, index) => `- list-${index + 1}`).join("\n");
+	const table = ["| A | B |", "|---|---|", ...Array.from({ length: 9 }, (_, index) => `| ${index + 1} | row-${index + 1} |`)].join("\n");
+	const html = renderMarkdownSafe(list + "\n\n" + table);
+	assert.match(html, /Show all 9 list items/);
+	assert.match(html, /Show all 9 table rows/);
+	assert.match(html, /list-9/);
+	assert.match(html, /row-9/);
 });
 
 await runTest("artifact contract parser handles phase fixtures and legacy fallback", () => {
@@ -737,6 +778,63 @@ await runTest("report detail shows usage totals at the top and token-only phase 
 	}
 });
 
+await runTest("report detail labels unreported zero-shaped usage as unavailable", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-usage-unavailable-"));
+	try {
+		writeJsonReport(projectRunDir(root), "unreported usage task", {
+			steps: [{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified without usage evidence", startedAt: 1, usageDelta: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, assistantMessages: 1, sessionFiles: 0 }, usageAttribution: "exact" }],
+		});
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.match(html, /Tokens: unavailable/);
+			assert.match(html, /Total tokens<\/div><div class="value">unavailable/);
+			assert.match(html, /Usage unavailable for recorded steps/);
+			assert.doesNotMatch(html, /0 tokens \(exact\)/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("report detail keeps token metrics unavailable for cost-only usage", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-cost-only-usage-"));
+	try {
+		const costOnlyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0.25, assistantMessages: 1, sessionFiles: 1 };
+		writeJsonReport(projectRunDir(root), "cost-only usage task", {
+			steps: [{ id: "VERIFY-1", phase: "VERIFY", attempt: 1, agent: "fresh-verifier", status: "reported", verdict: "PASS", artifact: "02-verification.md", summary: "verified with cost only", startedAt: 1, usageDelta: costOnlyUsage, usageAttribution: "exact" }],
+			usage: {
+				currentSessionTotals: costOnlyUsage,
+				sinceDeliveryStart: costOnlyUsage,
+				attribution: "exact",
+			},
+		});
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			const usageOverview = html.slice(html.indexOf('id="usage-overview"'), html.indexOf('id="usage-breakdown"'));
+			assert.match(usageOverview, /Total cost<\/div><div class="value">\$0\.2500/);
+			for (const label of ["Total tokens", "Input tokens", "Output tokens", "Cache read tokens", "Cache write tokens"]) {
+				assert.match(usageOverview, new RegExp(`${label}<\\/div><div class="value">unavailable`));
+			}
+			assert.doesNotMatch(usageOverview, /<div class="value">0<\/div>/);
+
+			const usageBreakdown = html.slice(html.indexOf('id="usage-breakdown"'), html.indexOf('id="phase-summaries"'));
+			assert.match(usageBreakdown, /<td class="numeric">unavailable<\/td>[\\s\\S]*<td class="numeric">unavailable<\/td>[\\s\\S]*<td class="numeric">unavailable<\/td>[\\s\\S]*<td class="numeric">\$0\.2500<\/td>/);
+			assert.match(usageBreakdown, /unavailable token usage/);
+			assert.doesNotMatch(usageBreakdown, /<td class="numeric">0<\/td>|0 tokens/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 await runTest("report detail shows aggregate and individual parallel reviewer artifacts", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-parallel-review-"));
 	try {
@@ -795,6 +893,68 @@ await runTest("report list compacts long titles and exposes full task on detail"
 			const detailHtml = await detail.text();
 			assert.match(detailHtml, /Full delivery task/);
 			assert.match(detailHtml, /deliberately verbose title that should not dominate/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("titles use meaningful task sentences and hide absolute paths from the page title", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-meaningful-title-"));
+	try {
+		const task = `\n/Users/jpeng/private/projects/pi-productive-extensions/ready-plan.md\nhttps://example.com/plan\nDeliver a readable\nreport. Authoritative source: /Users/jpeng/private/projects/pi-productive-extensions/ready-plan.md`;
+		assert.equal(compactTaskTitle(task, "run-123"), "Deliver a readable report.");
+		assert.equal(compactTaskTitle('Implement the plan at "/Users/a/plan.md".', "run-123"), 'Implement the plan at "plan.md".');
+		assert.equal(compactTaskTitle('Implement the plan at "/Users/a/private projects/plan.md".', "run-123"), 'Implement the plan at "plan.md".');
+		assert.equal(compactTaskTitle("Implement the plan at /Users/a/private\\ projects/plan.md.", "run-123"), "Implement the plan at plan.md.");
+		assert.equal(compactTaskTitle("- Deliver a list-friendly title.", "run-123"), "Deliver a list-friendly title.");
+		assert.equal(compactTaskTitle("README.md\nDeliver a readable report.", "run-123"), "Deliver a readable report.");
+		assert.equal(compactTaskTitle("README.md", "run-123"), "run-123");
+		assert.equal(compactTaskTitle("/Users/jpeng/private/projects/pi-productive-extensions/ready-plan.md", "run-123"), "run-123");
+		assert.equal(shortenPathForDisplay("/Users/jpeng/private projects/report.md"), "report.md");
+		assert.equal(shortenPathForDisplay("/Users/jpeng/private/projects/pi-productive-extensions/ready-plan.md"), "ready-plan.md");
+		assert.equal(shortenPathForDisplay('Implement the plan at "/Users/a/plan.md".'), 'Implement the plan at "plan.md".');
+		assert.equal(shortenPathForDisplay('Implement the plan at "/Users/a/private projects/plan.md".'), 'Implement the plan at "plan.md".');
+		assert.equal(shortenPathForDisplay("Implement the plan at /Users/a/private\\ projects/plan.md."), "Implement the plan at plan.md.");
+		writeJsonReport(projectRunDir(root), task);
+		const config = configFor([root]);
+		const [summary] = scanReports(config);
+		await withServer(config, async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports/${encodeURIComponent(summary.viewerReportId)}`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.match(html, /<title>Deliver a readable report\.<\/title>/);
+			assert.match(html, /<h1>Deliver a readable report\.<\/h1>/);
+			assert.doesNotMatch(html, /<h1[^>]*title=/);
+			assert.match(html, /<details class="full-task"><summary>Full delivery task<\/summary><p class="prose">[\s\S]*\/Users\/jpeng\/private\/projects\/pi-productive-extensions\/ready-plan\.md/);
+			assert.match(html, /ready-plan\.md/);
+			assert.doesNotMatch(html, /<h1[^>]*\/Users\/jpeng\/private\/projects/);
+			assert.doesNotMatch(html, /prefers-color-scheme/);
+			assert.doesNotMatch(html, /color-scheme:\s*light\s+dark/);
+			assert.match(html, /@media print/);
+			assert.match(html, /\.badge\.ok::before/);
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+await runTest("project group headings shorten absolute project names while retaining the full title", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "report-viewer-project-heading-path-"));
+	try {
+		const dir = projectRunDir(root);
+		const projectMetadataPath = path.join(path.dirname(path.dirname(dir)), "project.json");
+		const projectMetadata = JSON.parse(fs.readFileSync(projectMetadataPath, "utf8"));
+		projectMetadata.name = "/Users/a/worktree";
+		fs.writeFileSync(projectMetadataPath, `${JSON.stringify(projectMetadata, null, 2)}\n`, "utf8");
+		writeJsonReport(dir, "project heading path task");
+		const config = configFor([root]);
+		await withServer(config, async (baseUrl) => {
+			const response = await fetch(`${baseUrl}/reports`);
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.match(html, /<h2 title="\/Users\/a\/worktree">worktree<\/h2>/);
+			assert.doesNotMatch(html, /<h2[^>]*>\/Users\/a\/worktree<\/h2>/);
 		});
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });

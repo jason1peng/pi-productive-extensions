@@ -103,6 +103,12 @@ interface ReportUsageSnapshot {
 	usableSinceDeliveryStart?: UsageTotals;
 	usablePhaseStepsTotal?: UsageTotals;
 	usableParentOverhead?: UsageTotals;
+	// Summary-only projections keep unavailable metrics out of Markdown without
+	// changing the structured report's historical usage fields.
+	summaryCurrentSessionTotals?: UsageTotals;
+	summarySinceDeliveryStart?: UsageTotals;
+	summaryPhaseStepsTotal?: UsageTotals;
+	summaryParentOverhead?: UsageTotals;
 	attribution: UsageAttribution;
 }
 
@@ -361,14 +367,22 @@ function formatCost(n: number): string {
 	return `$${n.toFixed(4)}`;
 }
 
+function formatMeasuredNumber(n: number): string {
+	return Number.isFinite(n) && n > 0 ? formatNumber(n) : "unavailable";
+}
+
+function formatMeasuredCost(n: number): string {
+	return Number.isFinite(n) && n > 0 ? formatCost(n) : "unavailable";
+}
+
 function formatUsage(totals: UsageTotals): string {
 	return [
-		`tokens ${formatNumber(totals.totalTokens)}`,
-		`input ${formatNumber(totals.input)}`,
-		`output ${formatNumber(totals.output)}`,
-		`cache read ${formatNumber(totals.cacheRead)}`,
-		`cache write ${formatNumber(totals.cacheWrite)}`,
-		`cost ${formatCost(totals.cost)}`,
+		`tokens ${formatMeasuredNumber(totals.totalTokens)}`,
+		`input ${formatMeasuredNumber(totals.input)}`,
+		`output ${formatMeasuredNumber(totals.output)}`,
+		`cache read ${formatMeasuredNumber(totals.cacheRead)}`,
+		`cache write ${formatMeasuredNumber(totals.cacheWrite)}`,
+		`cost ${formatMeasuredCost(totals.cost)}`,
 		`assistant messages ${formatNumber(totals.assistantMessages)}`,
 		`session files ${formatNumber(totals.sessionFiles)}`,
 	].join(" | ");
@@ -1195,6 +1209,36 @@ function finiteNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+const TOKEN_USAGE_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const;
+const MEASURED_USAGE_FIELDS = [...TOKEN_USAGE_FIELDS, "cost"] as const;
+
+function usageField(value: Partial<UsageTotals>, field: keyof UsageTotals): number | undefined {
+	return finiteNumber(value[field]);
+}
+
+/**
+ * Positive token evidence is required before a token-only usage cell is shown.
+ * Normalized usage objects intentionally contain zero defaults, so field
+ * presence alone cannot distinguish a real measurement from an assistant-only
+ * usage report.
+ */
+function usageHasMeasuredMetric(usage: Partial<UsageTotals> | undefined): boolean {
+	if (!usage) return false;
+	return TOKEN_USAGE_FIELDS.some((field) => {
+		const value = usageField(usage, field);
+		return value !== undefined && value > 0;
+	});
+}
+
+/** Positive token or cost evidence makes a summary total usable. */
+function usageHasMeasuredTotals(usage: UsageTotals | undefined): usage is UsageTotals {
+	if (!usage) return false;
+	return MEASURED_USAGE_FIELDS.some((field) => {
+		const value = usageField(usage, field);
+		return value !== undefined && value > 0;
+	});
+}
+
 function normalizeUsageTotals(value: unknown): UsageTotals | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const record = value as Partial<UsageTotals>;
@@ -1925,16 +1969,48 @@ function mdEscape(value: string | undefined): string {
 	return (value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
+/** Markdown links belong to the Journey artifact column, not projected prose. */
+function stripMarkdownLinks(value: string | undefined): string {
+	let sanitized = value ?? "";
+	let previous: string | undefined;
+	do {
+		previous = sanitized;
+		sanitized = sanitized
+			.replace(/!?\[([^\]\r\n]+)\]\((?:<[^>\r\n]*>|[^)\r\n]*)\)/g, "$1")
+			.replace(/!?\[([^\]\r\n]+)\]\[[^\]\r\n]*\]/g, "$1");
+	} while (sanitized !== previous);
+	return sanitized;
+}
+
+function mdProjectionEscape(value: string | undefined): string {
+	return mdEscape(stripMarkdownLinks(value));
+}
+
+function artifactRelativePath(state: DeliveryState, artifact: string): string {
+	return state.artifactDir && path.isAbsolute(artifact) ? path.relative(state.artifactDir, artifact) : artifact;
+}
+
+function artifactLabel(state: DeliveryState, artifact?: string): string {
+	if (!artifact) return "";
+	const relative = artifactRelativePath(state, artifact);
+	return mdEscape(path.basename(relative) || relative);
+}
+
 function artifactLink(state: DeliveryState, artifact?: string): string {
 	if (!artifact) return "";
-	const relative = state.artifactDir && path.isAbsolute(artifact) ? path.relative(state.artifactDir, artifact) : artifact;
-	const label = path.basename(relative) || relative;
-	return `[${mdEscape(label)}](${relative.replace(/ /g, "%20")})`;
+	const relative = artifactRelativePath(state, artifact);
+	return `[${artifactLabel(state, artifact)}](${relative.replace(/ /g, "%20")})`;
 }
 
 function tokenUsageCell(step: DeliveryStep): string {
-	if (!step.usageDelta || step.usageAttribution === "unavailable") return "unavailable";
-	return `${formatNumber(step.usageDelta.totalTokens)} tokens (${step.usageAttribution ?? "best-effort"})`;
+	if (!stepHasUsableUsageDelta(step) || !usageHasMeasuredMetric(step.usageDelta)) return "unavailable";
+	const usage = step.usageDelta!;
+	const totalTokens = typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens)
+		? usage.totalTokens
+		: [usage.input, usage.output, usage.cacheRead, usage.cacheWrite]
+			.filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+			.reduce((sum, value) => sum + value, 0);
+	return `${formatNumber(totalTokens)} tokens (${step.usageAttribution ?? "best-effort"})`;
 }
 
 function usageHasAssistantMessages(usage: UsageTotals | undefined): usage is UsageTotals {
@@ -2002,15 +2078,74 @@ function extractMarkdownSection(markdown: string | undefined, heading: string): 
 	return tail.slice(0, nextHeading === -1 ? undefined : nextHeading).trim();
 }
 
-function firstSentence(text: string | undefined): string {
+function narrativePeriodIsBoundary(text: string, index: number): boolean {
+	const previous = text[index - 1] ?? "";
+	const next = text[index + 1] ?? "";
+	// Numeric list markers ("1.") and decimal/version punctuation are not
+	// sentence boundaries. Treating them as boundaries cuts the narrative in
+	// the middle of the clause that follows the marker.
+	if (/\d/.test(previous) || /\d/.test(next)) return false;
+	const prefix = text.slice(0, index + 1);
+	if (/(?:\b[A-Za-z]\.){2,}$/.test(prefix) || /\b(?:e\.g|i\.e|etc|vs|mr|mrs|ms|dr|prof|fig|no|approx)\.$/i.test(prefix)) return false;
+	return true;
+}
+
+function narrativeIsPlaceholder(text: string): boolean {
+	const candidate = text.replace(/^[-*]\s+/, "").trim();
+	return /^(?:see phase summary\/artifact|no summary recorded|none)[.!?]*$/i.test(candidate);
+}
+
+function completeNarrative(text: string | undefined): string | undefined {
 	const normalized = (text ?? "").replace(/\s+/g, " ").trim();
-	if (!normalized) return "See phase summary/artifact.";
-	const match = /(.{1,220}?[.!?])\s/.exec(`${normalized} `);
-	return match?.[1] ?? truncate(normalized, 220);
+	if (!normalized) return undefined;
+	// delivery_report keeps a bounded copy of arbitrary summaries. Do not turn
+	// its terminal truncation marker into a false, complete-looking sentence;
+	// callers can try the artifact's unbounded Summary section or omit the row.
+	if (normalized.endsWith("…") || normalized.endsWith("...")) return undefined;
+	let sentenceStart = 0;
+	for (let index = 0; index < normalized.length; index += 1) {
+		const punctuation = normalized[index];
+		if (punctuation === "." && !narrativePeriodIsBoundary(normalized, index)) continue;
+		if (punctuation !== "." && punctuation !== "!" && punctuation !== "?") continue;
+		const next = normalized[index + 1];
+		if (next !== undefined && !/\s/.test(next)) continue;
+		const sentence = normalized.slice(sentenceStart, index + 1).trim();
+		if (!narrativeIsPlaceholder(sentence)) return sentence;
+		sentenceStart = index + 1;
+	}
+	const remainder = normalized.slice(sentenceStart).trim();
+	if (!remainder || narrativeIsPlaceholder(remainder)) return undefined;
+	return /[.!?]$/.test(remainder) ? remainder : `${remainder}.`;
+}
+
+function completeNarrativeCandidates(candidates: Array<string | undefined>): string | undefined {
+	for (const candidate of candidates) {
+		const narrative = completeNarrative(candidate);
+		if (narrative) return narrative;
+	}
+	return undefined;
+}
+
+function narrativeKey(value: string | undefined): string {
+	return stripMarkdownLinks(value).replace(/\s+/g, " ").trim().replace(/[.!?…]+$/, "").toLocaleLowerCase();
+}
+
+function narrativesMatch(left: string | undefined, right: string | undefined): boolean {
+	const leftKey = narrativeKey(left);
+	const rightKey = narrativeKey(right);
+	return Boolean(leftKey && rightKey && leftKey === rightKey);
+}
+
+function fallbackDeliveryResult(status: Phase, latest?: DeliveryStep): string {
+	if (latest && isFail(latest.verdict)) return `Delivery requires follow-up after failed ${latest.phase} attempt ${latest.attempt}.`;
+	return status === "DONE" ? "Delivery completed." : `Delivery ended in ${status.toLowerCase()} state.`;
 }
 
 function repairAfterFailure(steps: DeliveryStep[], failedStep: DeliveryStep): DeliveryStep | undefined {
-	return steps.find((step) => step.phase === "IMPLEMENT" && step.startedAt >= (failedStep.endedAt ?? failedStep.startedAt));
+	const failureTime = failedStep.endedAt ?? failedStep.startedAt;
+	return steps
+		.filter((step) => step.id !== failedStep.id && step.phase === "IMPLEMENT" && (step.startedAt > failureTime || step.attempt > failedStep.attempt))
+		.sort((a, b) => a.startedAt - b.startedAt || a.attempt - b.attempt || a.id.localeCompare(b.id))[0];
 }
 
 function deliveryStatus(state: DeliveryState): Phase {
@@ -2063,6 +2198,10 @@ function reportUsageSnapshot(state: DeliveryState, ctx: ExtensionContext): Repor
 	const usableSinceDeliveryStart = usageHasAssistantMessages(sinceDeliveryStart) ? sinceDeliveryStart : undefined;
 	const usablePhaseStepsTotal = childUsageComplete && usageHasTokensOrCost(phaseStepsTotal) ? phaseStepsTotal : undefined;
 	const usableParentOverhead = usageHasTokensOrCost(parentOverhead) ? parentOverhead : undefined;
+	const summaryCurrentSessionTotals = usageHasMeasuredTotals(currentSessionTotals) ? currentSessionTotals : undefined;
+	const summarySinceDeliveryStart = usageHasMeasuredTotals(sinceDeliveryStart) ? sinceDeliveryStart : undefined;
+	const summaryPhaseStepsTotal = childUsageComplete && usageHasMeasuredTotals(phaseStepsTotal) ? phaseStepsTotal : undefined;
+	const summaryParentOverhead = usageHasMeasuredTotals(parentOverhead) ? parentOverhead : undefined;
 	return {
 		currentSessionTotals,
 		sinceDeliveryStart,
@@ -2072,8 +2211,153 @@ function reportUsageSnapshot(state: DeliveryState, ctx: ExtensionContext): Repor
 		usableSinceDeliveryStart,
 		usablePhaseStepsTotal,
 		usableParentOverhead,
+		summaryCurrentSessionTotals,
+		summarySinceDeliveryStart,
+		summaryPhaseStepsTotal,
+		summaryParentOverhead,
 		attribution: usableCurrentSessionTotals && childUsageComplete ? "exact" : "unavailable",
 	};
+}
+
+const SUMMARY_TITLE_MAX_LENGTH = 96;
+
+function summaryTrimOuterWrappers(value: string): string {
+	let trimmed = value.trim();
+	let changed = true;
+	while (changed && trimmed.length >= 2) {
+		changed = false;
+		for (const [opening, closing] of [["\"", "\""], ["'", "'"], ["`", "`"], ["(", ")"], ["[", "]"], ["{", "}"]] as const) {
+			if (trimmed.startsWith(opening) && trimmed.endsWith(closing)) {
+				trimmed = trimmed.slice(opening.length, -closing.length).trim();
+				changed = true;
+				break;
+			}
+		}
+	}
+	return trimmed;
+}
+
+function summaryPathBasename(value: string): string {
+	const normalized = value.replace(/[\\/]+$/, "");
+	return normalized.split(/[\\/]/).at(-1) || normalized;
+}
+
+function summaryIsAbsolutePath(value: string): boolean {
+	return /^(?:\/|~[\\/]|[A-Za-z]:[\\/])/.test(value);
+}
+
+function summaryShortenPathToken(token: string): string {
+	const leading = /^[\"'`([{<]*/.exec(token)?.[0] ?? "";
+	const withoutLeading = token.slice(leading.length);
+	const trailing = /[\"'`)}\\]>.,;:!?]+$/.exec(withoutLeading)?.[0] ?? "";
+	const core = trailing ? withoutLeading.slice(0, -trailing.length) : withoutLeading;
+	if (summaryIsAbsolutePath(core)) return `${leading}${summaryPathBasename(core)}${trailing}`;
+	if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(token)) return token;
+	const prefixed = /^(.*?)([\"'`([{<]*)(\/|~[\\/]|[A-Za-z]:[\\/])/.exec(token);
+	if (!prefixed || (prefixed[1] && !/[=:]$/.test(prefixed[1]) && !prefixed[2])) return token;
+	const pathStart = prefixed[1].length + prefixed[2].length;
+	const pathWithTrailing = token.slice(pathStart);
+	const pathTrailing = /[\"'`)}\\]>.,;:!?]+$/.exec(pathWithTrailing)?.[0] ?? "";
+	const pathCore = pathTrailing ? pathWithTrailing.slice(0, -pathTrailing.length) : pathWithTrailing;
+	return summaryIsAbsolutePath(pathCore) ? `${prefixed[1]}${prefixed[2]}${summaryPathBasename(pathCore)}${pathTrailing}` : token;
+}
+
+/** Keep quoted and backslash-escaped path spans intact while splitting prose. */
+function summaryPathAwareSegments(value: string): string[] {
+	const segments: string[] = [];
+	let token = "";
+	let quote: string | undefined;
+	let escaped = false;
+	const flushToken = () => {
+		if (!token) return;
+		segments.push(token);
+		token = "";
+	};
+	const appendWhitespace = (character: string) => {
+		const previous = segments.at(-1);
+		if (previous && /^\s+$/.test(previous)) segments[segments.length - 1] = `${previous}${character}`;
+		else segments.push(character);
+	};
+	for (const character of value) {
+		if (escaped) {
+			token += character;
+			escaped = false;
+			continue;
+		}
+		if (character === "\\" && quote !== "'") {
+			token += character;
+			escaped = true;
+			continue;
+		}
+		if (quote) {
+			token += character;
+			if (character === quote) quote = undefined;
+			continue;
+		}
+		if ((character === '"' || character === "'" || character === "`") && (!token || /[=:([{<]$/.test(token))) {
+			token += character;
+			quote = character;
+			continue;
+		}
+		if (/\s/.test(character)) {
+			flushToken();
+			appendWhitespace(character);
+			continue;
+		}
+		token += character;
+	}
+	flushToken();
+	return segments;
+}
+
+function summaryShortenPaths(value: string): string {
+	return summaryPathAwareSegments(value).map((part) => /^\s+$/.test(part) ? part : summaryShortenPathToken(part)).join("");
+}
+
+function summaryIsBareRelativeFilename(value: string): boolean {
+	if (/\s/.test(value) || /[\\/]/.test(value)) return false;
+	return /^(?:\.[A-Za-z0-9][A-Za-z0-9._-]*|(?:README|LICENSE|COPYING|AUTHORS|CONTRIBUTING|CHANGELOG|MAKEFILE|DOCKERFILE|GEMFILE|RAKEFILE|PROCFILE|VAGRANTFILE|JUSTFILE|TASKFILE)(?:\.[A-Za-z0-9._-]+)?|[A-Za-z0-9_-]+\.[A-Za-z0-9][A-Za-z0-9._-]*)$/i.test(value);
+}
+
+function summaryPathOrUrlOnly(value: string): boolean {
+	const candidate = summaryTrimOuterWrappers(value.replace(/^[-*]\s+/, "")).replace(/[),.;:!?]+$/, "").trim();
+	if (!candidate || /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)/i.test(candidate)) return true;
+	if (summaryIsAbsolutePath(candidate)) return true;
+	return !/\s/.test(candidate) && (/[\\/]/.test(candidate) || summaryIsBareRelativeFilename(candidate));
+}
+
+function summaryTaskTitle(task: string | undefined, fallback = "Untitled delivery"): string {
+	const lines = String(task ?? "")
+		.split(/\r?\n/)
+		.map((line) => summaryTrimOuterWrappers(line.replace(/^[-*]\s+/, "").replace(/\s+/g, " ").trim()))
+		.filter((line) => line && !summaryPathOrUrlOnly(line));
+	const meaningful = summaryShortenPaths(lines.join(" "));
+	if (!meaningful) return fallback;
+	const sentence = completeNarrative(meaningful) ?? meaningful;
+	if (sentence.length <= SUMMARY_TITLE_MAX_LENGTH) return sentence;
+	const slice = sentence.slice(0, SUMMARY_TITLE_MAX_LENGTH - 1);
+	const boundary = slice.lastIndexOf(" ");
+	return `${slice.slice(0, boundary > 48 ? boundary : SUMMARY_TITLE_MAX_LENGTH - 1).trim()}…`;
+}
+
+function repairRoundCount(state: DeliveryState): number {
+	const explicitRounds = state.history.filter((entry) => entry.event === "auto_repair" || (entry.event === "decision" && entry.decision === "repair")).length;
+	const implementationReports = Math.max(
+		state.history.filter((entry) => entry.event === "report" && entry.phase === "IMPLEMENT").length,
+		state.steps.filter((step) => step.phase === "IMPLEMENT" && step.status === "reported").length,
+	);
+	return Math.max(explicitRounds, implementationReports > 0 ? implementationReports - 1 : 0);
+}
+
+function knownDeliveryReferences(state: DeliveryState, steps: DeliveryStep[]): string[] {
+	const closeSteps = steps.filter((step) => step.phase === "CLOSE");
+	const text = closeSteps.flatMap((step) => [step.summary ?? "", readArtifactText(step.artifact) ?? ""]).join("\n");
+	const references: string[] = [];
+	const mergeRequest = /(https?:\/\/[^\s)]+(?:merge_requests|pull|merge-request)[^\s)]*)/i.exec(text)?.[1];
+	if (mergeRequest) references.push(`Merge request: ${mergeRequest}`);
+	const commit = /\b(?:commit|sha|hash)(?:\s+(?:id|hash))?\s*[:#]?\s*([0-9a-f]{7,40})\b/i.exec(text)?.[1];
+	if (commit) references.push(`Commit: ${commit}`);
+	return references;
 }
 
 function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageSnapshot = reportUsageSnapshot(state, ctx)): string {
@@ -2094,88 +2378,151 @@ function formatJourneyReport(state: DeliveryState, ctx: ExtensionContext, usageS
 		return a.startedAt - b.startedAt || a.id.localeCompare(b.id);
 	});
 	const currentUsage = usageSnapshot.currentSessionTotals;
-	const usableCurrentUsage = usageSnapshot.usableCurrentSessionTotals;
-	const usableSinceStart = usageSnapshot.usableSinceDeliveryStart;
-	const usablePhaseStepsTotal = usageSnapshot.usablePhaseStepsTotal;
-	const usableParentOverhead = usageSnapshot.usableParentOverhead;
+	const usableCurrentUsage = usageSnapshot.summaryCurrentSessionTotals;
+	const usableSinceStart = usageSnapshot.summarySinceDeliveryStart;
+	const usablePhaseStepsTotal = usageSnapshot.summaryPhaseStepsTotal;
+	const usableParentOverhead = usageSnapshot.summaryParentOverhead;
 	const status = deliveryStatus(state);
+	const latest = [...steps].reverse().find((step) => step.status === "reported" && (step.summary?.trim() || step.artifact));
+
+	const failures = steps.filter((step) => isFail(step.verdict)).flatMap((failure) => {
+		const artifactText = readArtifactText(failure.artifact);
+		const failureReason = completeNarrativeCandidates([
+			extractMarkdownSection(artifactText, "Failure reason"),
+			extractMarkdownSection(artifactText, "Summary"),
+			failure.summary,
+		]);
+		if (!failureReason) return [];
+		const repair = repairAfterFailure(steps, failure);
+		const repairArtifactText = readArtifactText(repair?.artifact);
+		const repairAction = completeNarrativeCandidates([
+			extractMarkdownSection(repairArtifactText, "Summary"),
+			extractMarkdownSection(repairArtifactText, "Outcome"),
+			repair?.summary,
+		]) ?? (repair ? "A subsequent IMPLEMENT repair was recorded." : "No subsequent repair step was recorded.");
+		return [{
+			label: `${failure.phase} #${failure.attempt}${failure.childIndex !== undefined ? ` child ${failure.childIndex + 1}` : ""}`,
+			reason: failureReason,
+			repair: repairAction,
+			artifact: artifactLabel(state, failure.artifact) || "unavailable",
+		}];
+	});
+	const latestArtifactText = readArtifactText(latest?.artifact);
+	const candidateResult = completeNarrativeCandidates([
+		extractMarkdownSection(latestArtifactText, "Summary"),
+		extractMarkdownSection(latestArtifactText, "Outcome"),
+		latest?.summary,
+	]);
+	const fallbackResult = fallbackDeliveryResult(status, latest);
+	const result = failures.some((failure) => narrativesMatch(candidateResult, failure.reason)) ? fallbackResult : candidateResult ?? fallbackResult;
+	const references = knownDeliveryReferences(state, steps);
+	const pending = state.pendingIssue
+		? `${state.pendingIssue.source} reported ${state.pendingIssue.verdict}`
+		: "none";
 	const lines: string[] = [
 		"# Delivery summary",
 		"",
-		`Task: ${state.task ?? "<none>"}`,
-		`Status: ${status}`,
-		`Artifact directory: ${state.artifactDir ?? "<none>"}`,
-		`Cwd: ${state.cwd ?? ctx.cwd ?? "<unknown>"}`,
-		`Branch: ${state.gitBranch ?? "<not a git worktree>"}`,
-		`Overall cost: ${usableSinceStart ? formatCost(usableSinceStart.cost) : "unavailable"}`,
-		`Overall tokens: ${usableSinceStart ? formatNumber(usableSinceStart.totalTokens) : "unavailable"}`,
-		`Overall input tokens: ${usableSinceStart ? formatNumber(usableSinceStart.input) : "unavailable"}`,
-		`Overall output tokens: ${usableSinceStart ? formatNumber(usableSinceStart.output) : "unavailable"}`,
-		`Overall cache read tokens: ${usableSinceStart ? formatNumber(usableSinceStart.cacheRead) : "unavailable"}`,
-		`Overall cache write tokens: ${usableSinceStart ? formatNumber(usableSinceStart.cacheWrite) : "unavailable"}`,
-		"Usage attribution: exact child totals come from pi-subagents metadata; unresolved children make parent overhead unavailable.",
+		"## Outcome",
 		"",
-		"## Journey",
-		"",
-		"| # | Phase | Agent | Model | Verdict | Token usage | Detail |",
-		"|---|---|---|---|---|---:|---|",
+		`- Status: ${status}`,
+		`- Target: ${mdProjectionEscape(summaryTaskTitle(state.task, path.basename(state.artifactDir ?? "") || "Untitled delivery"))}`,
+		`- Branch: ${mdProjectionEscape(state.gitBranch ?? "unavailable")}`,
+		...references.map((reference) => `- ${reference}`),
+		`- Repair rounds: ${repairRoundCount(state)}`,
+		`- Cost: ${usableSinceStart ? formatMeasuredCost(usableSinceStart.cost) : "unavailable"}`,
+		`- Pending decisions: ${mdProjectionEscape(pending)}`,
+		`- Result: ${mdProjectionEscape(result)}`,
 	];
-	if (!steps.length) {
-		lines.push("| - | - | - | - | - | unavailable | No phase reports recorded yet. |");
-	} else {
-		let displayIndex = 1;
-		for (const step of steps) {
-			const rowNumber = step.childCount && step.childIndex !== undefined
-				? `${displayIndex}${String.fromCharCode(97 + step.childIndex)}`
-				: String(displayIndex);
-			lines.push(`| ${rowNumber} | ${step.phase}${step.attempt > 1 ? ` #${step.attempt}` : ""} | ${mdEscape(step.agent || "unknown")} | ${mdEscape(step.model || "default")} | ${mdEscape(step.verdict || (step.status === "planned" ? "planned" : "unavailable"))} | ${tokenUsageCell(step)} | ${artifactLink(state, step.artifact) || mdEscape(firstSentence(step.summary))} |`);
-			if (!step.childCount || step.childIndex === undefined || step.childIndex === step.childCount - 1) displayIndex += 1;
-		}
-	}
-
-	lines.push("", "## Failure overview", "", "| Failed step | Why it failed | Repair action | Detail |", "|---|---|---|---|");
-	const failures = steps.filter((step) => isFail(step.verdict));
-	if (!failures.length) {
-		lines.push("| - | No failed verifier/reviewer/close steps recorded. | - | - |");
-	} else {
-		for (const failure of failures) {
-			const artifactText = readArtifactText(failure.artifact);
-			const failureReason = firstSentence(extractMarkdownSection(artifactText, "Failure reason") ?? failure.summary);
-			const repair = repairAfterFailure(steps, failure);
-			const repairAction = repair ? firstSentence(repair.summary) : "No subsequent repair step recorded.";
-			lines.push(`| ${failure.phase} #${failure.attempt}${failure.childIndex !== undefined ? ` child ${failure.childIndex + 1}` : ""} | ${mdEscape(failureReason)} | ${mdEscape(repairAction)} | ${artifactLink(state, failure.artifact)} |`);
-		}
+	if (failures.length) {
+		lines.push("", "## Failure overview", "", "| Failed step | Why it failed | Repair action | Detail |", "|---|---|---|---|", ...failures.map((failure) => `| ${mdProjectionEscape(failure.label)} | ${mdProjectionEscape(failure.reason)} | ${mdProjectionEscape(failure.repair)} | ${failure.artifact} |`));
 	}
 
 	const retro = [...steps].reverse().find((step) => step.phase === "RETRO");
 	const retroText = readArtifactText(retro?.artifact);
 	const criticalFixes = extractMarkdownSection(retroText, "Critical fixes")
 		?? extractMarkdownSection(retroText, "Critical fixes for future plans / delivery");
-	lines.push("", "## Critical fixes for future plans / delivery", "");
-	if (criticalFixes) lines.push(criticalFixes);
-	else if (retro?.artifact) lines.push(`See retro artifact for critical fixes and lessons: ${artifactLink(state, retro.artifact)}`);
-	else lines.push("No retro critical-fixes section recorded yet.");
+	if (criticalFixes && criticalFixes.trim().toLowerCase() !== "none") {
+		const retroReference = artifactLabel(state, retro?.artifact);
+		lines.push("", "## Critical fixes for future plans / delivery", "", stripMarkdownLinks(criticalFixes));
+		if (retroReference) lines.push("", `Source: ${retroReference}`);
+	}
 
-	lines.push("", "## Usage", "");
+	lines.push("", "## Journey", "", "| # | Phase | Attempt | Verdict | Artifact |", "|---:|---|---:|---|---|");
+	if (!steps.length) {
+		lines.push("| - | - | - | unavailable | No phase reports recorded. |");
+	} else {
+		let displayIndex = 1;
+		for (const step of steps) {
+			const rowNumber = step.childCount && step.childIndex !== undefined
+				? `${displayIndex}${String.fromCharCode(97 + step.childIndex)}`
+				: String(displayIndex);
+			const verdict = step.verdict || (step.status === "planned" ? "planned" : "unavailable");
+			lines.push(`| ${rowNumber} | ${step.phase} | ${step.attempt} | ${mdEscape(verdict)} | ${artifactLink(state, step.artifact) || "unavailable"} |`);
+			if (!step.childCount || step.childIndex === undefined || step.childIndex === step.childCount - 1) displayIndex += 1;
+		}
+	}
+
+	lines.push("", "## Appendix", "", "### Delivery brief", "", "Task:");
+	const taskLines = (state.task ?? "<none>").split(/\r?\n/);
+	for (const line of taskLines) lines.push(`> ${line}`);
+	lines.push("", `Artifact directory: ${state.artifactDir ?? "<none>"}`, `Cwd: ${state.cwd ?? ctx.cwd ?? "<unknown>"}`);
+	lines.push("", "### Usage", "");
 	if (!currentUsage) {
 		lines.push("- Total: unavailable (current session is ephemeral or has no session file)");
 		lines.push("- Since `delivery_start`: unavailable");
-	} else if (!usageHasAssistantMessages(currentUsage)) {
-		lines.push("- Total: unavailable (current session has no usage-bearing assistant messages)");
+		lines.push("- Overall cost: unavailable");
+		lines.push("- Overall tokens: unavailable");
+		lines.push("- Overall input tokens: unavailable");
+		lines.push("- Overall output tokens: unavailable");
+		lines.push("- Overall cache read tokens: unavailable");
+		lines.push("- Overall cache write tokens: unavailable");
+	} else if (!usableCurrentUsage) {
+		const reason = currentUsage.assistantMessages > 0
+			? "current session has no measured token or cost usage"
+			: "current session has no usage-bearing assistant messages";
+		lines.push(`- Total: unavailable (${reason})`);
 		lines.push("- Since `delivery_start`: unavailable");
+		lines.push("- Overall cost: unavailable");
+		lines.push("- Overall tokens: unavailable");
+		lines.push("- Overall input tokens: unavailable");
+		lines.push("- Overall output tokens: unavailable");
+		lines.push("- Overall cache read tokens: unavailable");
+		lines.push("- Overall cache write tokens: unavailable");
 	} else {
-		lines.push(`- Total current session + discovered subagents: ${formatUsage(currentUsage)}`);
+		lines.push(`- Total current session + discovered subagents: ${formatUsage(usableCurrentUsage)}`);
 		lines.push(`- Since \`delivery_start\`: ${usableSinceStart ? formatUsage(usableSinceStart) : "unavailable for deliveries started before usage baseline tracking or without usage-bearing assistant messages"}`);
-		lines.push(`- Phase steps total: ${usablePhaseStepsTotal ? formatUsage(usablePhaseStepsTotal) : "unavailable"}`);
-		lines.push(`- Parent/orchestrator overhead: ${usableParentOverhead ? formatUsage(usableParentOverhead) : "unavailable or fully attributed to phase steps"}`);
+		lines.push(`- Overall cost: ${usableSinceStart ? formatMeasuredCost(usableSinceStart.cost) : "unavailable"}`);
+		lines.push(`- Overall tokens: ${usableSinceStart ? formatMeasuredNumber(usableSinceStart.totalTokens) : "unavailable"}`);
+		lines.push(`- Overall input tokens: ${usableSinceStart ? formatMeasuredNumber(usableSinceStart.input) : "unavailable"}`);
+		lines.push(`- Overall output tokens: ${usableSinceStart ? formatMeasuredNumber(usableSinceStart.output) : "unavailable"}`);
+		lines.push(`- Overall cache read tokens: ${usableSinceStart ? formatMeasuredNumber(usableSinceStart.cacheRead) : "unavailable"}`);
+		lines.push(`- Overall cache write tokens: ${usableSinceStart ? formatMeasuredNumber(usableSinceStart.cacheWrite) : "unavailable"}`);
 	}
-	lines.push("- Attribution notes:");
-	lines.push("  - Exact pi-subagents model-attempt metadata wins over deprecated caller-supplied usage.");
-	lines.push("  - Missing, ambiguous, or contradictory child evidence remains unavailable; phase-boundary usage is never guessed.");
-	lines.push("  - Parallel aggregate rows never contribute child usage or double-count totals.");
-	lines.push("  - Cached input is visible only when session usage records include cache read/write fields.");
-	lines.push("  - Unavailable means no session usage file/baseline or no usage-bearing assistant messages were available; zero cost is not inferred.");
-	lines.push("", "## Phase counts", "", ...formatPhaseCounts(state).map((line) => `- ${line}`));
+	lines.push(`- Phase steps total: ${usablePhaseStepsTotal ? formatUsage(usablePhaseStepsTotal) : "unavailable"}`);
+	lines.push(`- Parent/orchestrator overhead: ${usableParentOverhead ? formatUsage(usableParentOverhead) : "unavailable or fully attributed to phase steps"}`);
+	lines.push("", "### Attribution notes", "", "- Exact pi-subagents model-attempt metadata wins over deprecated caller-supplied usage.", "- Missing, ambiguous, or contradictory child evidence remains unavailable; phase-boundary usage is never guessed.", "- Parallel aggregate rows never contribute child usage or double-count totals.", "- Cached input is visible only when session usage records include cache read/write fields.", "- Unavailable means no session usage file/baseline or no usage-bearing assistant messages were available; zero cost is not inferred.");
+	lines.push("", "### Phase counts", "", ...formatPhaseCounts(state));
+	lines.push("", "### Step accounting", "", "| # | Phase | Agent | Model | Verdict | Token usage | Detail |", "|---|---|---|---|---|---:|---|");
+	if (!steps.length) {
+		lines.push("| - | - | - | - | unavailable | unavailable | No phase reports recorded. |");
+	} else {
+		let displayIndex = 1;
+		for (const step of steps) {
+			const rowNumber = step.childCount && step.childIndex !== undefined
+				? `${displayIndex}${String.fromCharCode(97 + step.childIndex)}`
+				: String(displayIndex);
+			const phaseLabel = `${step.phase}${step.attempt > 1 ? ` #${step.attempt}` : ""}`;
+			const verdict = step.verdict || (step.status === "planned" ? "planned" : "unavailable");
+			const artifactText = readArtifactText(step.artifact);
+			const detail = artifactLabel(state, step.artifact) || completeNarrativeCandidates([
+				extractMarkdownSection(artifactText, "Summary"),
+				extractMarkdownSection(artifactText, "Outcome"),
+				step.summary,
+			]) || "unavailable";
+			lines.push(`| ${rowNumber} | ${phaseLabel} | ${mdProjectionEscape(step.agent || "unknown")} | ${mdProjectionEscape(step.model || "default")} | ${mdProjectionEscape(verdict)} | ${tokenUsageCell(step)} | ${mdProjectionEscape(detail)} |`);
+			if (!step.childCount || step.childIndex === undefined || step.childIndex === step.childCount - 1) displayIndex += 1;
+		}
+	}
 	return lines.join("\n");
 }
 

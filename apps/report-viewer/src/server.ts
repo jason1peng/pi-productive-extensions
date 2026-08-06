@@ -277,9 +277,30 @@ function reportMtime(dir: string): number {
 	return fs.existsSync(target) ? fs.statSync(target).mtimeMs : fs.statSync(dir).mtimeMs;
 }
 
+function legacyStatusFromMarkdown(markdown: string): string {
+	const match = /^[ \t]*(?:[-*+][ \t]+)?Status:[ \t]*(.+?)[ \t]*$/mi.exec(markdown);
+	return match?.[1]?.trim() || "legacy";
+}
+
 function legacyTaskFromMarkdown(markdown: string, fallback: string): string {
-	const match = /^Task:\s*(.+)$/m.exec(markdown);
-	return match?.[1]?.trim() || fallback;
+	const inlineMatch = /^[ \t]*(?:[-*+][ \t]+)?Task:[ \t]*(.+?)[ \t]*$/mi.exec(markdown);
+	if (inlineMatch?.[1]?.trim()) return inlineMatch[1].trim();
+
+	const marker = /^[ \t]*(?:[-*+][ \t]+)?Task:[ \t]*$/mi.exec(markdown);
+	if (!marker) return fallback;
+	const taskLines: string[] = [];
+	let sawBlockquote = false;
+	for (const line of markdown.slice(marker.index + marker[0].length).split(/\r?\n/)) {
+		const blockquote = /^[ \t]*>[ \t]?(.*)$/.exec(line);
+		if (blockquote) {
+			sawBlockquote = true;
+			taskLines.push(blockquote[1]);
+			continue;
+		}
+		if (!sawBlockquote || !line.trim()) continue;
+		break;
+	}
+	return taskLines.join("\n").trim() || fallback;
 }
 
 interface ProjectMetadata {
@@ -404,7 +425,7 @@ function summaryFromDir(rootIndex: number, root: string, dir: string, projectMet
 	}
 	const markdownPath = path.join(dir, "00-delivery-summary.md");
 	const markdown = fs.readFileSync(markdownPath, "utf8");
-	const status = /^Status:\s*(.+)$/m.exec(markdown)?.[1]?.trim() ?? "legacy";
+	const status = legacyStatusFromMarkdown(markdown);
 	return {
 		viewerReportId,
 		...resolvedProjectMetadata(rootIndex, root, dir, projectMetadata),

@@ -122,7 +122,7 @@ Supported defects can route back to implementation. Exhausted budgets or contrac
 
 Every completed run produces:
 
-- `00-delivery-summary.md` — human-readable journey and outcome.
+- `00-delivery-summary.md` — verdict-first human-readable outcome, journey, and audit appendix. See [summary output](docs/summary-output.md) for the stable ordering and unavailable-usage policy.
 - `delivery-report.json` — structured report for tools such as the bundled report viewer.
 - phase artifacts containing verdicts, checks, evidence, findings, and residual risks.
 

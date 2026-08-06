@@ -2048,6 +2048,10 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	result = await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
 
 	assert.equal(result.details.state.phase, "DONE");
+	const failedStep = (await harness.tool("delivery_status")).details.state.steps.find((step: any) => step.phase === "VERIFY" && step.verdict === "FAIL");
+	assert.ok(failedStep?.artifact);
+	fs.writeFileSync(failedStep.artifact, "RESULT: FAIL\n\n## Summary\nVerification failed.\n\n## Failure reason\nMissing regression coverage caused the verifier to fail; the repair added coverage.\n\n## Findings\n- missing test\n", "utf8");
+	await harness.tool("delivery_summary");
 	const reportPath = path.join(artifactDir, "00-delivery-summary.md");
 	const jsonPath = path.join(artifactDir, "delivery-report.json");
 	assert.equal(fs.existsSync(reportPath), true);
@@ -2082,6 +2086,338 @@ await runTest("delivery summary writes full journey with failure and repair", as
 	assert.equal(structuredReport.usage.sinceDeliveryStart, null);
 	assert.equal(structuredReport.usage.attribution, "unavailable");
 	assert.equal(fs.existsSync(`${jsonPath}.tmp-${process.pid}`), false);
+});
+
+await runTest("delivery summary is verdict-first with a slim journey and complete appendix", async () => {
+	const harness = createHarness();
+	const result = await advanceHarnessToPhase(harness, "DONE");
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const outcomeIndex = text.indexOf("## Outcome");
+	const appendixIndex = text.indexOf("## Appendix");
+	assert.equal(text.indexOf("# Delivery summary"), 0);
+	assert.ok(outcomeIndex > 0, "Outcome heading should follow only the title");
+	assert.ok(appendixIndex > outcomeIndex, "Appendix should trail the result");
+	assert.ok(text.indexOf("Task:") > appendixIndex, "full delivery brief belongs in the appendix");
+	assert.match(text, /- Status: DONE/);
+	assert.match(text, /- Repair rounds: 0/);
+	assert.match(text, /- Pending decisions: none/);
+	assert.match(text, /## Journey[\s\S]*\| # \| Phase \| Attempt \| Verdict \| Artifact \|/);
+	const journey = text.slice(text.indexOf("## Journey"), appendixIndex);
+	assert.doesNotMatch(journey, /Agent|Model|Token usage/);
+	assert.match(text, /### Usage/);
+	assert.match(text, /### Attribution notes/);
+	const appendix = text.slice(appendixIndex);
+	assert.match(appendix, /### Phase counts\n\nstarts: 1\ncompleted phase reports:\n- IMPLEMENT: 1/);
+	assert.doesNotMatch(appendix, /- - (?:IMPLEMENT|VERIFY|REVIEW|CLOSE|RETRO):/);
+	assert.match(text, /### Step accounting/);
+	assert.doesNotMatch(text, /See phase summary\/artifact\./);
+	assert.equal(result.details.state.phase, "DONE");
+});
+
+await runTest("delivery summary puts known merge request and commit references in Outcome", async () => {
+	const harness = createHarness();
+	await advanceHarnessToPhase(harness, "CLOSE");
+	await harness.tool("delivery_report", {
+		phase: "CLOSE",
+		verdict: "DONE",
+		summary: "Merged through https://git.example.test/project/merge_requests/42 at commit: abcdef1234567.",
+	});
+	await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retro complete" });
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const outcomeStart = text.indexOf("## Outcome");
+	const appendixStart = text.indexOf("## Appendix");
+	const mergeRequest = text.indexOf("Merge request: https://git.example.test/project/merge_requests/42");
+	const commit = text.indexOf("Commit: abcdef1234567");
+	assert.ok(outcomeStart >= 0);
+	assert.ok(appendixStart > outcomeStart);
+	assert.ok(mergeRequest > outcomeStart && mergeRequest < appendixStart, "merge request should be listed in Outcome");
+	assert.ok(commit > outcomeStart && commit < appendixStart, "commit should be listed in Outcome");
+});
+
+await runTest("delivery summary title joins meaningful lines and shortens quoted paths", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", {
+		task: "Implement the plan\nat \"/Users/a/plan.md\".\n/Users/a/plan.md\nhttps://example.com/plan\nKeep the full task verbatim.",
+	});
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const outcome = text.slice(text.indexOf("## Outcome"), text.indexOf("## Appendix"));
+	assert.match(outcome, /- Target: Implement the plan at \"plan\.md\"\./);
+	assert.doesNotMatch(outcome, /\/Users\/a\/plan\.md/);
+
+	const basenameOnly = createHarness();
+	await basenameOnly.tool("delivery_start", { task: "README.md\nImplement a readable summary report." });
+	const basenameSummary = await basenameOnly.tool("delivery_summary");
+	const basenameText = basenameSummary.content[0].text as string;
+	const basenameOutcome = basenameText.slice(basenameText.indexOf("## Outcome"), basenameText.indexOf("## Appendix"));
+	assert.match(basenameOutcome, /- Target: Implement a readable summary report\./);
+	assert.doesNotMatch(basenameOutcome, /- Target: README\.md/);
+
+	const spacedQuoted = createHarness();
+	await spacedQuoted.tool("delivery_start", {
+		task: 'Implement the plan at "/Users/a/private projects/plan.md".',
+	});
+	const spacedQuotedSummary = await spacedQuoted.tool("delivery_summary");
+	const spacedQuotedText = spacedQuotedSummary.content[0].text as string;
+	const spacedQuotedOutcome = spacedQuotedText.slice(spacedQuotedText.indexOf("## Outcome"), spacedQuotedText.indexOf("## Appendix"));
+	assert.match(spacedQuotedOutcome, /- Target: Implement the plan at \"plan\.md\"\./);
+	assert.doesNotMatch(spacedQuotedOutcome, /\/Users\/a\/private projects\/plan\.md/);
+
+	const escaped = createHarness();
+	await escaped.tool("delivery_start", {
+		task: "Implement the plan at /Users/a/private\\ projects/plan.md.",
+	});
+	const escapedSummary = await escaped.tool("delivery_summary");
+	const escapedText = escapedSummary.content[0].text as string;
+	const escapedOutcome = escapedText.slice(escapedText.indexOf("## Outcome"), escapedText.indexOf("## Appendix"));
+	assert.match(escapedOutcome, /- Target: Implement the plan at plan\.md\./);
+	assert.doesNotMatch(escapedOutcome, /\/Users\/a\/private\\ projects\/plan\.md/);
+});
+
+await runTest("delivery summary does not repeat failed-step narrative in Outcome result", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", { task: "deduplicate failed verification narrative" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implementation complete" });
+	await harness.tool("delivery_next");
+	const state = (await harness.tool("delivery_status")).details.state;
+	const verifyStep = state.steps.find((step: any) => step.phase === "VERIFY");
+	assert.ok(verifyStep?.artifact);
+	const repeated = "The verifier found the same failure sentence.";
+	await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: repeated,
+		recommendedDecision: "stop",
+	});
+	fs.writeFileSync(verifyStep.artifact, `${renderPhaseArtifactMarkdown("VERIFY", "FAIL", {
+		Summary: repeated,
+		Findings: repeated,
+		"Commands run": "none",
+		"Behavioral evidence": "none",
+		"Candidate completeness": "checked",
+		"Residual risks": "none",
+		Recommendation: "stop",
+	})}\n## Failure reason\n${repeated}\n\n${projectHarnessEvidence("none discovered")}`, "utf8");
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	assert.equal((text.match(/The verifier found the same failure sentence\./g) ?? []).length, 1);
+	assert.match(text, /- Result: Delivery requires follow-up after failed VERIFY attempt 1\./);
+	assert.match(text, /\| VERIFY #1 \| The verifier found the same failure sentence\./);
+});
+
+await runTest("delivery summary keeps artifact links only in Journey", async () => {
+	const harness = createHarness();
+	await advanceHarnessToPhase(harness, "DONE");
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const journeyStart = text.indexOf("## Journey");
+	const appendixStart = text.indexOf("## Appendix");
+	const links = text.match(/\[[^\]]+\.md\]\([^)]*\.md\)/g) ?? [];
+	assert.equal(links.length, 7, "each clean-run artifact should have one Journey link");
+	assert.equal(new Set(links).size, 7);
+	assert.doesNotMatch(text.slice(0, journeyStart), /\[[^\]]+\.md\]\([^)]*\.md\)/);
+	assert.doesNotMatch(text.slice(appendixStart), /\[[^\]]+\.md\]\([^)]*\.md\)/);
+});
+
+await runTest("delivery summary strips artifact links from projected narrative and critical fixes", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", { task: "artifact link projection smoke", maxRepairRounds: 3 });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_next");
+	const initialState = (await harness.tool("delivery_status")).details.state;
+	const verifyStep = initialState.steps.find((step: any) => step.phase === "VERIFY");
+	assert.ok(verifyStep?.artifact);
+	const linkedNarrative = "Failure is documented in [02-verification.md](02-verification.md).";
+	await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: linkedNarrative,
+		recommendedDecision: "repair",
+	});
+	fs.writeFileSync(verifyStep.artifact, `${renderPhaseArtifactMarkdown("VERIFY", "FAIL", {
+		Summary: linkedNarrative,
+		Findings: linkedNarrative,
+		"Commands run": "none",
+		"Behavioral evidence": "none",
+		"Candidate completeness": "checked",
+		"Residual risks": "none",
+		Recommendation: "repair",
+	})}\n## Failure reason\n${linkedNarrative}\n${projectHarnessEvidence("none discovered")}`, "utf8");
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "repair complete" });
+	await harness.tool("delivery_report", { phase: "VERIFY", verdict: "PASS", summary: "verified" });
+	const reviewNext = await harness.tool("delivery_next");
+	for (const launch of reviewNext.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
+	await harness.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "reviewed" });
+	await harness.tool("delivery_report", { phase: "CLOSE", verdict: "DONE", summary: "closed" });
+	await harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retrospective complete" });
+	const finalState = (await harness.tool("delivery_status")).details.state;
+	const retroStep = finalState.steps.find((step: any) => step.phase === "RETRO");
+	assert.ok(retroStep?.artifact);
+	const retro = fs.readFileSync(retroStep.artifact, "utf8").replace("## Critical fixes\nnone", `## Critical fixes\n${linkedNarrative}`);
+	fs.writeFileSync(retroStep.artifact, retro, "utf8");
+
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const journeyStart = text.indexOf("## Journey");
+	const appendixStart = text.indexOf("## Appendix");
+	const outsideJourney = text.slice(0, journeyStart) + text.slice(appendixStart);
+	assert.doesNotMatch(outsideJourney, /\[[^\]]+\]\([^)]*\)/);
+	assert.match(outsideJourney, /Failure is documented in 02-verification\.md\./);
+	assert.match(text.slice(journeyStart, appendixStart), /\[02-verification\.md\]\(02-verification\.md\)/);
+});
+
+await runTest("delivery summary labels token-less usage as unavailable without changing persisted usage", async () => {
+	const cases = [
+		{
+			task: "assistant-only usage smoke",
+			usageDelta: { assistantMessages: 1 },
+			expected: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, assistantMessages: 1, sessionFiles: 0 },
+		},
+		{
+			task: "cost-only usage smoke",
+			usageDelta: { cost: 0.25, assistantMessages: 1 },
+			expected: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0.25, assistantMessages: 1, sessionFiles: 0 },
+		},
+	];
+	for (const { task, usageDelta, expected } of cases) {
+		const harness = createHarness();
+		await harness.tool("delivery_start", { task });
+		await harness.tool("delivery_report", {
+			phase: "IMPLEMENT",
+			verdict: "PASS",
+			summary: "implemented without token metrics",
+			usageDelta,
+			usageAttribution: "exact",
+		});
+		const state = (await harness.tool("delivery_status")).details.state;
+		const step = state.steps.find((item: any) => item.phase === "IMPLEMENT");
+		assert.deepEqual(step.usageDelta, expected);
+		assert.equal(step.usageAttribution, "exact");
+		const summary = await harness.tool("delivery_summary");
+		const text = summary.content[0].text as string;
+		assert.match(text, /\| IMPLEMENT \| worker \| openai-codex\/gpt-5\.6-luna \| PASS \| unavailable \| 01-implementation\.md/);
+		assert.doesNotMatch(text, /0 tokens \(exact\)/);
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(state.artifactDir, "delivery-report.json"), "utf8"));
+		const persistedStep = structuredReport.steps.find((item: any) => item.phase === "IMPLEMENT");
+		assert.deepEqual(persistedStep.usageDelta, expected);
+		assert.equal(persistedStep.usageAttribution, "exact");
+	}
+});
+
+await runTest("explicit token-less usage remains preferred over fallback usage", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-tokenless-fallback-"));
+	const sessionFile = path.join(cwd, "child.jsonl");
+	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 50, output: 10, totalTokens: 60, cost: { total: 0.006 } } } })}\n`, "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "token-less fallback precedence smoke" });
+		await harness.tool("delivery_report", {
+			phase: "IMPLEMENT",
+			verdict: "PASS",
+			summary: "implemented without token metrics",
+			usageDelta: { assistantMessages: 1 },
+			usageAttribution: "exact",
+			subagentSessionFile: sessionFile,
+		});
+		const state = (await harness.tool("delivery_status")).details.state;
+		const step = state.steps.find((item: any) => item.phase === "IMPLEMENT");
+		assert.deepEqual(step.usageDelta, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, assistantMessages: 1, sessionFiles: 0 });
+		assert.equal(step.usageAttribution, "exact");
+		assert.equal(step.subagentSessionFile, sessionFile);
+		await harness.tool("delivery_summary");
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(state.artifactDir, "delivery-report.json"), "utf8"));
+		const persistedStep = structuredReport.steps.find((item: any) => item.phase === "IMPLEMENT");
+		assert.equal(persistedStep.usageDelta.totalTokens, 0);
+		assert.equal(persistedStep.usageAttribution, "exact");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+await runTest("failure narrative does not stop at numeric list markers", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", { task: "numeric narrative boundary smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_next");
+	const state = (await harness.tool("delivery_status")).details.state;
+	const verifyStep = state.steps.find((item: any) => item.phase === "VERIFY");
+	assert.ok(verifyStep?.artifact);
+	const narrative = 'The verifier cited a plan "Done when" criterion: 1. The test was missing.';
+	const artifact = `${renderPhaseArtifactMarkdown("VERIFY", "FAIL", {
+		Summary: narrative,
+		Findings: narrative,
+		"Commands run": "none",
+		"Behavioral evidence": "none",
+		"Candidate completeness": "checked",
+		"Residual risks": "none",
+		Recommendation: "repair",
+	})}\n## Failure reason\n${narrative}\n\n${projectHarnessEvidence("none discovered")}`;
+	fs.writeFileSync(verifyStep.artifact, artifact, "utf8");
+	await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: narrative,
+		recommendedDecision: "repair",
+	});
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const failureOverview = text.slice(text.indexOf("## Failure overview"), text.indexOf("## Journey"));
+	assert.match(failureOverview, /The verifier cited a plan "Done when" criterion: 1\. The test was missing\./);
+	assert.doesNotMatch(failureOverview, /criterion: 1\.\s*\|/);
+});
+
+await runTest("failure narrative skips placeholder prefix sentences", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", { task: "placeholder narrative smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_next");
+	const state = (await harness.tool("delivery_status")).details.state;
+	const verifyStep = state.steps.find((item: any) => item.phase === "VERIFY");
+	assert.ok(verifyStep?.artifact);
+	const narrative = "See phase summary/artifact. The verifier found a missing test.";
+	const artifact = `${renderPhaseArtifactMarkdown("VERIFY", "FAIL", {
+		Summary: narrative,
+		Findings: narrative,
+		"Commands run": "none",
+		"Behavioral evidence": "none",
+		"Candidate completeness": "checked",
+		"Residual risks": "none",
+		Recommendation: "repair",
+	})}\n## Failure reason\n${narrative}\n\n${projectHarnessEvidence("none discovered")}`;
+	fs.writeFileSync(verifyStep.artifact, artifact, "utf8");
+	await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: narrative,
+		recommendedDecision: "repair",
+	});
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const failureOverview = text.slice(text.indexOf("## Failure overview"), text.indexOf("## Journey"));
+	assert.match(failureOverview, /The verifier found a missing test\./);
+	assert.doesNotMatch(failureOverview, /See phase summary[/]artifact\./);
+});
+
+await runTest("failure narrative does not project a truncated delivery report summary", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", { task: "long failure narrative smoke" });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+	await harness.tool("delivery_next");
+	const fullSummary = `${Array.from({ length: 170 }, (_, index) => `evidence-${index}`).join(" ")} complete.`;
+	assert.ok(fullSummary.length > 800);
+	await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: fullSummary,
+		recommendedDecision: "stop",
+	});
+	const summary = await harness.tool("delivery_summary");
+	const text = summary.content[0].text as string;
+	const failureOverview = text.slice(text.indexOf("## Failure overview"), text.indexOf("## Journey"));
+	assert.ok(failureOverview.includes(fullSummary), "the complete artifact Summary should be used instead of the truncated report input");
+	assert.doesNotMatch(failureOverview, /…\./, "a truncation marker must not be followed by generated punctuation");
 });
 
 function projectHarnessEvidence(outcome: "applied" | "none discovered" | "blocked") {
@@ -2604,9 +2940,13 @@ await runTest("parallel reviewer aggregate report preserves child verdict artifa
 	assert.match(aggregateText, /Reviewer 2\/2 .*PASS.*03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
 	assert.match(text, /03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md/);
 	assert.match(text, /03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md/);
-	assert.match(text, /\| 3a \| REVIEW \| reviewer \| openai-codex\/gpt-5.6-luna \| FAIL \| unavailable \| \[03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md\]/);
-	assert.match(text, /\| 3b \| REVIEW \| reviewer \| openai-codex\/gpt-5\.6-luna \| PASS \| unavailable \| \[03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md\]/);
-	assert.match(text, /\| 4 \| REVIEW \| aggregate \| parent \| FAIL \| unavailable \| \[03-review\.md\]/);
+	assert.match(text, /\| 3a \| REVIEW \| 1 \| FAIL \| \[03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md\]\(03-review-1-01-reviewer-openai-codex-gpt-5-6-luna\.md\)/);
+	assert.match(text, /\| 3b \| REVIEW \| 1 \| PASS \| \[03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md\]\(03-review-1-02-reviewer-openai-codex-gpt-5-6-luna\.md\)/);
+	assert.match(text, /\| 4 \| REVIEW \| 1 \| FAIL \| \[03-review\.md\]\(03-review\.md\)/);
+	const failureOverview = text.slice(text.indexOf("## Failure overview"), text.indexOf("## Journey"));
+	assert.doesNotMatch(failureOverview, /\[[^\]]+\.md\]\([^)]*\.md\)/, "failure rows must use plain artifact labels");
+	const appendix = text.slice(text.indexOf("## Appendix"));
+	assert.doesNotMatch(appendix, /\[[^\]]+\.md\]\([^)]*\.md\)/, "Appendix must use plain artifact labels, not duplicate links");
 });
 
 await runTest("CLOSE repair preserves lineage through nested IMPLEMENT failure and schedules fresh downstream attempts", async () => {
@@ -2822,7 +3162,7 @@ await runTest("delivery summary merges legacy history-only reports with newly re
 		assert.match(text, /IMPLEMENT \| unknown \| default \| PASS \| unavailable \| legacy initial implementation/);
 		assert.match(text, /VERIFY \| unknown \| default \| FAIL \| unavailable \| legacy verification found missing regression/);
 		assert.match(text, /IMPLEMENT #2 \| unknown \| default \| PASS \| unavailable \| legacy repair implementation/);
-		assert.match(text, /VERIFY #2 \| fresh-verifier \| openai-codex\/gpt-5\.6-luna \| PASS \| unavailable \| \[02-verification-2\.md\]/);
+		assert.match(text, /VERIFY #2 \| fresh-verifier \| openai-codex\/gpt-5\.6-luna \| PASS \| unavailable \| 02-verification-2\.md/);
 		assert.match(text, /legacy verification found missing regression/);
 		assert.match(text, /legacy repair implementation/);
 	} finally {
@@ -2923,6 +3263,42 @@ await runTest("usage summary does not show exact zero cost for session files wit
 	}
 });
 
+await runTest("usage summary labels assistant-only zero-shaped usage unavailable throughout the Appendix", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-assistant-only-usage-"));
+	const sessionFile = path.join(cwd, "session.jsonl");
+	fs.writeFileSync(sessionFile, "", "utf8");
+	try {
+		const harness = createHarness({ cwd, sessionFile });
+		await harness.tool("delivery_start", { task: "assistant-only Appendix usage smoke" });
+		appendAssistantUsage(sessionFile, {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { total: 0 },
+		});
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
+		const summary = await harness.tool("delivery_summary");
+		const text = summary.content[0].text as string;
+		const appendix = text.slice(text.indexOf("## Appendix"));
+
+		assert.match(text, /- Cost: unavailable/);
+		assert.match(appendix, /- Total: unavailable \(current session has no measured token or cost usage\)/);
+		assert.match(appendix, /- Since `delivery_start`: unavailable/);
+		for (const label of ["Overall cost", "Overall tokens", "Overall input tokens", "Overall output tokens", "Overall cache read tokens", "Overall cache write tokens"]) {
+			assert.match(appendix, new RegExp(`- ${label}: unavailable`));
+		}
+		assert.doesNotMatch(appendix, /tokens 0|cost \$0\.0000|Overall (?:cost|tokens|input tokens|output tokens|cache read tokens|cache write tokens): 0/);
+		const state = (await harness.tool("delivery_status")).details.state;
+		const structuredReport = JSON.parse(fs.readFileSync(path.join(state.artifactDir, "delivery-report.json"), "utf8"));
+		assert.equal(structuredReport.usage.currentSessionTotals.assistantMessages, 1, "structured usage remains unchanged");
+		assert.equal(structuredReport.usage.sinceDeliveryStart.assistantMessages, 1, "structured usage remains unchanged");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 await runTest("usage summary reports total cost and phase token usage since delivery_start", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-usage-"));
 	const sessionFile = path.join(cwd, "session.jsonl");
@@ -3015,6 +3391,8 @@ await runTest("summary extraction prefers canonical Critical fixes and retains l
 	fs.writeFileSync(retro.artifact, canonicalRetro, "utf8");
 	let summary = await harness.tool("delivery_summary");
 	assert.match(summary.content[0].text, /canonical-marker/);
+	assert.equal((String(summary.content[0].text).match(/canonical-marker/g) ?? []).length, 1);
+	assert.match(summary.content[0].text, /Source: 05-retro\.md/);
 
 	const legacyRetro = phaseArtifactContents("RETRO", "DONE", "retro").replace(/## Critical fixes\n+none/, "## Critical fixes for future plans / delivery\n\nlegacy-marker");
 	fs.writeFileSync(retro.artifact, legacyRetro, "utf8");

@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { DELIVERY_PHASES, type DeliveryPhase } from "../../../shared/delivery-profile-config.ts";
 import type { DeliveryReportJsonV2, DeliveryReportStep } from "../../../shared/delivery-report.ts";
 import type { ParsedArtifact, RetroCandidate } from "./artifact-contract.ts";
@@ -70,17 +71,141 @@ export function reportListQueryViewModel(query = new URLSearchParams()): ReportL
 	};
 }
 
-export function compactTaskTitle(task: string, fallback = "Untitled delivery report"): string {
-	let title = String(task ?? "").replace(/\s+/g, " ").trim();
-	if ((title.startsWith('"') && title.endsWith('"')) || (title.startsWith("`") && title.endsWith("`"))) {
-		title = title.slice(1, -1).trim();
+const TASK_TITLE_MAX_LENGTH = 96;
+
+function trimOuterQuotes(value: string): string {
+	let trimmed = value.trim();
+	let changed = true;
+	while (changed && trimmed.length >= 2) {
+		changed = false;
+		for (const [opening, closing] of [["\"", "\""], ["'", "'"], ["`", "`"], ["(", ")"], ["[", "]"], ["{", "}"]] as const) {
+			if (trimmed.startsWith(opening) && trimmed.endsWith(closing)) {
+				trimmed = trimmed.slice(opening.length, -closing.length).trim();
+				changed = true;
+				break;
+			}
+		}
 	}
+	return trimmed;
+}
+
+function pathBasename(value: string): string {
+	const normalized = value.replace(/[\\/]+$/, "");
+	return normalized.split(/[\\/]/).at(-1) || normalized;
+}
+
+function isAbsolutePathLike(value: string): boolean {
+	return path.isAbsolute(value) || /^~[\\/]/.test(value) || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+function shortenPathToken(token: string): string {
+	const leading = /^[\"'`([{<]*/.exec(token)?.[0] ?? "";
+	const withoutLeading = token.slice(leading.length);
+	const trailing = /[\"'`)}\\]>.,;:!?]+$/.exec(withoutLeading)?.[0] ?? "";
+	const core = trailing ? withoutLeading.slice(0, -trailing.length) : withoutLeading;
+	if (isAbsolutePathLike(core)) return `${leading}${pathBasename(core)}${trailing}`;
+	if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(token)) return token;
+	const prefixed = /^(.*?)([\"'`([{<]*)(\/|~[\\/]|[A-Za-z]:[\\/])/.exec(token);
+	if (!prefixed || (prefixed[1] && !/[=:]$/.test(prefixed[1]) && !prefixed[2])) return token;
+	const pathStart = prefixed[1].length + prefixed[2].length;
+	const pathWithTrailing = token.slice(pathStart);
+	const pathTrailing = /[\"'`)}\\]>.,;:!?]+$/.exec(pathWithTrailing)?.[0] ?? "";
+	const pathCore = pathTrailing ? pathWithTrailing.slice(0, -pathTrailing.length) : pathWithTrailing;
+	return isAbsolutePathLike(pathCore) ? `${prefixed[1]}${prefixed[2]}${pathBasename(pathCore)}${pathTrailing}` : token;
+}
+
+/** Keep quoted and backslash-escaped path spans intact while splitting prose. */
+function pathAwareSegments(value: string): string[] {
+	const segments: string[] = [];
+	let token = "";
+	let quote: string | undefined;
+	let escaped = false;
+	const flushToken = () => {
+		if (!token) return;
+		segments.push(token);
+		token = "";
+	};
+	const appendWhitespace = (character: string) => {
+		const previous = segments.at(-1);
+		if (previous && /^\s+$/.test(previous)) segments[segments.length - 1] = `${previous}${character}`;
+		else segments.push(character);
+	};
+	for (const character of value) {
+		if (escaped) {
+			token += character;
+			escaped = false;
+			continue;
+		}
+		if (character === "\\" && quote !== "'") {
+			token += character;
+			escaped = true;
+			continue;
+		}
+		if (quote) {
+			token += character;
+			if (character === quote) quote = undefined;
+			continue;
+		}
+		if ((character === '"' || character === "'" || character === "`") && (!token || /[=:([{<]$/.test(token))) {
+			token += character;
+			quote = character;
+			continue;
+		}
+		if (/\s/.test(character)) {
+			flushToken();
+			appendWhitespace(character);
+			continue;
+		}
+		token += character;
+	}
+	flushToken();
+	return segments;
+}
+
+/** Shortens absolute paths for labels while callers can retain the original as a title/value. */
+export function shortenPathForDisplay(value: string): string {
+	const raw = String(value ?? "");
+	const trimmed = raw.trim();
+	if (trimmed && isAbsolutePathLike(trimmed) && !/[\r\n]/.test(trimmed)) {
+		const leading = raw.slice(0, raw.indexOf(trimmed));
+		const trailingWhitespace = raw.slice(raw.indexOf(trimmed) + trimmed.length);
+		const trailingPunctuation = /[\"'`)}\\]>.,;:!?]+$/.exec(trimmed)?.[0] ?? "";
+		const core = trailingPunctuation ? trimmed.slice(0, -trailingPunctuation.length) : trimmed;
+		return `${leading}${pathBasename(core)}${trailingPunctuation}${trailingWhitespace}`;
+	}
+	return pathAwareSegments(raw).map((part) => /^\s+$/.test(part) ? part : shortenPathToken(part)).join("");
+}
+
+function isBareRelativeFilename(value: string): boolean {
+	if (/\s/.test(value) || /[\\/]/.test(value)) return false;
+	return /^(?:\.[A-Za-z0-9][A-Za-z0-9._-]*|(?:README|LICENSE|COPYING|AUTHORS|CONTRIBUTING|CHANGELOG|MAKEFILE|DOCKERFILE|GEMFILE|RAKEFILE|PROCFILE|VAGRANTFILE|JUSTFILE|TASKFILE)(?:\.[A-Za-z0-9._-]+)?|[A-Za-z0-9_-]+\.[A-Za-z0-9][A-Za-z0-9._-]*)$/i.test(value);
+}
+
+function isPathOrUrlOnly(value: string): boolean {
+	const candidate = trimOuterQuotes(value.replace(/^[-*]\s+/, "")).replace(/[),.;:!?]+$/, "").trim();
+	if (!candidate || /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)/i.test(candidate)) return true;
+	if (isAbsolutePathLike(candidate)) return true;
+	return !/\s/.test(candidate) && (/[\\/]/.test(candidate) || isBareRelativeFilename(candidate));
+}
+
+function firstMeaningfulTaskSentence(task: string, fallback: string): string {
+	const candidates = String(task ?? "")
+		.split(/\r?\n/)
+		.map((line) => trimOuterQuotes(line.replace(/^[-*]\s+/, "")))
+		.filter((line) => line && !isPathOrUrlOnly(line));
+	const first = shortenPathForDisplay(candidates.join(" "));
+	if (!first) return fallback;
+	const sentence = /^(.+?[.!?])(?:\s|$)/.exec(first)?.[1]?.trim();
+	return sentence || first;
+}
+
+export function compactTaskTitle(task: string, fallback = "Untitled delivery report"): string {
+	let title = firstMeaningfulTaskSentence(task, fallback).replace(/\s+/g, " ").trim();
 	if (!title) title = fallback;
-	const maxLength = 96;
-	if (title.length <= maxLength) return title;
-	const slice = title.slice(0, maxLength - 1);
+	if (title.length <= TASK_TITLE_MAX_LENGTH) return title;
+	const slice = title.slice(0, TASK_TITLE_MAX_LENGTH - 1);
 	const boundary = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf("/"), slice.lastIndexOf("-"));
-	return `${slice.slice(0, boundary > 48 ? boundary : maxLength - 1).trim()}…`;
+	return `${slice.slice(0, boundary > 48 ? boundary : TASK_TITLE_MAX_LENGTH - 1).trim()}…`;
 }
 
 export function filterReports(reports: ReportSummary[], query: URLSearchParams): ReportSummary[] {
@@ -181,7 +306,8 @@ export function buildReportDetailPageViewModel(args: {
 	const usage = args.report.structuredReport?.usage;
 	const sinceDeliveryStart = usage?.sinceDeliveryStart;
 	const currentSessionTotals = usage?.currentSessionTotals;
-	const displayUsage = sinceDeliveryStart && sinceDeliveryStart.assistantMessages > 0 ? sinceDeliveryStart : currentSessionTotals && currentSessionTotals.assistantMessages > 0 ? currentSessionTotals : undefined;
+	const usageReported = usage?.attribution !== "unavailable";
+	const displayUsage = usageReported && sinceDeliveryStart && sinceDeliveryStart.assistantMessages > 0 ? sinceDeliveryStart : usageReported && currentSessionTotals && currentSessionTotals.assistantMessages > 0 ? currentSessionTotals : undefined;
 	const acceptedRisks = Array.isArray(args.report.structuredReport?.acceptedRisks) ? args.report.structuredReport.acceptedRisks : [];
 	const title = compactTaskTitle(args.report.task, args.report.extensionReportId);
 	return {

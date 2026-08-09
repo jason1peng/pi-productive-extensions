@@ -229,10 +229,13 @@ async function advanceHarnessToPhase(harness: ReturnType<typeof createHarness>, 
 	return harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retrospective complete" });
 }
 
-await runTest("package manifest exposes exactly five package-qualified DSM agents with phase-safe tools", async () => {
+await runTest("package manifest exposes DSM agents and the normal antigravity-cmux agent", async () => {
 	const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 	const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-	assert.deepEqual(manifest.pi?.subagents?.agents, ["./extensions/delivery-state-machine/agents/dsm"]);
+	assert.deepEqual(manifest.pi?.subagents?.agents, [
+		"./extensions/delivery-state-machine/agents/dsm",
+		"./extensions/antigravity-cmux/agents",
+	]);
 	const agentsDir = path.join(root, manifest.pi.subagents.agents[0]);
 	const files = fs.readdirSync(agentsDir).filter((name) => name.endsWith(".md")).sort();
 	const expected: Record<string, { phase: RunnablePhase; tools: string[]; thinking?: "low" | "high" }> = {
@@ -282,6 +285,7 @@ await runTest("pi-subagents discovers DSM roles from the package in an isolated 
 		fs.mkdirSync(path.join(packageRoot, "extensions", "delivery-state-machine"), { recursive: true });
 		fs.copyFileSync(path.join(sourceRoot, "package.json"), path.join(packageRoot, "package.json"));
 		fs.cpSync(path.join(sourceRoot, "extensions", "delivery-state-machine", "agents", "dsm"), path.join(packageRoot, "extensions", "delivery-state-machine", "agents", "dsm"), { recursive: true });
+		fs.cpSync(path.join(sourceRoot, "extensions", "antigravity-cmux", "agents"), path.join(packageRoot, "extensions", "antigravity-cmux", "agents"), { recursive: true });
 		fs.mkdirSync(isolatedAgentDir);
 		fs.writeFileSync(path.join(isolatedAgentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
 		process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
@@ -290,10 +294,10 @@ await runTest("pi-subagents discovers DSM roles from the package in an isolated 
 		const discovered = all.package;
 		assert.deepEqual(all.user, []);
 		assert.deepEqual(all.project, []);
-		assert.deepEqual(discovered.map((agent: any) => agent.name).sort(), ["dsm.closer", "dsm.implementer", "dsm.retrospective", "dsm.reviewer", "dsm.verifier"]);
+		assert.deepEqual(discovered.map((agent: any) => agent.name).sort(), ["antigravity-cmux", "dsm.closer", "dsm.implementer", "dsm.retrospective", "dsm.reviewer", "dsm.verifier"]);
 		for (const agent of discovered) {
 			assert.equal(agent.source, "package");
-			assert.equal(agent.packageName, "dsm");
+			if (agent.name !== "antigravity-cmux") assert.equal(agent.packageName, "dsm");
 		}
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

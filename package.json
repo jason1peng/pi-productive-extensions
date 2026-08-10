@@ -44,8 +44,9 @@
     "report-viewer:tailscale": "bash apps/report-viewer/scripts/tailscale.sh",
     "report-viewer:verify": "bun apps/report-viewer/tests/report-viewer.test.ts",
     "verify": "npm run test && npm run report-viewer:verify",
-    "setup": "npm install && npx skills add manaflow-ai/cmux --skill cmux --skill cmux-workspace -g -y --copy",
-    "postinstall": "npx skills add manaflow-ai/cmux --skill cmux --skill cmux-workspace -g -y --copy"
+    "setup": "npm install && npx skills add manaflow-ai/cmux --skill cmux --skill cmux-workspace --copy && mkdir -p ~/.agents/skills && cp -r ~/.pi/agent/skills/cmux ~/.agents/skills/ && cp -r ~/.pi/agent/skills/cmux-workspace ~/.agents/skills/",
+
+    "postinstall": "npx skills add manaflow-ai/cmux --skill cmux --skill cmux-workspace --copy && mkdir -p ~/.agents/skills && cp -r ~/.pi/agent/skills/cmux ~/.agents/skills/ && cp -r ~/.pi/agent/skills/cmux-workspace ~/.agents/skills/"
   },
   "dependencies": {
     "promptfoo": "0.121.19"

@@ -34,8 +34,8 @@ Provides a normal Pi subagent that launches Antigravity CLI (`agy`) in a visible
 
 - Commands: `pi subagents run antigravity-cmux`
 - Tools: `read`, `bash`
-- Required Pi skills: `cmux`, `cmux-workspace` (install via `npx skills add manaflow-ai/cmux --skill cmux --skill cmux-workspace -g -y --copy`)
-- Setup: run `npm run setup` (or `npm install` then the skill command above) to install dependencies and skills.
+- Required Pi skills: `cmux`, `cmux-workspace` (installed automatically by `npm run setup` or `npm install`; they will be available in `~/.pi/agent/skills/` and copied to `~/.agents/skills/`)
+- Setup: run `npm run setup` to install dependencies and skills.
 - Details: [extensions/antigravity-cmux/README.md](extensions/antigravity-cmux/README.md)
 
 ## Apps

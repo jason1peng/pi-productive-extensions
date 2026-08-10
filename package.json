@@ -11,7 +11,8 @@
     ],
     "subagents": {
       "agents": [
-        "./extensions/delivery-state-machine/agents/dsm"
+        "./extensions/delivery-state-machine/agents/dsm",
+        "./extensions/antigravity-cmux/agents"
       ]
     }
   },

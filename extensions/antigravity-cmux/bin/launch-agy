@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: launch-agy --worktree PATH --run-dir PATH [--timeout SECONDS]
+
+Reads the Antigravity prompt from stdin, creates a private prompt/status artifact,
+then launches agy in a new right-hand cmux pane in the caller workspace.
+EOF
+  exit 2
+}
+
+worktree=''
+run_dir=''
+timeout_seconds="${ANTIGRAVITY_CMUX_TIMEOUT_SECONDS:-3600}"
+while (($#)); do
+  case "$1" in
+    --worktree) [[ $# -ge 2 ]] || usage; worktree=$2; shift 2 ;;
+    --run-dir) [[ $# -ge 2 ]] || usage; run_dir=$2; shift 2 ;;
+    --timeout) [[ $# -ge 2 ]] || usage; timeout_seconds=$2; shift 2 ;;
+    --help|-h) usage ;;
+    *) echo "unknown argument: $1" >&2; usage ;;
+  esac
+done
+
+[[ -n "$worktree" && -d "$worktree" ]] || { echo "worktree must be an existing directory" >&2; exit 2; }
+[[ -n "$run_dir" ]] || { echo "run-dir is required" >&2; exit 2; }
+[[ "$timeout_seconds" =~ ^[0-9]+$ ]] || { echo "timeout must be a non-negative integer" >&2; exit 2; }
+
+umask 077
+worktree=$(cd "$worktree" && pwd -P)
+run_dir=$(mkdir -p "$run_dir" && cd "$run_dir" && pwd -P)
+case "$run_dir/" in
+  "$worktree"/*) ;;
+  *) echo "run-dir must be inside the task worktree" >&2; exit 2 ;;
+esac
+
+workspace=${CMUX_WORKSPACE_ID:-}
+caller_surface=${CMUX_SURFACE_ID:-}
+[[ -n "$workspace" ]] || { echo "CMUX_WORKSPACE_ID is required; identify the caller workspace with cmux-workspace first" >&2; exit 2; }
+[[ -n "$caller_surface" ]] || { echo "CMUX_SURFACE_ID is required; identify the caller surface with cmux-workspace first" >&2; exit 2; }
+
+cmux_bin=${CMUX_BIN:-cmux}
+agy_bin=${AGY_BIN:-agy}
+prompt_file="$run_dir/prompt.md"
+status_file="$run_dir/status.env"
+completion_file="$run_dir/completion.env"
+command_file="$run_dir/launch-command.txt"
+cmux_log="$run_dir/cmux.log"
+
+cat > "$prompt_file"
+chmod 600 "$prompt_file"
+
+write_status() {
+  local state=$1
+  local exit_code=$2
+  local tmp="$status_file.tmp"
+  {
+    printf 'state=%s\n' "$state"
+    printf 'exit_code=%s\n' "$exit_code"
+    printf 'workspace=%s\n' "$workspace"
+    printf 'caller_surface=%s\n' "$caller_surface"
+    printf 'surface=%s\n' "${surface:-unknown}"
+    printf 'worktree=%s\n' "$worktree"
+    printf 'prompt=%s\n' "$prompt_file"
+  } > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$status_file"
+}
+
+shell_quote() {
+  local value=$1
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "$value"
+}
+
+# The command is deliberately fixed. Only filesystem paths are quoted into it;
+# the task itself is read from prompt.md after cmux has accepted the command.
+quoted_worktree=$(shell_quote "$worktree")
+quoted_prompt=$(shell_quote "$prompt_file")
+quoted_status=$(shell_quote "$status_file")
+quoted_completion=$(shell_quote "$completion_file")
+quoted_agy=$(shell_quote "$agy_bin")
+launch_command="cd -- $quoted_worktree && prompt=\$(cat -- $quoted_prompt; printf '\\001') && prompt=\${prompt%?} && $quoted_agy -p \"\$prompt\"; rc=\$?; if [ \$rc -eq 0 ]; then state=completed; else state=failed; fi; printf 'state=%s\\012exit_code=%s\\012' \"\$state\" \"\$rc\" > $quoted_completion; if ! grep -q '^state=timeout$' $quoted_status 2>/dev/null; then printf 'state=%s\\012exit_code=%s\\012' \"\$state\" \"\$rc\" > $quoted_status; fi; exit \"\$rc\""
+
+write_status launching 0
+printf '%s\n' "$launch_command" > "$command_file"
+chmod 600 "$command_file"
+
+if ! pane_output=$("$cmux_bin" new-split right --workspace "$workspace" --surface "$caller_surface" --focus false 2>"$cmux_log"); then
+  write_status failed 1
+  echo "cmux could not create the right-hand pane; see $cmux_log" >&2
+  exit 1
+fi
+surface=$(printf '%s\n' "$pane_output" | sed -nE 's/.*(surface:[^[:space:]]+).*/\1/p' | tail -n 1)
+[[ -n "$surface" ]] || {
+  write_status failed 1
+  echo "cmux did not return a surface reference; see $cmux_log" >&2
+  exit 1
+}
+
+# Mark running before send: a fast agy completion must not be overwritten by a
+# later running state. The pane remains open intentionally after completion.
+write_status running 0
+if ! "$cmux_bin" send --workspace "$workspace" --surface "$surface" -- "$launch_command"$'\n' >>"$cmux_log" 2>&1; then
+  write_status failed 1
+  echo "cmux could not send the fixed launch command; see $cmux_log" >&2
+  exit 1
+fi
+
+started_at=$(date +%s)
+while :; do
+  if [[ -f "$completion_file" ]] && grep -q '^state=\(completed\|failed\)$' "$completion_file"; then
+    # Preserve the routing/worktree metadata while promoting the completion marker.
+    state=$(sed -n 's/^state=//p' "$completion_file" | head -n 1)
+    exit_code=$(sed -n 's/^exit_code=//p' "$completion_file" | head -n 1)
+    [[ "$exit_code" =~ ^[0-9]+$ ]] || exit_code=1
+    write_status "$state" "$exit_code"
+    cat "$status_file"
+    exit "$exit_code"
+  fi
+  now=$(date +%s)
+  if ((now - started_at >= timeout_seconds)); then
+    write_status timeout 124
+    cat "$status_file"
+    exit 124
+  fi
+  sleep 1
+done

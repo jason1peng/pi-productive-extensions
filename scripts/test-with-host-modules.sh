@@ -23,6 +23,7 @@ cp -R "$TYPEBOX_SOURCE" "$MODULES/pi-subagents/node_modules/typebox"
 export NODE_PATH="$MODULES:$MODULE_ROOT${NODE_PATH:+:$NODE_PATH}"
 export PPE_HOST_DISCOVERY_REQUIRED=1
 bun "$ROOT/extensions/delivery-state-machine/tests/delivery-state-machine.test.ts"
+bun "$ROOT/extensions/antigravity-cmux/tests/antigravity-cmux.test.ts"
 bun "$ROOT/extensions/delivery-state-machine/benchmarks/agent-quality/tests/framework.test.ts"
 bun "$ROOT/extensions/delivery-state-machine/benchmarks/model-quality/tests/infrastructure.test.ts"
 bun "$ROOT/extensions/session-usage/tests/session-usage.test.ts"

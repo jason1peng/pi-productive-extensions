@@ -28,6 +28,15 @@ Post-merge housekeeping for local git worktrees.
 
 - Command: `/cleanup`
 - Details: [extensions/git-cleanup/README.md](extensions/git-cleanup/README.md)
+### antigravity-cmux
+
+Provides a normal Pi subagent that launches Antigravity CLI (`agy`) in a visible cmux pane.
+
+- Commands: `pi subagents run antigravity-cmux`
+- Tools: `read`, `bash`
+- Required Pi skills: `cmux`, `cmux-workspace` (install via `npx skills add manaflow-ai/cmux --skill cmux --skill cmux-workspace -g -y --copy`)
+- Setup: run `npm run setup` (or `npm install` then the skill command above) to install dependencies and skills.
+- Details: [extensions/antigravity-cmux/README.md](extensions/antigravity-cmux/README.md)
 
 ## Apps
 

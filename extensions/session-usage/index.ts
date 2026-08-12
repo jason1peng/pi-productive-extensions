@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { collectSessionUsage, type CollectedSessionUsage, type UsageTotals } from "../../shared/session-usage.ts";
+import { buildSessionUsageSnapshot, collectSessionUsage, type CollectedSessionUsage, type SessionUsageSnapshot, type UsageTotals } from "../../shared/session-usage.ts";
 
 function fmtInt(n: number): string {
 	return Math.round(n).toLocaleString("en-US");
@@ -45,17 +45,64 @@ function collectCurrentSessionUsage(sessionFile: string | undefined): CollectedS
 	return collectSessionUsage(sessionFile, { childFileName: "session.jsonl" });
 }
 
+interface SessionManagerLike {
+	getSessionFile(): string | undefined;
+}
+
+let activeSessionManager: SessionManagerLike | undefined;
+
+function captureSessionManager(ctx: { sessionManager?: SessionManagerLike } | undefined): void {
+	if (ctx && ctx.sessionManager) activeSessionManager = ctx.sessionManager;
+}
+
+function resetSessionUsageState(): void {
+	activeSessionManager = undefined;
+}
+
+const SESSION_USAGE_REQUEST_EVENT = "session-usage:request";
+const SESSION_USAGE_RESPONSE_EVENT = "session-usage:response";
+const CHILD_SESSION_FILE = "session.jsonl";
+
+function handleSessionUsageRequest(requestId: string, sessionFile: string | undefined): SessionUsageSnapshot {
+	return buildSessionUsageSnapshot(sessionFile, { childFileName: CHILD_SESSION_FILE, requestId });
+}
+
 export const sessionUsageInternals = {
 	collectCurrentSessionUsage,
 	formatUsageReport,
+	captureSessionManager,
+	resetSessionUsageState,
+	handleSessionUsageRequest,
+	SESSION_USAGE_REQUEST_EVENT,
+	SESSION_USAGE_RESPONSE_EVENT,
 };
 
-export type { CollectedSessionUsage, UsageTotals };
+export type { CollectedSessionUsage, SessionUsageSnapshot, UsageTotals };
 
 export default function sessionUsageExtension(pi: ExtensionAPI) {
+	pi.on("session_start", (_event, ctx) => {
+		captureSessionManager(ctx);
+	});
+	pi.on("session_tree", (_event, ctx) => {
+		captureSessionManager(ctx);
+	});
+	pi.on("session_shutdown", () => {
+		resetSessionUsageState();
+	});
+
+	pi.events.on(SESSION_USAGE_REQUEST_EVENT, (data) => {
+		if (!data || typeof data !== "object") return;
+		const request = data as { requestId?: unknown };
+		if (typeof request.requestId !== "string") return;
+		const sessionFile = activeSessionManager?.getSessionFile();
+		const snapshot = handleSessionUsageRequest(request.requestId, sessionFile);
+		pi.events.emit(SESSION_USAGE_RESPONSE_EVENT, snapshot);
+	});
+
 	pi.registerCommand("session-usage-all", {
 		description: "Show current session usage including subagent child sessions",
 		handler: async (_args, ctx) => {
+			captureSessionManager(ctx);
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const result = collectCurrentSessionUsage(sessionFile);
 			ctx.ui.notify(formatUsageReport(result), "info");
@@ -72,6 +119,7 @@ export default function sessionUsageExtension(pi: ExtensionAPI) {
 		],
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			captureSessionManager(ctx);
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const result = collectCurrentSessionUsage(sessionFile);
 			return {

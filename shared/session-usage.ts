@@ -23,6 +23,13 @@ export interface UsageRow extends UsageTotals {
 export interface CollectedSessionUsage {
 	sessionFile?: string;
 	baseDir?: string;
+	/** Whether the parent session file was readable at collection time. */
+	parentAvailable: boolean;
+	/** Parent totals, including an empty readable parent file's sessionFiles count. */
+	parentTotals: UsageTotals;
+	/** Recorded totals from discovered child session files with usage. */
+	subagentTotals: UsageTotals;
+	subagentSessions: number;
 	rows: UsageRow[];
 	total: UsageTotals;
 }
@@ -89,12 +96,24 @@ export function collectUsageFromJsonlContent(content: string, options: { countSe
 	return totals;
 }
 
-export function collectUsageFromSessionFile(sessionFile: string): UsageTotals {
+interface ReadUsageFromSessionFile {
+	available: boolean;
+	totals: UsageTotals;
+}
+
+function readUsageFromSessionFile(sessionFile: string): ReadUsageFromSessionFile {
 	try {
-		return collectUsageFromJsonlContent(fs.readFileSync(sessionFile, "utf8"), { countSessionFile: true });
+		return {
+			available: true,
+			totals: collectUsageFromJsonlContent(fs.readFileSync(sessionFile, "utf8"), { countSessionFile: true }),
+		};
 	} catch {
-		return emptyUsageTotals();
+		return { available: false, totals: emptyUsageTotals() };
 	}
+}
+
+export function collectUsageFromSessionFile(sessionFile: string): UsageTotals {
+	return readUsageFromSessionFile(sessionFile).totals;
 }
 
 export function subagentSessionDirFor(sessionFile: string): string {
@@ -133,13 +152,19 @@ export function deriveSubagentInfo(file: string, baseDir: string): Pick<UsageRow
 export function collectSessionUsage(sessionFile: string | undefined, options: { childFileName?: string; includeEmptyRows?: boolean } = {}): CollectedSessionUsage {
 	const rows: UsageRow[] = [];
 	const total = emptyUsageTotals();
-	if (!sessionFile) return { rows, total };
-
-	const parentTotals = collectUsageFromSessionFile(sessionFile);
-	if (options.includeEmptyRows || parentTotals.assistantMessages > 0) {
-		rows.push({ kind: "parent", path: sessionFile, ...parentTotals });
+	const parentTotals = emptyUsageTotals();
+	const subagentTotals = emptyUsageTotals();
+	let subagentSessions = 0;
+	if (!sessionFile) {
+		return { rows, total, parentAvailable: false, parentTotals, subagentTotals, subagentSessions };
 	}
-	addUsageTotals(total, parentTotals);
+
+	const parentRead = readUsageFromSessionFile(sessionFile);
+	addUsageTotals(parentTotals, parentRead.totals);
+	if (options.includeEmptyRows || parentRead.totals.assistantMessages > 0) {
+		rows.push({ kind: "parent", path: sessionFile, ...parentRead.totals });
+	}
+	addUsageTotals(total, parentRead.totals);
 
 	const baseDir = subagentSessionDirFor(sessionFile);
 	for (const childFile of discoverSessionJsonlFiles(baseDir, { fileName: options.childFileName })) {
@@ -148,7 +173,43 @@ export function collectSessionUsage(sessionFile: string | undefined, options: { 
 		const info = deriveSubagentInfo(childFile, baseDir);
 		rows.push({ kind: "subagent", path: childFile, ...info, ...childTotals });
 		addUsageTotals(total, childTotals);
+		if (childTotals.assistantMessages > 0) {
+			addUsageTotals(subagentTotals, childTotals);
+			subagentSessions++;
+		}
 	}
 
-	return { sessionFile, baseDir, rows, total };
+	return { sessionFile, baseDir, rows, total, parentAvailable: parentRead.available, parentTotals, subagentTotals, subagentSessions };
+}
+
+export interface SessionUsageSnapshot {
+	requestId: string;
+	status: "ok" | "unavailable";
+	parent: UsageTotals;
+	subagents: UsageTotals;
+	total: UsageTotals;
+	subagentSessions: number;
+}
+
+export function buildSessionUsageSnapshot(sessionFile: string | undefined, options: { childFileName?: string; requestId?: string } = {}): SessionUsageSnapshot {
+	const requestId = options.requestId ?? "";
+	const collected = collectSessionUsage(sessionFile, { childFileName: options.childFileName });
+	if (!collected.parentAvailable) {
+		return {
+			requestId,
+			status: "unavailable",
+			parent: emptyUsageTotals(),
+			subagents: emptyUsageTotals(),
+			total: emptyUsageTotals(),
+			subagentSessions: 0,
+		};
+	}
+	return {
+		requestId,
+		status: "ok",
+		parent: { ...collected.parentTotals },
+		subagents: { ...collected.subagentTotals },
+		total: { ...collected.total },
+		subagentSessions: collected.subagentSessions,
+	};
 }

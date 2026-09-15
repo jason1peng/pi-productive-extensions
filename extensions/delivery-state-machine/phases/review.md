@@ -52,10 +52,3 @@ Task:
 {{task}}
 
 {{artifactGuidance}}
-
-## DSM child prompt
-
-Task:
-{{task}}
-
-{{artifactGuidance}}

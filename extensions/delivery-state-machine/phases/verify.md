@@ -43,12 +43,3 @@ Task:
 {{task}}
 
 {{artifactGuidance}}
-
-## DSM child prompt
-
-Task:
-{{task}}
-
-Verification round: {{verifyRound}}/{{maxRepairRounds}}
-
-{{artifactGuidance}}

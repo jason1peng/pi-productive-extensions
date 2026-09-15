@@ -229,43 +229,14 @@ async function advanceHarnessToPhase(harness: ReturnType<typeof createHarness>, 
 	return harness.tool("delivery_report", { phase: "RETRO", verdict: "DONE", summary: "retrospective complete" });
 }
 
-await runTest("package manifest exposes exactly five package-qualified DSM agents with phase-safe tools", async () => {
+await runTest("package manifest retires packaged phase-agent discovery", async () => {
 	const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 	const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-	assert.deepEqual(manifest.pi?.subagents?.agents, ["./extensions/delivery-state-machine/agents/dsm"]);
-	const agentsDir = path.join(root, manifest.pi.subagents.agents[0]);
-	const files = fs.readdirSync(agentsDir).filter((name) => name.endsWith(".md")).sort();
-	const expected: Record<string, { phase: RunnablePhase; tools: string[]; thinking?: "low" | "high" }> = {
-		"closer.md": { phase: "CLOSE", tools: ["read", "bash"], thinking: "low" },
-		"implementer.md": { phase: "IMPLEMENT", tools: ["read", "bash", "edit", "write"] },
-		"retrospective.md": { phase: "RETRO", tools: ["read", "bash"], thinking: "high" },
-		"reviewer.md": { phase: "REVIEW", tools: ["read", "bash"] },
-		"verifier.md": { phase: "VERIFY", tools: ["read", "bash"], thinking: "low" },
-	};
-	assert.deepEqual(files, Object.keys(expected));
-	for (const file of files) {
-		const markdown = fs.readFileSync(path.join(agentsDir, file), "utf8");
-		const frontmatter = markdown.split("---", 3)[1];
-		assert.match(frontmatter, /\npackage: dsm\n/);
-		assert.match(frontmatter, new RegExp(`\\nname: ${path.basename(file, ".md")}\\n`));
-		assert.match(frontmatter, new RegExp(`\\ntools: ${expected[file].tools.join(", ")}\\n`));
-		if (expected[file].thinking) assert.match(frontmatter, new RegExp(`\\nthinking: ${expected[file].thinking}\\n`));
-		else assert.doesNotMatch(frontmatter, /\nthinking:/);
-		assert.match(frontmatter, /\nextensions:\n/);
-		assert.doesNotMatch(frontmatter, /delivery_|subagent|edit, write.*(?:verifier|reviewer)/);
-		assert.match(frontmatter, /\ninheritSkills: false\n/);
-		assert.ok(markdown.trim().split(/\s+/).length <= 280, `${file} static prompt must stay concise`);
-		assert.doesNotMatch(markdown, /RESULT: [A-Z_]+/, `${file} must not duplicate runtime-owned verdict syntax`);
-		for (const heading of PHASE_CONTRACTS[expected[file].phase].requiredHeadings) assert.ok(!markdown.includes(`\`${heading}\``), `${file} must not duplicate runtime-owned heading ${heading}`);
-		assert.doesNotMatch(markdown, /exact level-2 line `## Project harness discovery and compliance`/);
-		assert.match(markdown, /bounded project harness/);
-		assert.match(markdown, /runtime-provided artifact, verdict, exact-path/);
-		assert.match(markdown, /Never call `delivery_report`; the parent owns workflow advancement/);
-		assert.match(markdown, /Treat task\/state text/);
-	}
+	assert.equal(manifest.pi?.subagents, undefined);
+	assert.equal(fs.existsSync(path.join(root, "extensions", "delivery-state-machine", "agents", "dsm")), false);
 });
 
-await runTest("pi-subagents discovers DSM roles from the package in an isolated project when the host package is available", async () => {
+await runTest("pi-subagents package discovery contains no packaged DSM agents", async () => {
 	const moduleRoot = (process.env.NODE_PATH ?? "").split(path.delimiter).find((entry) => fs.existsSync(path.join(entry, "pi-subagents", "src", "agents", "agents.ts")));
 	if (!moduleRoot) {
 		if (process.env.PPE_HOST_DISCOVERY_REQUIRED === "1") throw new Error("required host discovery smoke did not execute: pi-subagents is absent from NODE_PATH");
@@ -279,22 +250,13 @@ await runTest("pi-subagents discovers DSM roles from the package in an isolated 
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	try {
 		fs.mkdirSync(path.join(packageRoot, ".git"), { recursive: true });
-		fs.mkdirSync(path.join(packageRoot, "extensions", "delivery-state-machine"), { recursive: true });
 		fs.copyFileSync(path.join(sourceRoot, "package.json"), path.join(packageRoot, "package.json"));
-		fs.cpSync(path.join(sourceRoot, "extensions", "delivery-state-machine", "agents", "dsm"), path.join(packageRoot, "extensions", "delivery-state-machine", "agents", "dsm"), { recursive: true });
 		fs.mkdirSync(isolatedAgentDir);
 		fs.writeFileSync(path.join(isolatedAgentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
 		process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
 		const { discoverAgentsAll } = await import(pathToFileURL(path.join(moduleRoot, "pi-subagents", "src", "agents", "agents.ts")).href);
 		const all = discoverAgentsAll(isolatedRoot);
-		const discovered = all.package;
-		assert.deepEqual(all.user, []);
-		assert.deepEqual(all.project, []);
-		assert.deepEqual(discovered.map((agent: any) => agent.name).sort(), ["dsm.closer", "dsm.implementer", "dsm.retrospective", "dsm.reviewer", "dsm.verifier"]);
-		for (const agent of discovered) {
-			assert.equal(agent.source, "package");
-			assert.equal(agent.packageName, "dsm");
-		}
+		assert.equal(all.package.some((agent: any) => agent.name.startsWith("dsm.")), false);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -451,9 +413,9 @@ await runTest("isolated smoke launch evidence ignores parent and sibling output-
 			["reviewrun", 0, firstOutput, secondOutput],
 			["reviewrun", 1, secondOutput, firstOutput],
 		] as const) {
-			fs.writeFileSync(path.join(metadataDir, `${runId}_dsm.reviewer_${childIndex}_meta.json`), JSON.stringify({
+			fs.writeFileSync(path.join(metadataDir, `${runId}_reviewer_${childIndex}_meta.json`), JSON.stringify({
 				runId,
-				agent: "dsm.reviewer",
+				agent: "reviewer",
 				task: `Parent/sibling context references ${referencedOutput}.\nWrite your findings to exactly this path: ${ownOutput}\nThis path is authoritative for this run.`,
 			}));
 			const sessionPath = path.join(sessionsDir, runId, `run-${childIndex}`, "session.jsonl");
@@ -465,7 +427,7 @@ await runTest("isolated smoke launch evidence ignores parent and sibling output-
 		const resolved = execFileSync("python3", [
 			"-B",
 			"-c",
-			"import json,sys; sys.path.insert(0,sys.argv[1]); from pathlib import Path; from isolated_host_launch_evidence import resolve_child_session; path,records=resolve_child_session(Path(sys.argv[2]),Path(sys.argv[3]),'dsm.reviewer',sys.argv[4]); print(json.dumps({'path':str(path),'id':records[0]['id']}))",
+			"import json,sys; sys.path.insert(0,sys.argv[1]); from pathlib import Path; from isolated_host_launch_evidence import resolve_child_session; path,records=resolve_child_session(Path(sys.argv[2]),Path(sys.argv[3]),'reviewer',sys.argv[4]); print(json.dumps({'path':str(path),'id':records[0]['id']}))",
 			helperDir,
 			metadataDir,
 			sessionsDir,
@@ -511,81 +473,65 @@ await runTest("isolated host smoke removes inherited subagent identity markers a
 	assert.equal(Object.keys(sanitized).some((key) => key.startsWith("PI_SUBAGENT_")), false);
 });
 
-await runTest("DSM candidate stays non-default and receives concise agent-aware dynamic prompts", async () => {
+await runTest("bundled launch config contains only the generic default profile", async () => {
 	const extensionDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 	const raw = JSON.parse(fs.readFileSync(path.join(extensionDir, "phase-launches.json"), "utf8"));
 	assert.equal(raw.defaultProfile, "default");
-	const candidate = Object.fromEntries(Object.entries(raw.profiles["dsm-candidate"]).map(([phase, value]) => [phase, (Array.isArray(value) ? value : [value])])) as Record<RunnablePhase, any[]>;
-	const expectedAgents: Record<RunnablePhase, string> = { IMPLEMENT: "dsm.implementer", VERIFY: "dsm.verifier", REVIEW: "dsm.reviewer", CLOSE: "dsm.closer", RETRO: "dsm.retrospective" };
-	const configs = materializePhaseConfigs(candidate);
-	assert.equal(candidate.REVIEW.length, 2);
-	assert.deepEqual(Object.fromEntries((Object.keys(PHASE_CONTRACTS) as RunnablePhase[]).map((phase) => [phase, candidate[phase].map((launch) => launch.thinking)])), {
-		IMPLEMENT: [undefined],
-		VERIFY: [undefined],
-		REVIEW: [undefined, undefined],
-		CLOSE: [undefined],
-		RETRO: [undefined],
-	});
+	assert.deepEqual(Object.keys(raw.profiles), ["default"]);
+	const expectedAgents: Record<RunnablePhase, string> = { IMPLEMENT: "worker", VERIFY: "fresh-verifier", REVIEW: "reviewer", CLOSE: "delegate", RETRO: "delegate" };
+	const defaultLaunches = Object.fromEntries(Object.keys(PHASE_CONTRACTS).map((phase) => {
+		const value = raw.profiles.default[phase];
+		return [phase, Array.isArray(value) ? value : [value]];
+	})) as Record<RunnablePhase, any[]>;
+	const configs = materializePhaseConfigs(defaultLaunches);
 	for (const phase of Object.keys(PHASE_CONTRACTS) as RunnablePhase[]) {
 		assert.ok(configs[phase].launches.every((launch) => launch.agent === expectedAgents[phase]));
-		assert.ok(configs[phase].launches.every((launch) => launch.model === undefined), `${phase} must remain provider-neutral`);
-		assert.ok(configs[phase].launches.every((launch) => launch.context === "fresh"));
-		const context = { task: `dynamic ${phase} task`, artifactGuidance: "LEGACY ARTIFACT GUIDANCE", verifyRound: 2, maxRepairRounds: 3, pendingIssueInstruction: "repair this issue" };
-		const dsmPrompt = configs[phase].childPrompt(context, expectedAgents[phase]);
-		const compatibilityPrompt = configs[phase].childPrompt(context, raw.profiles.default[phase]?.agent ?? "reviewer");
-		const crossPhasePrompt = configs[phase].childPrompt(context, expectedAgents[phase === "IMPLEMENT" ? "VERIFY" : "IMPLEMENT"]);
-		const arbitraryDsmPrompt = configs[phase].childPrompt(context, "dsm.custom");
-		assert.match(dsmPrompt, new RegExp(`Artifact contract for ${phase}`));
-		assert.match(dsmPrompt, new RegExp(`dynamic ${phase} task`));
-		assert.match(dsmPrompt, /LEGACY ARTIFACT GUIDANCE/);
-		assert.doesNotMatch(dsmPrompt, /Instructions:/);
-		for (const fullPrompt of [compatibilityPrompt, crossPhasePrompt, arbitraryDsmPrompt]) assert.match(fullPrompt, /Instructions:/);
+		const context = { task: `dynamic ${phase} task`, artifactGuidance: "ARTIFACT GUIDANCE", verifyRound: 2, maxRepairRounds: 3, pendingIssueInstruction: "repair this issue" };
+		const prompt = configs[phase].childPrompt(context, "custom-agent");
+		assert.match(prompt, new RegExp(`Artifact contract for ${phase}`));
+		assert.match(prompt, new RegExp(`dynamic ${phase} task`));
+		assert.match(prompt, /ARTIFACT GUIDANCE/);
+		assert.match(prompt, /Instructions:/);
 	}
 
-	process.env.PI_DELIVERY_PROFILE = "dsm-candidate";
+	process.env.PI_DELIVERY_PROFILE = "default";
 	try {
 		const harness = createHarness();
-		const result = await harness.tool("delivery_start", { task: "candidate prompt smoke" });
-		assert.equal(result.details.state.launchProfile.selectedProfile, "dsm-candidate");
-		assert.equal(result.details.next.agent, "dsm.implementer");
-		assert.match(result.details.next.childPrompt, /candidate prompt smoke/);
+		const result = await harness.tool("delivery_start", { task: "default prompt smoke" });
+		assert.equal(result.details.state.launchProfile.selectedProfile, "default");
+		assert.equal(result.details.next.agent, "worker");
+		assert.match(result.details.next.childPrompt, /default prompt smoke/);
 		assert.match(result.details.next.childPrompt, new RegExp(result.details.next.artifact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-		assert.doesNotMatch(result.details.next.childPrompt, /The Required checklist section must include/);
+		assert.match(result.details.next.childPrompt, /The Required checklist section must include/);
 	} finally {
 		delete process.env.PI_DELIVERY_PROFILE;
 	}
 });
 
-await runTest("DSM dynamic prompts allow only runtime-owned contracts plus task/state context", async () => {
-	process.env.PI_DELIVERY_PROFILE = "dsm-candidate";
+await runTest("generic prompts retain workflow safeguards for every phase", async () => {
+	process.env.PI_DELIVERY_PROFILE = "default";
 	try {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-dsm-prompt-allowlist-"));
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-generic-prompt-allowlist-"));
 		try {
 			const harness = createHarness({ cwd });
-			const task = "unique DSM dynamic task";
+			const task = "unique generic dynamic task";
 			let result = await harness.tool("delivery_start", { task });
-			const forbiddenStablePolicy = [
+			const requiredWorkflowSafeguards = [
 				"Project harness discovery (bounded, best effort)",
 				"Common workflow instruction:",
 				"Instruction authority:",
-				"Return your result and evidence to the parent/orchestrator",
+				"Return results and evidence to the parent/orchestrator",
 				"do not recursively read unrelated documentation",
-				"Implement the accepted task as the sole writer",
-				"Independently verify the accepted task",
-				"Independently review the current candidate",
-				"Close the verified and reviewed delivery",
-				"Write the read-only retrospective",
 			];
 			for (const phase of Object.keys(PHASE_CONTRACTS) as RunnablePhase[]) {
 				const prompts = result.details.next.parallel?.map((launch: any) => launch.childPrompt) ?? [result.details.next.childPrompt];
 				for (const prompt of prompts) {
 					assert.match(prompt, new RegExp(`Artifact contract for ${phase}`));
-					assert.match(prompt, /Project harness artifact contract:/);
-				assert.match(prompt, /Authoritative source instruction:/);
+					for (const safeguard of requiredWorkflowSafeguards) assert.match(prompt, new RegExp(safeguard.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${phase} omitted safeguard: ${safeguard}`);
+					assert.match(prompt, /Authoritative source instruction:/);
 				assert.match(prompt, /Read any named authoritative source before acting/);
 					assert.match(prompt, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 					assert.match(prompt, new RegExp(task));
-					for (const policy of forbiddenStablePolicy) assert.doesNotMatch(prompt, new RegExp(policy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${phase} leaked stable policy: ${policy}`);
 				}
 				if (phase === "RETRO") break;
 				if (phase === "REVIEW") for (const launch of result.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
@@ -600,16 +546,16 @@ await runTest("DSM dynamic prompts allow only runtime-owned contracts plus task/
 	}
 });
 
-await runTest("cross-phase and arbitrary dsm names retain full compatibility prompts", async () => {
+await runTest("cross-phase and arbitrary names retain full compatibility prompts", async () => {
 	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
 		mismatched: fullProfile({
-			IMPLEMENT: { agent: "dsm.verifier" },
-			VERIFY: { agent: "dsm.custom" },
+			IMPLEMENT: { agent: "custom-verifier" },
+			VERIFY: { agent: "custom-agent" },
 		}),
 	}), async () => {
 		const harness = createHarness();
-		let result = await harness.tool("delivery_start", { task: "exact DSM phase identity" });
-		assert.equal(result.details.next.agent, "dsm.verifier");
+		let result = await harness.tool("delivery_start", { task: "exact phase identity" });
+		assert.equal(result.details.next.agent, "custom-verifier");
 		assert.match(result.details.next.childPrompt, /Implement this delivery phase as the sole writer/);
 		assert.match(result.details.next.childPrompt, /Project harness discovery \(bounded, best effort\)/);
 		assert.match(result.details.next.childPrompt, /Common workflow instruction:/);
@@ -618,7 +564,7 @@ await runTest("cross-phase and arbitrary dsm names retain full compatibility pro
 
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
 		result = await harness.tool("delivery_next");
-		assert.equal(result.details.next.agent, "dsm.custom");
+		assert.equal(result.details.next.agent, "custom-agent");
 		assert.match(result.details.next.childPrompt, /Independently verify this task/);
 		assert.match(result.details.next.childPrompt, /Project harness discovery \(bounded, best effort\)/);
 		assert.match(result.details.next.childPrompt, /Common workflow instruction:/);
@@ -627,23 +573,7 @@ await runTest("cross-phase and arbitrary dsm names retain full compatibility pro
 	});
 });
 
-await runTest("bundled agent thinking defaults avoid relay enforcement while explicit profile overrides remain enforced", async () => {
-	process.env.PI_DELIVERY_PROFILE = "dsm-candidate";
-	try {
-		const harness = createHarness();
-		await harness.tool("delivery_start", { task: "agent-owned thinking default" });
-		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
-		const next = await harness.tool("delivery_next");
-		assert.equal(next.details.next.thinking, undefined);
-		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: { action: "list" } }), undefined);
-		const launch = { agent: next.details.next.agent, output: next.details.next.output, task: next.details.next.childPrompt };
-		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: launch }), undefined);
-		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { ...launch, task: "summarized child task" } }))?.reason, /childPrompt verbatim/);
-		assert.match((await harness.emit("tool_call", { toolName: "subagent", input: { ...launch, output: `${launch.output}.wrong` } }))?.reason, /pass output=.*exactly/);
-	} finally {
-		delete process.env.PI_DELIVERY_PROFILE;
-	}
-
+await runTest("explicit profile thinking overrides remain enforced", async () => {
 	await withTemporaryUserExtensionFile("phase-launches.json", profileLaunches({
 		strict: fullProfile({
 			REVIEW: [

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Opt-in, model-backed Stage 6 smoke. It intentionally is not part of npm run verify.
+# Opt-in, model-backed delivery smoke. It intentionally is not part of npm run verify.
 #
 # Env knobs:
 #   PI_DELIVERY_PROFILE         profile under test (default: default)
@@ -103,13 +103,6 @@ mkdir -p "$AGENT_DIR" "$PROJECT_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"
 git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all > "$RESULTS_DIR/source-status-before.txt"
 cp "$REPO_ROOT/package.json" "$PACKAGE_DIR/package.json"
 cp -R "$REPO_ROOT/extensions" "$REPO_ROOT/shared" "$PACKAGE_DIR/"
-# Keep the isolated host's agent namespace scoped to the selected profile. The
-# package also ships dsm.* compatibility agents; leaving those alongside the
-# generic default reviewer/worker makes pi-subagents reject an unqualified
-# default launch as ambiguous (for example reviewer vs dsm.reviewer).
-if [[ "$PROFILE" != "dsm-candidate" ]]; then
-	rm -f "$PACKAGE_DIR/extensions/delivery-state-machine/agents/dsm/"*.md
-fi
 mkdir "$PACKAGE_DIR/.git"
 if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
 	cp "${HOME}/.pi/agent/auth.json" "$AGENT_DIR/auth.json"
@@ -188,8 +181,8 @@ PY
 )
 
 # Stage only the selected profile's user agent definitions. Builtins and
-# packaged dsm.* agents remain discovered from their normal scopes; the staged
-# files make default/private-project smoke runs match the real user stack.
+# user-owned agents are resolved from their normal scopes; the staged files
+# make default/private-project smoke runs match the real user stack.
 mkdir -p "$AGENT_DIR/agents"
 : > "$RESULTS_DIR/profile-agent-sources.txt"
 if [[ -n "$AGENT_SOURCE_DIR" ]]; then
@@ -200,12 +193,6 @@ fi
 BUILTIN_AGENT_NAMES=" advisor context-builder delegate oracle planner researcher reviewer scout worker "
 while IFS= read -r agent; do
 	[[ -z "$agent" ]] && continue
-	case "$agent" in
-		dsm.*)
-			printf '%s\tpackage\n' "$agent" >> "$RESULTS_DIR/profile-agent-sources.txt"
-			continue
-			;;
-	esac
 	copied=
 	for source_dir in "${AGENT_SOURCE_DIRS[@]}"; do
 		candidate="$source_dir/$agent.md"
@@ -283,8 +270,8 @@ const selected = all
 await Bun.write(output, JSON.stringify({ profile: expectations.profile, expectedAgents: expectations.agents, selected }, null, 2) + "\n");
 for (const name of new Set(expectations.agents)) {
   if (!selected.some((agent) => agent.name === name)) process.exit(1);
-  if (name.startsWith("dsm.") && !selected.some((agent) => agent.name === name && agent.source === "package" && agent.packageName === "dsm")) process.exit(1);
 }
+if (all.some((agent) => agent.source === "package" && agent.name.startsWith("dsm."))) process.exit(1);
 ' "$SUBAGENTS_ROOT/src/agents/agents.ts" "$PACKAGE_DIR" "$RESULTS_DIR/discovery.json" "$RESULTS_DIR/profile-expectations.json"
 
 if [[ -n "$PROMPT_FILE" ]]; then
@@ -546,13 +533,8 @@ for launch in expected:
     remaining.remove(match)
 (results / "requested-launches.json").write_text(json.dumps(requested, indent=2) + "\n")
 
-# Stable bundled thinking policy is agent-owned rather than relayed through the
-# parent tool call. Confirm the child session applied each relevant default.
-agent_thinking_defaults = {
-    "dsm.verifier": "low",
-    "dsm.closer": "low",
-    "dsm.retrospective": "high",
-}
+# Confirm any explicit thinking level from the selected launch configuration
+# reached the child session rather than being silently changed by the host.
 actual = []
 for launch in requested:
     output = launch.get("output")
@@ -576,7 +558,7 @@ for launch in requested:
         assert_effective_model(evidence, expected_model)
     except ValueError as error:
         raise SystemExit(str(error)) from error
-    expected_thinking = launch.get("thinking") or agent_thinking_defaults.get(launch["agent"])
+    expected_thinking = launch.get("thinking")
     if expected_thinking and evidence.get("thinking") != expected_thinking:
         raise SystemExit(f"actual thinking did not match configured profile override or agent default: {evidence}")
     actual.append(evidence)

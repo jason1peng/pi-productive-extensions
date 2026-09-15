@@ -1,5 +1,7 @@
 # Delivery State Machine — Token Efficiency Fix Plan
 
+> Historical planning record: references to the retired DSM comparison profile below are preserved only as prior measurement context. The packaged DSM agents/profile are unavailable; current delivery uses generic launch profiles.
+
 Status: **planning** (no implementation yet)
 Source evidence: 3-model audit (kimi-k3 / glm-5.2 / gpt-5.6-luna:max) + measured validation from real run records (`~/.pi/delivery-run`, parent session transcripts). Full findings: `tmp/dsm-token-efficiency-review.html`.
 

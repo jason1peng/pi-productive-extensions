@@ -8,7 +8,10 @@ Child evidence is canonical-only: the extension recursively scans regular
 `session.jsonl` files below the child root derived from the parent session path.
 Modern transcripts and records stored in custom locations are not scanned; when
 that is the only child evidence, the report remains unavailable or partial rather
-than fabricating usage or activity.
+than fabricating usage or activity. In a mixed static/dynamic fanout without a
+persisted dynamic run-ID link, an empty outer directory cannot identify the
+available child; the report conservatively treats available unlinked children as
+dynamic evidence and retains unresolved static slots.
 
 The report separates requested tool calls from persisted results and failures,
 and separates explicit skill invocations from `SKILL.md` reads. Missing,

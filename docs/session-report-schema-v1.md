@@ -86,7 +86,11 @@ such as `expand.maxItems` are not observed child counts: only persisted child
 sources are included, so an unobserved or empty fanout does not fabricate nodes.
 An unobserved dynamic fanout keeps `usage.subagents` null and `usage.status`
 partial, even when the report itself remains `ok` because no incomplete child
-source was discovered.
+source was discovered. When a mixed static/dynamic fanout has no persisted
+dynamic run-ID linkage, canonical paths cannot identify which source belongs to
+which request: available unlinked sources are conservatively treated as dynamic
+lower-bound evidence and each expected static slot remains unresolved, including
+when an empty sibling outer directory is present.
 
 `status` is `ok` only when the parent and all discovered children are readable
 and have no malformed, compacted, or truncated evidence. `partial` means some

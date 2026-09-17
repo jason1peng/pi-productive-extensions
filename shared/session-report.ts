@@ -906,14 +906,6 @@ function discoverSessionDirectoryDescendants(root: string, childFileName: string
 	return { files, runDirectories };
 }
 
-function hasUnmaterializedOuterRun(root: string, childFileName: string): boolean {
-	for (const directory of directChildDirectories(root)) {
-		const descendants = discoverSessionDirectoryDescendants(directory, childFileName);
-		if (descendants.files.length === 0 && descendants.runDirectories.length === 0) return true;
-	}
-	return false;
-}
-
 function compareChildSources(left: ChildSource, right: ChildSource): number {
 	const leftKey = [left.runId ?? "", left.runIndex ?? "", left.file ?? "", left.status].join("\0");
 	const rightKey = [right.runId ?? "", right.runIndex ?? "", right.file ?? "", right.status].join("\0");
@@ -1152,10 +1144,9 @@ export function collectSessionReport(sessionFile: string | undefined): SessionRe
 	const expectedStaticChildren = expectedDelegatedChildCount(parent.requests);
 	const childSources = discoverChildSources(sessionFile, {
 		dynamicRunIds,
-		// A dynamic invocation creates its outer run directory before it resolves
-		// the expansion. Ignore empty outer roots whenever dynamic work is present;
-		// static launches that lack a session are represented below by their
-		// bounded unresolved-* nodes instead of being mistaken for dynamic children.
+		// Directory-only outer roots are not child evidence and are ignored when
+		// dynamic work is present. Static launches that lack a session are
+		// represented below by bounded unresolved-* nodes.
 		ignoreEmptyRunDirectories: dynamicFanout,
 	});
 	// Count static evidence independently from dynamic observations. A persisted
@@ -1163,18 +1154,18 @@ export function collectSessionReport(sessionFile: string | undefined): SessionRe
 	// session is missing; otherwise the static gap disappears when both kinds
 	// of delegation happen to produce one discovered child.
 	//
-	// Canonical paths alone cannot link an observed child to a request. When a
-	// mixed run has no parent-persisted dynamic run ID, treat available sources
-	// as dynamic unless an empty outer run root proves that the dynamic fanout
-	// never materialized (or there are more available sources than static slots).
-	// This is deliberately conservative: it preserves an unresolved static slot
-	// rather than claiming a dynamic source was static.
-	const hasUnmaterializedDynamicRun = dynamicFanout && dynamicRunIds.size === 0
-		&& hasUnmaterializedOuterRun(subagentSessionDirFor(sessionFile), "session.jsonl");
+	// Canonical paths alone cannot link an observed child to a request. In a
+	// mixed run without a parent-persisted dynamic run ID, an empty outer
+	// directory is not evidence that an available source belongs to static work:
+	// it may be the missing static run instead. Treat every available unlinked
+	// source as dynamic lower-bound evidence and preserve every static
+	// expectation as an unresolved slot. This is deliberately conservative: it
+	// preserves an unresolved static slot rather than claiming a dynamic source
+	// was static.
 	const availableUnlinkedSources = childSources.filter((source) => source.status === "available" && !dynamicRunIds.has(source.runId ?? ""));
 	const treatUnlinkedAvailableAsDynamic = dynamicFanout
 		&& dynamicRunIds.size === 0
-		&& (!hasUnmaterializedDynamicRun || availableUnlinkedSources.length > expectedStaticChildren);
+		&& availableUnlinkedSources.length > 0;
 	const isUnlinkedDynamicSource = (source: ChildSource): boolean => treatUnlinkedAvailableAsDynamic
 		&& source.status === "available"
 		&& !dynamicRunIds.has(source.runId ?? "");
@@ -1190,12 +1181,15 @@ export function collectSessionReport(sessionFile: string | undefined): SessionRe
 	const parentUsage = parent.usage;
 	// Dynamic scope is known only when persisted evidence can be attributed to
 	// the dynamic request. Normal runs persist the request's run ID in its result;
-	// dynamic-only fixtures may have no result linkage, in which case a child is
-	// attributable to the dynamic step because no static child is expected. In a
-	// mixed run, an excess child source is conservative evidence for an unlinked
-	// dynamic child. Static children alone must never close the scope.
+	// dynamic-only fixtures may have no result linkage, in which case an available
+	// source is attributable to the dynamic step because no static child is
+	// expected. In a mixed run without linkage, available unlinked sources are
+	// conservatively treated as dynamic and static expectations remain explicit.
+	// Static children alone must never close the scope.
 	const linkedDynamicChild = childSources.some((source) => source.status === "available" && source.runId !== undefined && dynamicRunIds.has(source.runId));
-	const unlinkedDynamicChild = dynamicFanout && childSources.length > expectedStaticChildren;
+	const unlinkedDynamicChild = dynamicFanout
+		&& dynamicRunIds.size === 0
+		&& availableUnlinkedSources.length > 0;
 	const dynamicScopeKnown = !dynamicFanout || linkedDynamicChild || unlinkedDynamicChild;
 	// A readable child contributes lower-bound evidence even when all recorded
 	// usage fields are zero. If every discovered child is missing, unreadable,

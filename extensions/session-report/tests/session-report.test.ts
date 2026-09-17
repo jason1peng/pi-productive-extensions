@@ -202,11 +202,20 @@ await runTest("an unlinked dynamic child does not satisfy a missing static deleg
 				{ type: "toolCall", id: "delegate-dynamic", name: "subagent", arguments: { chain: [{ parallel: { agent: "worker", task: "dynamic child" }, expand: { maxItems: 2 } }] } },
 			] } },
 		]);
+		// The empty sibling outer root could be the missing static launch; without
+		// a persisted dynamic result runId, it must not make the readable child
+		// look like the static delegation completed.
+		fs.mkdirSync(path.join(root, "parent", "run-static"), { recursive: true });
 		// No parent result runId links this persisted child to the dynamic call.
-		writeJsonl(dynamicChild, [{ type: "session", id: "dynamic-child" }]);
+		writeJsonl(dynamicChild, [
+			{ type: "session", id: "dynamic-child" },
+			{ type: "message", message: { role: "assistant", usage: { input: 4, output: 6, totalTokens: 10 } } },
+		]);
 		const report = collectSessionReport(parent);
 		assert.equal(report.status, "partial");
 		assert.equal(report.usage.status, "partial");
+		assert.equal(report.usage.subagents?.totalTokens, 10);
+		assert.equal(report.usage.total?.totalTokens, 10);
 		assert.equal(report.topology.children.length, 2);
 		assert.equal(report.topology.ephemeralSessionCount, 1);
 		assert.equal(report.topology.children.some((child) => child.runId === "unresolved-1" && child.status === "ephemeral"), true);
@@ -227,6 +236,7 @@ await runTest("mixed static and unobserved dynamic fanout keeps child usage unkn
 				{ type: "toolCall", id: "delegate-static", name: "subagent", arguments: { agent: "worker", task: "static child" } },
 				{ type: "toolCall", id: "delegate-dynamic", name: "subagent", arguments: { chain: [{ parallel: { agent: "worker", task: "dynamic child" }, expand: { maxItems: 10, onEmpty: "skip" } }] } },
 			] } },
+			{ type: "message", message: { role: "toolResult", toolCallId: "delegate-dynamic", toolName: "subagent", isError: false, details: { runId: "run-dynamic-empty" } } },
 		]);
 		writeJsonl(staticChild, [{ type: "session", id: "static-child" }, { type: "message", message: { role: "assistant", usage: { input: 2, output: 3, totalTokens: 5 } } }]);
 		// The runtime creates this outer dynamic root before resolving the source;

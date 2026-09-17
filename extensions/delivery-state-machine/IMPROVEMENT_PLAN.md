@@ -1,5 +1,7 @@
 # Delivery State Machine Improvement Plan
 
+> Historical planning record: the Stage 6/7 package-agent and comparison material below predates the subsequent DSM-agent removal. Exact DSM names and benchmark commands are retained only as frozen planning/evaluation evidence; the current runtime and bundled configuration use the generic delivery agents.
+
 ## Objective
 
 Make the delivery state machine enforce its workflow contract reliably, produce trustworthy artifacts and reports, and become easier to understand and maintain.
@@ -13,10 +15,11 @@ Correctness comes before broad refactoring. The persisted state shape, legacy re
 - Stages 2–3 shipped together in PR #37. The atomic report pipeline and strict artifact contracts pass the focused and full verification suites; the PR records an independent reviewer PASS after two repair rounds.
 - Stage 4 shipped exact pi-subagents child-usage attribution and immutable reporting in PR #39.
 - Stage 5 shipped trusted runtime configuration, CLOSE guarding, retro extraction, atomic summary handling, and standard Pi truncation in PR #40.
-- Stage 6 packaged dedicated delivery agents and separated static agent policy from dynamic child context. Focused/full verification, two frozen-candidate isolated-host smoke runs, and the independent review gate passed after two repair rounds.
+- Historical Stage 6 packaged dedicated delivery agents and separated static agent policy from dynamic child context. Focused/full verification, two frozen-candidate isolated-host smoke runs, and the independent review gate passed after two repair rounds.
 - The standalone prerequisite in [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md) shipped in PR #44. Its Stage 7 prerequisite-gate follow-up passed offline/full verification and the real-Pi canary, repaired authoritative runtime-identity and retained-evidence review findings, and cleared independent bounded review.
-- Stage 7 completed: the simplified/frozen pilot passed 20/20, the full comparison passed 60/60, and independent review returned `PASS_WITH_NON_BLOCKING_NOTES`. The recorded decision retains the builtin-based delivery default, keeps `dsm.*` as an optional namespaced profile, and retains the user-scoped `fresh-verifier`. The dated report is [`benchmarks/agent-quality/reports/2026-07-20-stage7-agent-comparison.md`](benchmarks/agent-quality/reports/2026-07-20-stage7-agent-comparison.md).
-- Stage 8 remains and may now begin from a dedicated worktree created from latest fetched `main` after the Stage 7 branch merges.
+- Historical Stage 7 completed: the simplified/frozen pilot passed 20/20, the full comparison passed 60/60, and independent review returned `PASS_WITH_NON_BLOCKING_NOTES`. Its then-recorded decision retained the builtin-based delivery default and an optional namespaced profile; the dated report remains frozen historical evidence at [`benchmarks/agent-quality/reports/2026-07-20-stage7-agent-comparison.md`](benchmarks/agent-quality/reports/2026-07-20-stage7-agent-comparison.md).
+- Current DSM removal is complete: the five packaged phase agents, optional profile, and DSM-only prompt path are retired. Generic launch profiles, the user-scoped `fresh-verifier`, delivery tool/state/report contracts, and frozen Stage 7/model-quality inputs remain supported.
+- Stage 8 remains and may now begin from a dedicated worktree created from latest fetched `main` after the DSM removal is complete.
 
 ## Recommended contract decisions
 
@@ -38,14 +41,14 @@ This plan assumes the following behavior:
 14. Delivery total is the current session total minus the delivery-start baseline. Parent/orchestrator overhead is delivery total minus uniquely resolved delivery-child usage, without double-counting aggregate rows.
 15. Missing, ambiguous, corrupt, or contradictory child metadata produces explicit unavailable/mismatch evidence; it is never replaced with guessed phase usage and does not change workflow verdicts.
 16. Existing usage fields and legacy reports remain readable. `usageDelta` stays parseable for tool-schema compatibility but is deprecated, is not requested by prompts, and never overrides exact adapter data.
-17. Delivery phase roles are package-scoped pi-subagents named `dsm.implementer`, `dsm.verifier`, `dsm.reviewer`, `dsm.closer`, and `dsm.retrospective`; the short `dsm` namespace is independent of the npm package name and avoids builtin-name collisions.
-18. Static role policy, methodology, and tool restrictions belong in each agent system prompt. Child prompts retain only dynamic task/state data and the small runtime-owned artifact/verdict contract needed to prevent prompt/runtime drift.
+17. **Historical Stage 6/7 contract:** delivery phase roles were package-scoped pi-subagents named `dsm.implementer`, `dsm.verifier`, `dsm.reviewer`, `dsm.closer`, and `dsm.retrospective`; those packaged roles are retired by the current DSM removal.
+18. **Historical Stage 6/7 contract:** static role policy, methodology, and tool restrictions belonged in each agent system prompt. The active generic path keeps its complete built-in phase child prompts and runtime-owned artifact/verdict safeguards.
 19. Builtin names are not shadowed by default. Any later shadowing requires Stage 7 evidence across delivery and general-purpose scenarios and an explicit promotion decision.
 20. Promptfoo `0.121.19` is the standalone eval-prerequisite orchestrator, pinned as an exact npm development dependency with the generated `package-lock.json` committed. Repository-owned TypeScript code remains authoritative for Pi launch behavior, disposable Git fixtures, deterministic scoring, and result normalization; Promptfoo must call the actual Pi/pi-subagents boundary through a custom provider rather than substitute another coding-agent SDK.
 21. Deterministic workspace, Git, test, artifact, verdict, and mutation checks decide safety and correctness. Model-graded rubrics may supplement evidence-quality scoring but cannot override a deterministic critical failure or independently justify adoption.
 22. Raw transcripts and per-run workspaces remain uncommitted. Committed reports record framework version, candidate commit, fixture hash, provider/model, thinking, context, effective tools, repetition, usage, scorer results, and infrastructure status so future reruns remain interpretable.
 
-The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` and Stages 0–6 are complete. Execute `AGENT_EVAL_PLAN.md` from a dedicated latest-`main` worktree before Stage 7. Stage 7 owns the model-backed agent comparison and adoption decision, and Stage 8 owns modularization.
+The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` and Stages 0–7 are complete historical records. The DSM removal is complete, and Stage 8 now owns modularization.
 
 ## Scope boundaries
 
@@ -60,7 +63,7 @@ The bounded-review prerequisite in `REVIEW_SCOPE_PLAN.md` and Stages 0–6 are c
 - CLOSE command guard correctness
 - Retro summary extraction
 - Tool output truncation
-- Package-scoped `dsm.*` delivery agents and static/dynamic prompt separation
+- Historical package-scoped `dsm.*` delivery agents and static/dynamic prompt separation (retired)
 - A pinned Promptfoo integration with repository-owned Pi launch, fixture-isolation, deterministic-scoring, and result-normalization boundaries
 - Reproducible quality comparison against relevant pi-subagents builtins
 - Behavior-preserving modularization of `index.ts`
@@ -414,7 +417,7 @@ Stage 5 focused/full validation and an independent bounded runtime review must p
 - `extensions/delivery-state-machine/phases/retro.md`
 - `extensions/delivery-state-machine/tests/delivery-state-machine.test.ts`
 
-## Stage 6 — Package delivery agents and separate static prompts
+## Stage 6 — Package delivery agents and separate static prompts (historical, retired)
 
 - **Depends on:** Stage 5 runtime/configuration behavior and pi-subagents package-agent discovery through `pi.subagents.agents`.
 - **Produces:** five package-owned `dsm.*` agents, concise dynamic child prompts, package-discovery tests, and isolated host-smoke evidence.
@@ -487,7 +490,7 @@ Completed in PR #44 and its Stage 7 prerequisite-gate follow-up. [`AGENT_EVAL_PL
 
 Work items W1–W4 and every prerequisite completion gate passed. Stage 7 consumes the resulting frozen, reviewed framework and ready-to-run scenario catalog; the prerequisite did not run the comparative benchmark or make an adoption decision.
 
-## Stage 7 — Compare DSM agents with pi-subagents builtins
+## Stage 7 — Compare DSM agents with pi-subagents builtins (historical, frozen)
 
 - **Depends on:** completed standalone `AGENT_EVAL_PLAN.md`, its independent framework review gate, and the frozen Stage 6 candidate.
 - **Produces:** reviewed pilot/full benchmark evidence, a dated report, an explicit delivery-default decision, and a separate namespaced-versus-shadowing decision.
@@ -692,7 +695,8 @@ Any correctness, persistence, security, artifact-integrity, package-discovery, o
 - [x] **Stage 3:** ship exact artifact contracts and filesystem-atomic aggregate replacement in PR #37; pass containment, completeness, compatibility, and mandatory review gates.
 - [x] **Stage 4:** replace best-effort usage backfill with the version-tolerant pi-subagents adapter, exact per-child attribution, derived parent overhead, immutable reporting, focused/full validation, and the Stage 4 review gate.
 - [x] **Stage 5:** implement trusted configuration, canonical CLOSE guarding, retro extraction, atomic summary policy, and standard truncation; pass focused/full runtime validation and the independent Stage 5 review gate.
-- [x] **Stage 6:** package the five `dsm.*` agents, add a non-default candidate profile with static agent policy and concise dynamic prompts, preserve the current default and profile overrides, and pass clean-home candidate discovery/full delivery smoke plus focused/full validation and review.
-- [x] **Evaluation-framework prerequisite:** execute work items W1–W4 in [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md), including all ten scenario fixtures, offline/full verification, the opt-in real-Pi canary, and independent review without model calls in normal CI.
-- [x] **Stage 7:** freeze the prerequisite outputs, run the 20-trial pilot and 60-trial full paired benchmark, publish and independently review the report, retain the builtin-based delivery default, keep `dsm.*` as an optional namespaced profile, and retain `fresh-verifier` for the unchanged default.
+- [x] **Stage 6 (historical):** package the five `dsm.*` agents, add a non-default candidate profile with static agent policy and concise dynamic prompts, preserve the current default and profile overrides, and pass clean-home candidate discovery/full delivery smoke plus focused/full validation and review.
+- [x] **Evaluation-framework prerequisite (historical):** execute work items W1–W4 in [`AGENT_EVAL_PLAN.md`](AGENT_EVAL_PLAN.md), including all ten scenario fixtures, offline/full verification, the opt-in real-Pi canary, and independent review without model calls in normal CI.
+- [x] **Stage 7 (historical/frozen):** freeze the prerequisite outputs, run the 20-trial pilot and 60-trial full paired benchmark, publish and independently review the report, retain the builtin-based delivery default, and record the then-optional namespaced profile decision for historical evidence.
+- [x] **DSM removal:** retire packaged DSM agents/profile and DSM-only prompt assembly while preserving generic delivery behavior and frozen Stage 7/model-quality assets.
 - [ ] **Stage 8:** extract modules one concern per commit after agent contracts are frozen, preserve dependency direction and compatibility, run the complete live smoke and final verification commands, and pass the final modularization review gate; stop release on any unresolved blocker.

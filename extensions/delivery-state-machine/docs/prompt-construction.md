@@ -26,8 +26,7 @@ For a single-child phase, the final prompt is assembled in this order:
 3. Resolved phase child prompt
    a. Centrally generated phase artifact contract
    b. Resolved user/global `## Child prompt` when present; otherwise the
-      built-in `## DSM child prompt` for `dsm.*` agents or built-in
-      `## Child prompt` for compatibility/builtin agents
+      built-in `## Child prompt`
    c. Placeholder rendering; built-in templates place dynamic values last
 4. Centrally injected authoritative-source instruction
 5. Dynamic resolved project/worktree root
@@ -85,7 +84,7 @@ The user file has higher precedence. Overrides are merged by section:
 - `## Orchestrator instruction`
 - `## Child prompt`
 
-Built-in files also contain `## DSM child prompt`, a concise dynamic template used only for package-scoped `dsm.*` launches. Stable DSM role policy lives in `agents/dsm/*.md`. A user file may override one section and inherit the other from the built-in file; a user `## Child prompt` applies to both compatibility and DSM profiles so existing override behavior is preserved. Project-local phase prompt overrides are not loaded.
+Built-in files contain the complete `## Child prompt` template used for every configured launch. A user file may override one section and inherit the other from the built-in file; a user `## Child prompt` applies to every profile. Project-local phase prompt overrides are not loaded.
 
 The centrally injected authoritative-source instruction is present for every runnable phase and every launch profile, including when a user replaces the phase `## Child prompt`. It requires a named source in the prepared brief to be read before acting and requires a source blocker with `Outcome: blocked` when that source is missing, unreadable, or contradictory. Repair attempts retain the same prepared brief and source.
 
@@ -145,7 +144,6 @@ A user/global phase prompt override cannot remove or replace this prepended cont
 | Single-child output path / parallel-child identity and output path | No | Added centrally per child |
 | Parent report instruction | No | Generated centrally from state/phase |
 | Agent/model/thinking/context | Not in phase Markdown | Configured through `phase-launches.json` profiles |
-| Stable packaged DSM role/tool policy | No | Package agent frontmatter/system prompt in `agents/dsm/*.md` |
 
 Changing the required headings or verdict set requires a source change to `phase-contract.ts`; there is currently no user configuration override for `PHASE_CONTRACTS`.
 

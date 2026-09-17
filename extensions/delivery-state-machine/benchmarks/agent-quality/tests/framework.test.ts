@@ -1,3 +1,5 @@
+// Historical/frozen Stage 7 framework regression tests. DSM candidate names in
+// this file are retained only for the model-quality preservation harness.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -7,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { loadScenarios } from "../catalog.ts";
 import { provisionScenario, runtimeEnvironment, snapshot } from "../provision.ts";
 import DeliveryAgentProvider, { gradePromptfooOutput, runPromptfooTrial, runScenario, type RuntimeExecutor } from "../run.ts";
-import { artifactPrompt, credentialValuesFromAuthFile, executePiRuntime, publicEvidenceChoiceContract, resolveChild, selectAuthentication, spawnBounded, validateOuterLaunch, writeControlledAgentWrapper } from "../runtime.ts";
+import { artifactPrompt, credentialValuesFromAuthFile, executePiRuntime, publicEvidenceChoiceContract, resolveChild, selectAuthentication, spawnBounded, validateOuterLaunch } from "../runtime.ts";
 import { scoreArtifact, scoreGit, scoreMutation, scoreRuntime } from "../scorers/index.ts";
 import { PROMPTFOO_VERSION, validateResult, validateScenario, type NormalizedResult, type ScenarioRecord } from "../schema.ts";
 
@@ -60,18 +62,9 @@ assert.equal(scenarios.length, 10);
 assert.equal(new Set(scenarios.map((scenario) => scenario.id)).size, 10);
 assert.equal(PROMPTFOO_VERSION, "0.121.19");
 
-const wrapperRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-agent-eval-wrapper-"));
-try {
-	const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
-	for (const scenarioId of ["IMP-01", "REV-01"] as const) {
-		const scenario = scenarios.find((entry) => entry.id === scenarioId)!;
-		const candidate = scenario.candidates.find((entry) => entry.startsWith("dsm."))!;
-		writeControlledAgentWrapper(repositoryRoot, wrapperRoot, candidate, scenario);
-		const wrapped = fs.readFileSync(path.join(wrapperRoot, "agents", "dsm", `${candidate.slice(4)}.md`), "utf8");
-		assert.match(wrapped, new RegExp(`^thinking: ${scenario.launch.thinking}$`, "m"), `${candidate} must receive controlled thinking even when its source frontmatter omits a default`);
-		assert.match(wrapped, new RegExp(`^tools: ${scenario.launch.tools.join(", ")}$`, "m"));
-	}
-} finally { fs.rmSync(wrapperRoot, { recursive: true, force: true }); }
+// The historical candidate records remain loadable for model-quality's frozen
+// Stage 7 inputs; packaged DSM source files are intentionally no longer present.
+assert.ok(scenarios.every((scenario) => scenario.candidates.some((candidate) => candidate.startsWith("dsm."))));
 
 const evidenceSemanticsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-agent-eval-evidence-semantics-"));
 try {
@@ -659,9 +652,11 @@ assert.match(promptfooConfig, /provider boundary must expose exhausted infrastru
 assert.doesNotMatch(promptfooConfig, /JSON\.parse\(output\)\.status === 'PASS'/);
 const packageScripts = JSON.parse(fs.readFileSync(path.resolve(frameworkRoot, "../../../../package.json"), "utf8")).scripts as Record<string, string>;
 for (const name of ["smoke", "implement", "verify", "review", "close", "retro", "full"]) {
-	assert.equal(typeof packageScripts[`eval:dsm-agents:${name}`], "string", `missing developer eval script: ${name}`);
+	assert.equal(packageScripts[`eval:dsm-agents:${name}`], undefined, `retired DSM eval script still exposed: ${name}`);
 }
-assert.match(packageScripts["eval:dsm-agents:full"], /--repeat 3/, "full matrix must opt into three repetitions");
+assert.equal(packageScripts["eval:dsm-agents"], undefined, "retired DSM eval command still exposed");
+assert.equal(packageScripts["eval:dsm-agents:validate"], undefined, "retired DSM validation command still exposed");
+assert.equal(packageScripts["eval:dsm-agents:canary"], undefined, "retired DSM canary command still exposed");
 
 const scorerCrash: RuntimeExecutor = async (scenario, candidate, run) => {
 	const runtime = await successfulFake(scenario, candidate, run);
@@ -798,7 +793,10 @@ try {
 	process.env.PI_SUBAGENTS_ROOT = authRoot;
 	let malformedEvidence: NormalizedResult | undefined;
 	try {
-		malformedEvidence = await runScenario({ scenario: joinScenario, candidate: "dsm.verifier", executor: executePiRuntime, retain: true });
+		// Use the surviving generic candidate for this runtime-boundary test. The
+		// removed packaged DSM source must not prevent the intentionally malformed
+		// Pi process from launching and exercising retained-stderr redaction.
+		malformedEvidence = await runScenario({ scenario: joinScenario, candidate: "reviewer", executor: executePiRuntime, retain: true });
 	} finally {
 		if (previousAuthFile === undefined) delete process.env.PI_AGENT_AUTH_FILE; else process.env.PI_AGENT_AUTH_FILE = previousAuthFile;
 		if (previousPiBin === undefined) delete process.env.PI_BIN; else process.env.PI_BIN = previousPiBin;

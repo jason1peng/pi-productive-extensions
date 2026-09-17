@@ -1,5 +1,7 @@
 # Reusable Delivery-Agent Eval Framework Plan
 
+> Historical/frozen planning record: this completed framework documents the retired packaged DSM-agent comparison. Its exact candidate names and direct evaluation commands are retained only to explain or reproduce frozen Stage 7 evidence; they are not supported package runtime commands.
+
 ## Objective
 
 Add a reusable, controlled evaluation framework for comparing the packaged `dsm.*` delivery agents with pi-subagents builtins.

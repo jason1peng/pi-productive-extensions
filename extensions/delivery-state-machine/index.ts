@@ -11,7 +11,7 @@ import { addUsageTotals, collectSessionUsage as collectSharedSessionUsage, colle
 import { readPiSubagentMetadataFiles, resolvePiSubagentChildUsage } from "./pi-subagents-usage.ts";
 import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportStep } from "../../shared/delivery-report.ts";
 import { PHASE_CONTRACTS, phaseArtifactFilename, renderPhaseArtifactMarkdown, type Verdict } from "./phase-contract.ts";
-import { isBundledDsmAgentForPhase, loadPhaseConfigBundle, loadPhaseConfigs, validatePhaseLaunches, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
+import { loadPhaseConfigBundle, loadPhaseConfigs, validatePhaseLaunches, type LaunchConfig, type ProfileResolution, type RunnablePhase } from "./phase-config";
 
 type Truncation = { content: string; truncated: boolean };
 type PiRuntimeUtilities = {
@@ -838,7 +838,7 @@ function phasePromptContext(state: DeliveryState) {
 	};
 }
 
-const DSM_PROJECT_HARNESS_CONTRACT = `## Project harness discovery and compliance
+const PROJECT_HARNESS_CONTRACT = `## Project harness discovery and compliance
 - Discovery scope checked:
 - Entry points discovered:
 - Mandatory references followed:
@@ -854,7 +854,7 @@ const PROJECT_HARNESS_PROMPT = `Project harness discovery (bounded, best effort)
 - Record Outcome as \`applied\`, \`none discovered\`, or \`blocked\`.
 
 Every artifact must include the following as a top-level section. Start the heading at column 1; do not nest it under Evidence, Summary, or another section, and place the bullets directly below the heading:
-${DSM_PROJECT_HARNESS_CONTRACT}`;
+${PROJECT_HARNESS_CONTRACT}`;
 
 function projectHarnessRootContext(state: DeliveryState): string {
 	const root = projectRootForState(state.cwd ?? process.cwd(), state.gitRoot);
@@ -916,13 +916,12 @@ function parallelChildPrompt(basePrompt: string, state: DeliveryState, launch: L
 	const aggregatePath = state.artifactDir
 		? path.join(state.artifactDir, phaseArtifactFilename(state.phase, attempt))
 		: phaseArtifactFilename(state.phase, attempt);
-	const authoritySuffix = isBundledDsmAgentForPhase(state.phase, launch.agent) ? "" : CHILD_PROMPT_AUTHORITY_SUFFIX;
 	return `${basePrompt}
 
 Parallel phase instruction:
 - You are child ${index + 1}/${total} for phase ${state.phase} attempt ${attempt}; work independently from the other parallel child outputs.
 - Use or return this unique attempt-specific artifact path for your result: ${artifactPath}.
-- Do not write to the planned aggregate phase artifact path ${aggregatePath}; the parent/orchestrator owns it.${authoritySuffix}`;
+- Do not write to the planned aggregate phase artifact path ${aggregatePath}; the parent/orchestrator owns it.${CHILD_PROMPT_AUTHORITY_SUFFIX}`;
 }
 
 function reportInstructionForPhase(state: DeliveryState, phase: RunnablePhase, parallelCount = 1): string {
@@ -1002,9 +1001,7 @@ function nextAction(state: DeliveryState): NextAction {
 
 	const config = loadPhaseConfigs(state.cwd ?? process.cwd(), state.gitRoot, state.phaseLaunches)[state.phase];
 	const context = phasePromptContext(state);
-	const promptForLaunch = (launch: LaunchConfig) => isBundledDsmAgentForPhase(state.phase, launch.agent)
-		? `${config.childPrompt(context, launch.agent)}\n\nProject harness artifact contract:\n${DSM_PROJECT_HARNESS_CONTRACT}\n\n${AUTHORITATIVE_SOURCE_PROMPT}\n\n${projectHarnessRootContext(state)}`
-		: `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context, launch.agent)}\n\n${AUTHORITATIVE_SOURCE_PROMPT}\n\n${projectHarnessRootContext(state)}`;
+	const promptForLaunch = (_launch: LaunchConfig) => `${PROJECT_HARNESS_PROMPT}${COMMON_CHILD_WORKFLOW_PROMPT}\n\n${config.childPrompt(context)}\n\n${AUTHORITATIVE_SOURCE_PROMPT}\n\n${projectHarnessRootContext(state)}`;
 	const launches = config.launches;
 	const [primaryLaunch] = launches;
 	const parallel = launches.length > 1
@@ -1028,10 +1025,9 @@ function nextAction(state: DeliveryState): NextAction {
 	const childPrompt = promptForLaunch(primaryLaunch);
 	const attempt = phaseAttemptForStep(state, state.phase);
 	const launchRef = deliveryLaunchRef(state, state.phase, attempt, 0);
-	const authoritySuffix = isBundledDsmAgentForPhase(state.phase, primaryLaunch.agent) ? "" : CHILD_PROMPT_AUTHORITY_SUFFIX;
 	const singlePrompt = singleArtifact
-		? `${childPrompt}\n\nArtifact contract:\n- Write your result to exactly this path: ${singleArtifact}\n- This exact planned path is required when reporting this phase.${authoritySuffix}`
-		: `${childPrompt}${authoritySuffix}`;
+		? `${childPrompt}\n\nArtifact contract:\n- Write your result to exactly this path: ${singleArtifact}\n- This exact planned path is required when reporting this phase.${CHILD_PROMPT_AUTHORITY_SUFFIX}`
+		: `${childPrompt}${CHILD_PROMPT_AUTHORITY_SUFFIX}`;
 	return {
 		phase: state.phase,
 		launchRef,

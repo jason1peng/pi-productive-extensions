@@ -10,7 +10,7 @@ It coordinates implementation, independent verification, review, close, and retr
 - **Independent quality gates** — verification and review run separately from implementation and must pass before close.
 - **Single-writer implementation** — implementation is the only phase that edits source code. Other phases verify, review, close, or reflect on the result.
 - **Bounded repairs** — failed gates can return to implementation without creating an unlimited loop. Decisions that need a person pause the delivery.
-- **Profiles** — choose generic pi-subagents roles or the packaged `dsm.*` roles without changing the delivery workflow.
+- **Profiles** — choose generic pi-subagents roles without changing the delivery workflow. User-defined launch profiles remain supported.
 - **Persistent evidence** — each run keeps phase artifacts, decisions, usage, and a final Markdown/JSON report under `~/.pi/delivery-run` by default.
 
 ## Setup
@@ -37,35 +37,26 @@ Git package installation is also supported:
 
 Restart Pi or run `/reload` after changing package configuration.
 
-### Available profiles
+### Available profile
 
-The extension currently includes:
+The bundled configuration includes one profile:
 
 - **`default`** — uses the existing generic pi-subagents roles and prompts.
-- **`dsm-candidate`** — uses packaged, phase-specific `dsm.implementer`, `dsm.verifier`, `dsm.reviewer`, `dsm.closer`, and `dsm.retrospective` agents.
 
-The default profile still expects the compatibility verifier in your user agent directory:
+Additional user-defined profiles may use generic pi-subagents agents and models. The default profile still expects the compatibility verifier in your user agent directory:
 
 ```bash
 mkdir -p ~/.pi/agent/agents
 cp extensions/delivery-state-machine/agents/fresh-verifier.md ~/.pi/agent/agents/fresh-verifier.md
 ```
 
-Select a profile for the current process:
-
-```bash
-PI_DELIVERY_PROFILE=dsm-candidate pi
-```
-
-Or save the selection in `~/.pi/agent/extensions/delivery-state-machine/active-profile.json`:
+Profile selection is pinned when a delivery starts. Select a user-defined profile for the current process with `PI_DELIVERY_PROFILE=<profile>`, or save it in `~/.pi/agent/extensions/delivery-state-machine/active-profile.json`:
 
 ```json
 {
-  "activeProfile": "dsm-candidate"
+  "activeProfile": "my-profile"
 }
 ```
-
-Profile selection is pinned when a delivery starts.
 
 ## Basic usage
 
@@ -160,7 +151,7 @@ User-space phase prompt, launch profile, model, thinking, and context overrides 
 - [Delivery report schema](../../docs/delivery-report-schema-v2.md) — stable structured report contract.
 - [Compatibility baseline](COMPATIBILITY_BASELINE.md) — preserved commands, tools, state, and report behavior.
 - [Improvement plan](IMPROVEMENT_PLAN.md) — staged roadmap and acceptance gates.
-- [Delivery-agent quality framework](benchmarks/agent-quality/README.md) — offline validation, opt-in real-Pi canary, scenarios, evidence, and later benchmark commands.
+- [Delivery-agent quality framework](benchmarks/agent-quality/README.md) — historical/frozen comparison inputs, reports, and model-quality preservation checks.
 
 ## Development
 
@@ -178,9 +169,8 @@ DSM_SMOKE_MODEL=openai-codex/gpt-5.6-sol \
   extensions/delivery-state-machine/scripts/isolated-host-smoke.sh
 ```
 
-The smoke uses the candidate package's `phase-launches.json` by default. Set
+The smoke uses the bundled package's `phase-launches.json` by default. Set
 `DSM_SMOKE_PROFILE_CONFIG=host` or provide a launch-config path to evaluate a
-user-owned profile configuration. Set `PI_DELIVERY_PROFILE=dsm-candidate`
-explicitly for the package-only DSM candidate smoke. The selected profile's
-agent definitions, effective child models, and launch arguments are retained in
-the evidence directory.
+user-owned generic profile configuration. The selected profile's agent
+definitions, effective child models, and launch arguments are retained in the
+evidence directory.

@@ -47,6 +47,6 @@ A run passes when the script exits 0: the delivery report records a non-pass
 verdict at the expected phase, the failing phase artifact starts with
 `RESULT: FAIL`, no later phase launched, and every expected child launch
 matches the selected delivery profile. `DSM_SMOKE_EXTRA_PACKAGES` is only
-needed when the chosen model's provider plugin is not built into pi. Set
-`PI_DELIVERY_PROFILE=dsm-candidate` explicitly when the package-only candidate
-is the intended comparison.
+needed when the chosen model's provider plugin is not built into pi. The smoke
+uses the generic delivery launch profiles; the historical agent comparison is
+no longer a runnable package command.

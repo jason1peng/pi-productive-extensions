@@ -1,6 +1,8 @@
-# Delivery-agent quality framework
+# Delivery-agent quality framework (historical/frozen)
 
-This directory contains a Promptfoo-based evaluation harness for delivery-state-machine agents. It runs a delivery phase against a controlled repository fixture, captures what the agent actually did, and scores the result with deterministic checks.
+> Historical/frozen evaluation material. The packaged `dsm.*` runtime agents and their direct package commands were retired after Stage 7. This directory remains immutable evaluation input consumed by `benchmarks/model-quality`; it is not a current runtime or supported agent-selection surface.
+
+This directory contains the Promptfoo-based evaluation harness used for the historical delivery-state-machine agent comparison. It runs a delivery phase against a controlled repository fixture, captures what the agent actually did, and scores the result with deterministic checks.
 
 Use it to answer developer questions such as:
 
@@ -10,7 +12,7 @@ Use it to answer developer questions such as:
 - Does `dsm.closer` create only the expected commit, ref, and PR action?
 - How does a packaged `dsm.*` agent compare with the corresponding pi-subagents builtin?
 
-## Supported phase evaluations
+## Historical phase evaluations
 
 | Delivery phase | Packaged agent | Comparison agent |
 |---|---|---|
@@ -20,58 +22,28 @@ Use it to answer developer questions such as:
 | CLOSE | `dsm.closer` | `delegate` |
 | RETRO | `dsm.retrospective` | `delegate` |
 
-Each phase currently has two scenarios, for ten scenarios total. A scenario defines the task, repository fixture, launch settings, allowed mutations, controls, artifact contract, and deterministic scorers.
+The frozen catalog has two scenarios per phase, for ten scenarios total. A scenario defines the task, repository fixture, launch settings, allowed mutations, controls, artifact contract, and deterministic scorers.
 
-## Findings
+## Historical findings
 
-The reviewed Stage 7 comparison is documented in [`reports/2026-07-20-stage7-agent-comparison.md`](reports/2026-07-20-stage7-agent-comparison.md). Both candidate families passed all deterministic trials after DSM prompt simplification. The recorded decision retains the builtin-based delivery default and keeps `dsm.*` available as an optional namespaced profile because DSM showed no deterministic quality advantage and remained more expensive and slower.
+The reviewed Stage 7 comparison is documented in [`reports/2026-07-20-stage7-agent-comparison.md`](reports/2026-07-20-stage7-agent-comparison.md). Both candidate families passed all deterministic trials after DSM prompt simplification. The then-recorded decision retained the builtin-based delivery default and an optional namespaced profile because DSM showed no deterministic quality advantage and remained more expensive and slower. That decision is historical; the packaged profile and agents are no longer available.
 
-## Start here
+## Current use
 
-For normal development, run the offline checks first. They do not launch Pi or call a model:
+No standalone agent-quality command is exposed. The runtime, schema, scenario, and report assets remain frozen inputs for `benchmarks/model-quality`. For current model-free validation, use the model-quality commands from the repository root:
 
 ```bash
-npm install --no-audit --no-fund
-npm run eval:dsm-agents:validate
-npm run test
+npm run eval:models:validate
+npm run eval:models:fake-full
+npm run eval:models:audit
 npm run verify
 ```
 
-Choose the smallest model-backed run that answers your question:
-
-```bash
-# One scenario and one candidate: fastest smoke test
-npm run eval:dsm-agents:smoke
-
-# Both scenarios and candidates for one phase
-npm run eval:dsm-agents:implement
-npm run eval:dsm-agents:verify
-npm run eval:dsm-agents:review
-npm run eval:dsm-agents:close
-npm run eval:dsm-agents:retro
-
-# All ten scenarios and both candidates, one repetition
-npm run eval:dsm-agents
-
-# Complete comparison matrix, three repetitions
-npm run eval:dsm-agents:full
-```
-
-You can also select an exact trial:
-
-```bash
-npm run eval:dsm-agents -- \
-  --filter-pattern "^VER-01 dsm[.]verifier$" \
-  --repeat 1
-```
-
-The default is one repetition and serial execution. A complete default matrix is 20 autonomous agent trials; the three-repetition full matrix is 60 trials and can take a long time. Keep `maxConcurrency: 1`: runtime signal handling is process-global and has only been validated for serial trials.
-
-To test only the real Pi → pi-subagents integration boundary, use the opt-in canary described below. It requires credentials and makes two model calls.
+The historical matrix was serial, used one repetition by default, and comprised 20 autonomous agent trials (60 with three repetitions). Its retained report and protected inputs are evidence only; they must not be used to select an unavailable packaged agent.
 
 ## How it works
 
-A trial follows this path:
+A historical trial followed this path:
 
 1. `catalog.ts` loads a record from `scenarios/`.
 2. `provision.ts` copies its `fixtures/` repository into an isolated temporary workspace.
@@ -93,19 +65,15 @@ A trial follows this path:
 | `fixtures/` | Test repositories, setup scripts, controls, and expected behavior inputs. |
 | `scorers/` | Deterministic result checks and precedence rules. |
 | `promptfooconfig.yaml` | Promptfoo candidate/scenario matrix and retry settings. |
-| `canary.ts` | Small real-Pi integration check. |
+| `canary.ts` | Historical real-Pi integration check. |
 | `tests/` | Model-free regression tests. |
 | `artifacts/raw/` | Ignored evidence from runs; never commit it. |
 
 ## How to modify it
 
-### Add or change a scenario
+### Historical scenario maintenance
 
-1. Add or update its repository under `fixtures/`.
-2. Add or update the matching JSON record under `scenarios/`.
-3. Update `catalog.ts` only when adding a new candidate or scenario identifier.
-4. Add a focused regression in `tests/framework.test.ts`.
-5. Run `npm run eval:dsm-agents:validate` and `npm run verify`.
+The scenario and runtime files are frozen Stage 7 inputs. Do not add a current candidate, change a scenario, or alter the historical comparison without a new, explicitly approved evaluation record and updated model-quality preservation sentinels.
 
 ### Change runtime or isolation behavior
 
@@ -117,7 +85,7 @@ Update `schema.ts` and `scorers/` together. Update scenario expected outcomes an
 
 ### Upgrade Promptfoo
 
-Pin one exact version in `package.json` and the lockfile. Then run configuration validation, the full offline suite, the Promptfoo provider-boundary tests, and the real-Pi canary.
+Promptfoo version and the historical comparison inputs are frozen. A future evaluation must pin one exact version, update the preserved evaluation record, and pass the model-quality preservation gates before any change is accepted.
 
 ## Guarantees and limits
 
@@ -127,55 +95,35 @@ The fixtures and candidates are trusted test inputs. Tool restrictions and local
 
 Deterministic critical failures decide the result. Scenario-specific `eval-evidence` JSON must match the fixture's hidden versioned known-outcome choice under exact normalized values or a small scorer-owned allowlist of reviewed aliases; unrestricted substring matching is forbidden because negated claims must fail. Prose keywords alone cannot satisfy artifact scoring. Evaluated children receive a versioned field/type shape plus reviewed, plausible bounded choices, then select values from their own fixture and control investigation. Choice order is deterministically mixed by scenario and field, so no fixed position identifies correctness; which choice is expected and all scorer aliases remain runner-only. Git and PR wrappers retain attempted mutation history, including reversed staging/reset and no-op pushes, while CLOSE scoring checks the exact reviewed commit tree, local ref, and PR-create stub result. Supplemental model grading cannot reverse deterministic evidence. Infrastructure failures are unscored and retried by the repository provider up to three total attempts. A later PASS or CANDIDATE_FAILURE is scored normally; bounded exhaustion remains `INFRASTRUCTURE_FAILURE` and the provider returns a Promptfoo `UNSCORED_INFRASTRUCTURE_FAILURE` error instead of candidate output, so candidate assertions do not run and Promptfoo records an error rather than a candidate pass/failure. The full normalized exhausted result is retained in provider metadata. That result and its attempt manifest preserve each attempt's status, completion, diagnostics, scorer state, evidence/artifact paths, runtime identity, redaction result, and available outer/child usage. Missing optional usage or cost telemetry is reported as unavailable and never guessed. Outer-orchestrator usage is stored separately from child usage.
 
-## Install and validate offline
+## Validate preserved inputs offline
 
-The lockfile exact-pins `promptfoo@0.121.19`.
+The lockfile retains the historical exact pin `promptfoo@0.121.19`. Current validation is model-free and must preserve the frozen Stage 7 inputs:
 
 ```bash
-npm install --no-audit --no-fund
-npm run eval:dsm-agents:validate
-npm run test
+npm run eval:models:validate
+npm run eval:models:fake-full
+npm run eval:models:audit
 npm run verify
 ```
 
-These commands use fake-runtime tests and configuration validation only. They must not launch Pi or call a model provider. Any Promptfoo upgrade must be exact-pinned and followed by the complete offline suite and real-Pi canary.
+These commands must not launch Pi or call a model provider. The former direct DSM-agent evaluation entry points are retired.
 
-## Opt-in real-Pi canary
+## Historical real-Pi canary
 
-The canary proves discovery, requested/effective identity, retained authoritative child metadata, artifact capture, child/outer usage separation, redaction, and cleanup for one trivial verifier scenario. It is framework evidence, not comparative evidence.
+The former canary proved discovery, requested/effective identity, retained authoritative child metadata, artifact capture, child/outer usage separation, redaction, and cleanup for one trivial verifier scenario. Its output is historical framework evidence, not a current runtime capability, and it has no supported package command.
 
-```bash
-DSM_AGENT_EVAL_CANARY=1 \
-DSM_AGENT_EVAL_OUTER_MODEL=openai-codex/gpt-5.6-sol \
-npm run eval:dsm-agents:canary
-```
-
-Requirements:
+Historical requirements (for interpreting the retained record):
 
 - `pi` on `PATH` (or `PI_BIN`)
 - pi-subagents at `~/.pi/agent/npm/node_modules/pi-subagents` (or `PI_SUBAGENTS_ROOT`)
 - model credentials in `~/.pi/agent/auth.json` or `PI_AGENT_AUTH_FILE`, keyed by the provider IDs used by the outer and child models; unrelated provider entries are not copied into the isolated home
 - enough quota for one outer session and one child
 
-The command fails clearly for missing runtime dependencies, authentication/quota failure, identity mismatch, malformed artifacts, or cleanup/redaction failure. Redaction scanning compares retained evidence against both allowlisted environment credentials and ephemeral credential/token values extracted from the selected auth file; those comparison values are never retained in normalized or raw evidence. Expect two model sessions; exact cost depends on the configured provider and model and is read from runtime telemetry only.
+The historical canary failed clearly for missing runtime dependencies, authentication/quota failure, identity mismatch, malformed artifacts, or cleanup/redaction failure. Redaction scanning compared retained evidence against both allowlisted environment credentials and ephemeral credential/token values extracted from the selected auth file; those comparison values were never retained in normalized or raw evidence. Expect two model sessions in the retained historical record; exact cost depended on the configured provider and model.
 
-## Run evaluations
+## Historical evaluation record
 
-Run a selected trial directly:
-
-```bash
-bun extensions/delivery-state-machine/benchmarks/agent-quality/run.ts run VER-01 dsm.verifier
-```
-
-Or use Promptfoo for the configured matrix (cache must remain disabled):
-
-```bash
-npx promptfoo@0.121.19 eval \
-  -c extensions/delivery-state-machine/benchmarks/agent-quality/promptfooconfig.yaml \
-  --no-cache
-```
-
-The configuration expands the scenario/candidate matrix, while `run.ts` handles launch, fixture provisioning, evidence collection, retries, and scoring. `maxInfrastructureAttempts` is fixed at `3`; changing it requires config validation and provider-boundary regression updates.
+The frozen Promptfoo configuration and runner retain the exact scenario/candidate matrix used for Stage 7 reproducibility. They are not current commands: direct selection of a packaged DSM agent is retired. Read the dated report and protected model-quality inputs when historical evidence is needed; do not launch a new comparison from this package.
 
 When reading Promptfoo results:
 
@@ -184,7 +132,7 @@ When reading Promptfoo results:
 - treat `CANDIDATE_FAILURE` as a scored candidate failure;
 - treat Promptfoo error rows with `classification: infrastructure_exhausted` as environment/runtime failures to investigate or rerun, not candidate losses.
 
-A canary proves that the real runtime integration works. It does not replace running the scenarios needed for your evaluation.
+The retained canary record documents the historical runtime integration. It does not authorize selecting or restoring a retired packaged agent.
 
 ## Evidence and failure inspection
 

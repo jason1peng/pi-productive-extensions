@@ -1,3 +1,6 @@
+// Historical/frozen Stage 7 canary. The packaged DSM agents and direct
+// evaluation commands were retired; this file is retained only as historical
+// evaluation material and is not a current runtime selection surface.
 import * as fs from "node:fs";
 import { runScenario } from "./run.ts";
 import { scenarioById } from "./catalog.ts";

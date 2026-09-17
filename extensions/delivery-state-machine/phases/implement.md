@@ -34,13 +34,3 @@ Current implementation focus:
 {{pendingIssueInstruction}}
 
 {{artifactGuidance}}
-
-## DSM child prompt
-
-Task:
-{{task}}
-
-Current implementation focus:
-{{pendingIssueInstruction}}
-
-{{artifactGuidance}}

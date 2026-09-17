@@ -122,6 +122,14 @@ pi.events.emit("session-usage:request", { requestId })
 The handler performs local JSONL parsing only. It never appends to the Pi
 session, sends a user message, or triggers a model turn.
 
+## Expanded report
+
+The separate `session-report` extension provides `/session-report` and
+`session_report` for versioned usage, session-topology, tool-result, and skill
+evidence. It writes private `session-report.json` and `session-report.md`
+artifacts and does not change this extension's command, tool, `UsageTotals`, or
+`session-usage` event payload.
+
 ## Examples
 
 Ask pi:

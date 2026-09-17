@@ -26,4 +26,5 @@ bun "$ROOT/extensions/delivery-state-machine/tests/delivery-state-machine.test.t
 bun "$ROOT/extensions/delivery-state-machine/benchmarks/agent-quality/tests/framework.test.ts"
 bun "$ROOT/extensions/delivery-state-machine/benchmarks/model-quality/tests/infrastructure.test.ts"
 bun "$ROOT/extensions/session-usage/tests/session-usage.test.ts"
+bun "$ROOT/extensions/session-report/tests/session-report.test.ts"
 bun "$ROOT/extensions/git-cleanup/tests/git-cleanup.test.ts"

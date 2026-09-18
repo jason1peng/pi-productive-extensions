@@ -87,6 +87,8 @@ Pass the dedicated worktree you already created as `deliveryRoot` (absolute path
 
 Every runnable phase reads any named authoritative source before acting. A missing, unreadable, or contradictory source is reported as a blocker rather than guessed, and repair attempts reuse the same prepared brief/source.
 
+The recorded delivery root is also authoritative at the `subagent` tool boundary. DSM canonicalizes direct, parallel, and workflow-script launches to that root; workflow children inherit the outer cwd, and raw workflow launch APIs are guarded so per-child cwd overrides cannot escape it.
+
 Pi will guide the parent session through the required work and quality gates. When a gate finds a supported defect, the workflow can return to implementation. It pauses when a repair, risk, or stop decision requires user input.
 
 Useful commands:

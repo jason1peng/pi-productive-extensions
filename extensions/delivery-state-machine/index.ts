@@ -1079,6 +1079,61 @@ function canonicalizeSubagentLaunch(target: Record<string, unknown>, launch: Chi
 	target.task = launch.childPrompt;
 }
 
+// Pi-subagents resolves omitted workflow child cwd values from the outer request, so
+// the outer request must be canonicalized before any delivery launch reaches the runner.
+// Workflow scripts can otherwise explicitly override cwd inside runs.run/runs.all/runs.lanes;
+// wrap those APIs too, because the nested calls do not re-enter Pi's tool_call boundary.
+function deliveryWorkflowCwdGuard(root: string): string {
+	const encodedRoot = JSON.stringify(root);
+	return `{
+	const __dsmRuns = globalThis.runs;
+	const __dsmDeliveryRoot = ${encodedRoot};
+	const __dsmForceCwd = (value) => {
+		if (Array.isArray(value)) return value.map(__dsmForceCwd);
+		if (!value || typeof value !== "object") return value;
+		const copy = Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, __dsmForceCwd(entry)]));
+		if (Object.prototype.hasOwnProperty.call(copy, "cwd")) copy.cwd = __dsmDeliveryRoot;
+		return copy;
+	};
+	globalThis.runs = Object.freeze({
+		...__dsmRuns,
+		run: (key, params) => __dsmRuns.run(key, { ...params, cwd: __dsmDeliveryRoot }),
+		all: (items) => __dsmRuns.all(items.map((item) => item && typeof item === "object" && !Array.isArray(item) ? { ...item, cwd: __dsmDeliveryRoot } : item)),
+		lanes: (lanes) => __dsmRuns.lanes(__dsmForceCwd(lanes)),
+	});
+}
+`;
+}
+
+function canonicalizeDeliverySubagentCwd(state: DeliveryState, input: unknown): void {
+	if (!isRunnablePhase(state.phase) || !state.cwd || !input || typeof input !== "object" || Array.isArray(input)) return;
+	const inputRecord = input as Record<string, unknown>;
+	if (typeof inputRecord.action === "string") return;
+	inputRecord.cwd = state.cwd;
+	if (Array.isArray(inputRecord.tasks)) {
+		for (const task of inputRecord.tasks) {
+			if (task && typeof task === "object" && !Array.isArray(task)) (task as Record<string, unknown>).cwd = state.cwd;
+		}
+	}
+	if (typeof inputRecord.workflowScript === "string" && inputRecord.workflowScript.trim()) {
+		inputRecord.workflowScript = `${deliveryWorkflowCwdGuard(state.cwd)}\n${inputRecord.workflowScript}`;
+		return;
+	}
+	if (typeof inputRecord.workflowScriptPath !== "string" || !inputRecord.workflowScriptPath.trim()) return;
+	try {
+		const scriptPath = path.isAbsolute(inputRecord.workflowScriptPath)
+			? inputRecord.workflowScriptPath
+			: path.resolve(state.cwd, inputRecord.workflowScriptPath);
+		const workflowScript = fs.readFileSync(scriptPath, "utf8");
+		if (workflowScript.trim()) {
+			inputRecord.workflowScript = `${deliveryWorkflowCwdGuard(state.cwd)}\n${workflowScript}`;
+			delete inputRecord.workflowScriptPath;
+		}
+	} catch {
+		// Let pi-subagents report its normal missing/unreadable workflowScriptPath error.
+	}
+}
+
 function materializeDeliveryLaunchRefs(state: DeliveryState, input: unknown): string | undefined {
 	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
 	const inputRecord = input as Record<string, unknown>;
@@ -2609,6 +2664,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, _ctx) => {
 		if (event.toolName === "subagent") {
+			canonicalizeDeliverySubagentCwd(state, event.input);
 			const reason = materializeDeliveryLaunchRefs(state, event.input)
 				?? validateSubagentLaunchThinking(state, event.input)
 				?? validateSubagentLaunchPrompt(state, event.input);

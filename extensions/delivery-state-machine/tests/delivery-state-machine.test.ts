@@ -862,6 +862,41 @@ await runTest("launch references resolve canonical single and parallel subagent 
 	);
 });
 
+await runTest("all delivery subagent launch shapes inherit the sticky delivery root", async () => {
+	const { root, worktree } = createTemporaryRepoWithWorktree("delivery-sm-subagent-cwd-");
+	try {
+		const harness = createHarness({ cwd: worktree });
+		const started = await harness.tool("delivery_start", { task: "canonicalize workflow cwd", deliveryRoot: worktree });
+		const directInput: any = {
+			agent: started.details.next.agent,
+			task: started.details.next.launchRef,
+			cwd: root,
+		};
+		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: directInput }), undefined);
+		assert.equal(directInput.cwd, worktree);
+
+		const workflowInput: any = {
+			workflowScript: `return runs.run('review', { agent: 'reviewer', task: 'DSM_LAUNCH_REF:IMPLEMENT:1:0', cwd: ${JSON.stringify(root)} });`,
+			cwd: root,
+		};
+		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: workflowInput }), undefined);
+		assert.equal(workflowInput.cwd, worktree);
+		assert.match(workflowInput.workflowScript, /__dsmDeliveryRoot/);
+		assert.match(workflowInput.workflowScript, /__dsmRuns\.run/);
+
+		const workflowPath = path.join(worktree, "delivery-workflow.js");
+		fs.writeFileSync(workflowPath, "return runs.run('review', { agent: 'reviewer', task: 'path workflow', cwd: '/wrong' });", "utf8");
+		const workflowPathInput: any = { workflowScriptPath: workflowPath, cwd: root };
+		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: workflowPathInput }), undefined);
+		assert.equal(workflowPathInput.cwd, worktree);
+		assert.equal("workflowScriptPath" in workflowPathInput, false);
+		assert.match(workflowPathInput.workflowScript, /__dsmDeliveryRoot/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(worktree, { recursive: true, force: true });
+	}
+});
+
 await runTest("/deliver prepares without creating state, then delivery_start hands off the playbook", async () => {
 	const harness = createHarness();
 	const deliver = harness.commands.get("deliver");

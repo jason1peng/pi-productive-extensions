@@ -43,7 +43,7 @@ The bundled configuration includes one profile:
 
 - **`default`** — uses the existing generic pi-subagents roles and prompts.
 
-Additional user-defined profiles may use generic pi-subagents agents and models. The default profile still expects the compatibility verifier in your user agent directory:
+Additional user-defined profiles may use generic pi-subagents agents and models. Parallel delivery phases use the named workflow-resource API, so this extension requires `pi-subagents` 0.71.0 or newer; the repository pins 0.71.0 for that contract. The default profile still expects the compatibility verifier in your user agent directory:
 
 ```bash
 mkdir -p ~/.pi/agent/agents
@@ -103,7 +103,7 @@ The same workflow is available to agents through `delivery_start`, `delivery_nex
 
 ### Independent parallel review
 
-A profile can launch multiple reviewers independently. The parent aggregates their artifacts before reporting one review result.
+A profile can launch multiple reviewers independently. The parent calls `subagent` once with the session-scoped `dsm.delivery-launches` workflow and every exact `delivery_next` launch reference; DSM validates the set and builds canonical child tasks, models, worktree cwd, and artifact outputs. The parent aggregates their artifacts before reporting one review result.
 
 ### Safe close
 

@@ -10,6 +10,10 @@ import { PHASE_CONTRACTS, phaseArtifactContractMarkdown, renderPhaseArtifactMark
 import { materializePhaseConfigs, THINKING_LEVELS } from "../phase-config.ts";
 import { readPiSubagentMetadataFiles, resolvePiSubagentChildUsage, usageFromPiSubagentMetadata } from "../pi-subagents-usage.ts";
 
+const workflowResourceApiUrl = import.meta.resolve("pi-subagents/workflow-resources");
+const hostWorkflowResources = await import(new URL("../workflows/workflow-resources.js", workflowResourceApiUrl).href);
+const hostWorkflowScript = await import(new URL("../workflows/scripted-workflow.js", workflowResourceApiUrl).href);
+
 const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
 process.env.PI_CODING_AGENT_DIR = testAgentDir;
 // Most unit tests inspect canonical prompts directly; the production-default
@@ -33,12 +37,15 @@ interface FakeContext {
 	};
 	sessionManager: {
 		getSessionFile: () => string | undefined;
+		getSessionId: () => string;
 		getBranch: () => never[];
 	};
 }
 
 const artifactDirs = new Set<string>();
 const temporaryRepoRoots = new Set<string>();
+let nextTestSessionId = 0;
+const harnessCleanups: Array<() => Promise<void>> = [];
 
 function gitInit(root: string, branch = "main") {
 	fs.mkdirSync(root, { recursive: true });
@@ -96,6 +103,7 @@ async function withTemporaryUserExtensionFile<T>(relativePath: string, content: 
 }
 
 function createHarness(options: { cwd?: string; sessionFile?: string; branchEntries?: any[]; projectTrusted?: boolean } = {}) {
+	const sessionId = `delivery-test-${++nextTestSessionId}`;
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, { handler: (args: string, ctx: FakeContext) => Promise<void> }>();
 	const eventHandlers = new Map<string, (event: unknown, ctx: FakeContext) => Promise<any>>();
@@ -136,6 +144,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		},
 		sessionManager: {
 			getSessionFile: () => options.sessionFile,
+			getSessionId: () => sessionId,
 			getBranch: () => (options.branchEntries ?? []) as never[],
 		},
 	};
@@ -180,7 +189,16 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		return result;
 	}
 
-	return { tools, commands, eventHandlers, sentMessages, sessionNames, appendedEntries, ctx, tool, emit };
+	function resolveWorkflow(name: string, args: Record<string, unknown>) {
+		return hostWorkflowResources.resolveWorkflowResource(name, args, sessionId);
+	}
+
+	async function shutdown() {
+		await emit("session_shutdown");
+	}
+
+	harnessCleanups.push(shutdown);
+	return { tools, commands, eventHandlers, sentMessages, sessionNames, appendedEntries, ctx, tool, emit, resolveWorkflow, shutdown };
 }
 
 const testFailures: Array<{ name: string; error: unknown }> = [];
@@ -193,6 +211,7 @@ async function runTest(name: string, fn: () => Promise<void>) {
 		testFailures.push({ name, error });
 		console.error(`FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`);
 	} finally {
+		for (const shutdown of harnessCleanups.splice(0)) await shutdown();
 		for (const dir of artifactDirs) fs.rmSync(dir, { recursive: true, force: true });
 		artifactDirs.clear();
 	}
@@ -237,7 +256,7 @@ await runTest("package manifest retires packaged phase-agent discovery", async (
 });
 
 await runTest("pi-subagents package discovery contains no packaged DSM agents", async () => {
-	const moduleRoot = (process.env.NODE_PATH ?? "").split(path.delimiter).find((entry) => fs.existsSync(path.join(entry, "pi-subagents", "src", "agents", "agents.ts")));
+	const moduleRoot = (process.env.NODE_PATH ?? "").split(path.delimiter).find((entry) => fs.existsSync(path.join(entry, "pi-subagents", "src", "agents", "agents.js")));
 	if (!moduleRoot) {
 		if (process.env.PPE_HOST_DISCOVERY_REQUIRED === "1") throw new Error("required host discovery smoke did not execute: pi-subagents is absent from NODE_PATH");
 		console.log("  SKIP host discovery smoke: pi-subagents is not installed in NODE_PATH");
@@ -254,7 +273,7 @@ await runTest("pi-subagents package discovery contains no packaged DSM agents", 
 		fs.mkdirSync(isolatedAgentDir);
 		fs.writeFileSync(path.join(isolatedAgentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
 		process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
-		const { discoverAgentsAll } = await import(pathToFileURL(path.join(moduleRoot, "pi-subagents", "src", "agents", "agents.ts")).href);
+		const { discoverAgentsAll } = await import(pathToFileURL(path.join(moduleRoot, "pi-subagents", "src", "agents", "agents.js")).href);
 		const all = discoverAgentsAll(isolatedRoot);
 		assert.equal(all.package.some((agent: any) => agent.name.startsWith("dsm.")), false);
 	} finally {
@@ -275,8 +294,9 @@ await runTest("isolated host smoke exercises the selected delivery profile", () 
 	assert.doesNotMatch(smoke, /export PI_DELIVERY_PROFILE=dsm-candidate/);
 	assert.match(smoke, /requested-launches\.json/);
 	assert.match(smoke, /actual-launches\.json/);
+	assert.match(smoke, /ln -s "\$SUBAGENTS_ROOT" "\$PACKAGE_DIR\/node_modules\/pi-subagents"/);
 	assert.match(smoke, /"subagents": \{\s*"defaultModel": "\$CHILD_MODEL"/);
-	assert.match(smoke, /for parallel launches, pass each exact details\.next\.parallel\[\]\.launchRef/);
+	assert.match(smoke, /For parallel launches, make one call with workflow="dsm\.delivery-launches", args\.launchRefs containing every exact details\.next\.parallel\[\]\.launchRef once, and async=true/);
 	assert.match(smoke, /export PYTHONDONTWRITEBYTECODE=1/);
 	assert.equal((smoke.match(/python3 -B/g) ?? []).length, 3);
 	assert.match(smoke, /source-status-before\.txt/);
@@ -293,7 +313,8 @@ await runTest("isolated host smoke exercises the selected delivery profile", () 
 	assert.match(smoke, /from isolated_host_process import process_group_guard/);
 	assert.match(smoke, /with process_group_guard\(process, on_cleanup=record_cleanup\)/);
 	assert.match(smoke, /find "\$EVIDENCE_DIR" -type f .*'auth\.json'.*'credentials\.json'.*'oauth\.json'/);
-	assert.match(smoke, /args\.get\("tasks"\).*isinstance\(args\.get\("tasks"\), list\)/);
+	assert.match(smoke, /args\.get\("workflow"\) == "dsm\.delivery-launches"/);
+	assert.match(smoke, /set\(launch_refs\) != planned_refs/);
 	assert.match(smoke, /printf '\.pi-subagents\/\\n'.*PROJECT_DIR\/\.gitignore/);
 	assert.match(smoke, /assert_effective_model\(evidence, expected_model\)/);
 	assert.match(smoke, /assert_delivery_done\(Path\(os\.environ\["DSM_SMOKE_DELIVERY_ROOT"\]\)\)/);
@@ -812,7 +833,7 @@ await runTest("production responses keep canonical child prompts pointer-only", 
 	}
 });
 
-await runTest("launch references resolve canonical single and parallel subagent inputs", async () => {
+await runTest("launch references resolve direct single launches and named parallel workflows", async () => {
 	const single = createHarness();
 	const singleNext = await single.tool("delivery_start", { task: "launch reference single" });
 	const singleInput: any = {
@@ -830,36 +851,62 @@ await runTest("launch references resolve canonical single and parallel subagent 
 	assert.equal(singleInput.cwd, single.ctx.cwd);
 
 	const parallel = createHarness();
+	await parallel.emit("session_start");
 	await advanceHarnessToPhase(parallel, "REVIEW");
 	const reviewNext = await parallel.tool("delivery_next");
+	const launchRefs = reviewNext.details.next.parallel.map((launch: any) => launch.launchRef);
 	const parallelInput: any = {
-		tasks: reviewNext.details.next.parallel.map((launch: any) => ({
-			agent: "reviewer",
-			task: launch.launchRef,
-			output: "/tmp/wrong-output.md",
-			outputMode: "inline",
-			model: "wrong/model",
-		})),
+		workflow: "dsm.delivery-launches",
+		args: { launchRefs },
+		async: true,
+		cwd: "/tmp/wrong-delivery-root",
 	};
 	assert.equal(await parallel.emit("tool_call", { toolName: "subagent", input: parallelInput }), undefined);
-	for (const [index, task] of parallelInput.tasks.entries()) {
-		const planned = reviewNext.details.next.parallel[index];
-		assert.equal(task.task, planned.childPrompt);
-		assert.equal(task.output, planned.output);
-		assert.equal(task.outputMode, "file-only");
-		assert.equal(task.model, planned.thinking ? `${planned.model}:${planned.thinking}` : planned.model);
-		assert.equal(task.cwd, parallel.ctx.cwd);
-	}
-	assert.equal(parallelInput.context, reviewNext.details.next.parallel[0].context);
 	assert.equal(parallelInput.cwd, parallel.ctx.cwd);
+	const resolution = parallel.resolveWorkflow("dsm.delivery-launches", { launchRefs });
+	if (!resolution.ok) throw new Error(resolution.error);
+	const expansion = resolution.resource.script;
+	assert.match(expansion, /^return runs\.all\(/);
+	const validation = hostWorkflowScript.validateWorkflowScript(expansion);
+	assert.deepEqual(validation.errors, [], "the installed pi-subagents version must accept the expansion");
+	const calls = JSON.parse(expansion.slice("return runs.all(".length, -2));
+	assert.equal(calls.length, reviewNext.details.next.parallel.length);
+	for (const [index, call] of calls.entries()) {
+		const planned = reviewNext.details.next.parallel[index];
+		assert.equal(call.agent, planned.agent);
+		assert.equal(call.task, planned.childPrompt);
+		assert.equal(call.output, planned.output);
+		assert.equal(call.outputMode, "file-only");
+		assert.equal(call.model, planned.thinking ? `${planned.model}:${planned.thinking}` : planned.model);
+		assert.equal(call.thinking, planned.thinking);
+		assert.equal(call.context, planned.context);
+		assert.equal(call.cwd, parallel.ctx.cwd);
+		assert.equal(call.acceptance, false);
+	}
 
-	const staleInput: any = {
-		tasks: reviewNext.details.next.parallel.map((_: any, index: number) => ({ agent: "reviewer", task: `DSM_LAUNCH_REF:REVIEW:999:${index}` })),
-	};
+	assert.match(String(parallel.resolveWorkflow("dsm.delivery-launches", { launchRefs: [launchRefs[0], launchRefs[0]] }).error), /unique planned launch/);
+	assert.match(String(parallel.resolveWorkflow("dsm.delivery-launches", { launchRefs: ["DSM_LAUNCH_REF:REVIEW:999:0", launchRefs[1]] }).error), /Stale DSM delivery launch reference/);
+	assert.match(String(parallel.resolveWorkflow("dsm.delivery-launches", { launchRefs: [launchRefs[0]] }).error), /requires exactly 2 launch references/);
+	assert.match(String(parallel.resolveWorkflow("dsm.delivery-launches", { launchRefs, extra: true }).error), /accepts only the launchRefs/);
+
+	const legacyTasks = { tasks: launchRefs.map((task: string) => ({ agent: "reviewer", task })) };
 	assert.match(
-		(await parallel.emit("tool_call", { toolName: "subagent", input: staleInput }))?.reason,
-		/stale delivery launch reference/,
+		(await parallel.emit("tool_call", { toolName: "subagent", input: legacyTasks }))?.reason,
+		/Parallel delivery launch references must use workflow=dsm\.delivery-launches/,
 	);
+	const nestedScript = { workflowScript: `return runs.run('review', { agent: 'reviewer', task: '${launchRefs[0]}' });` };
+	assert.match(
+		(await parallel.emit("tool_call", { toolName: "subagent", input: nestedScript }))?.reason,
+		/Nested delivery launch references must use workflow=dsm\.delivery-launches/,
+	);
+	for (const launch of reviewNext.details.next.parallel) writeReviewArtifact(launch.artifact, "PASS", "review passed");
+	await parallel.tool("delivery_report", { phase: "REVIEW", verdict: "PASS", summary: "reviewed" });
+	const retiredPlan = parallel.resolveWorkflow("dsm.delivery-launches", { launchRefs });
+	assert.equal(retiredPlan.ok, false, "a reported launch set must not be reusable before delivery_next plans another action");
+	assert.match(retiredPlan.error, /Call delivery_next/);
+	await parallel.shutdown();
+	const workflowRegistry = (globalThis as any)[Symbol.for("pi-subagents.workflow-resources.v1")];
+	assert.equal(workflowRegistry.bySession.has(parallel.ctx.sessionManager.getSessionId()), false);
 });
 
 await runTest("all delivery subagent launch shapes inherit the sticky delivery root", async () => {
@@ -876,7 +923,7 @@ await runTest("all delivery subagent launch shapes inherit the sticky delivery r
 		assert.equal(directInput.cwd, worktree);
 
 		const workflowInput: any = {
-			workflowScript: `return runs.run('review', { agent: 'reviewer', task: 'DSM_LAUNCH_REF:IMPLEMENT:1:0', cwd: ${JSON.stringify(root)} });`,
+			workflowScript: `return runs.run('review', { agent: 'reviewer', task: 'ordinary workflow', cwd: ${JSON.stringify(root)} });`,
 			cwd: root,
 		};
 		assert.equal(await harness.emit("tool_call", { toolName: "subagent", input: workflowInput }), undefined);

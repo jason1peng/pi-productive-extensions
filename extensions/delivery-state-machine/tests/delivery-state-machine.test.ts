@@ -315,7 +315,15 @@ await runTest("isolated host smoke exercises the selected delivery profile", () 
 	assert.match(smoke, /find "\$EVIDENCE_DIR" -type f .*'auth\.json'.*'credentials\.json'.*'oauth\.json'/);
 	assert.match(smoke, /args\.get\("workflow"\) == "dsm\.delivery-launches"/);
 	assert.match(smoke, /set\(launch_refs\) != planned_refs/);
-	assert.match(smoke, /printf '\.pi-subagents\/\\n'.*PROJECT_DIR\/\.gitignore/);
+	assert.match(smoke, /if launch_ref and plan is None:/);
+	assert.match(smoke, /launch\["agent"\] = plan\.get\("agent"\)/);
+	assert.match(smoke, /export DSM_SMOKE_SUBAGENT_METADATA_DIR="\$AGENT_DIR\/sessions"/);
+	assert.match(smoke, /printf '\.pi-subagents\/\\n'.*GIT_BASE_DIR\/\.gitignore/);
+	assert.match(smoke, /GIT_BASE_DIR="\$EVIDENCE_DIR\/project-main"/);
+	assert.match(smoke, /if \[\[ -e "\$GIT_BASE_DIR" \|\| -e "\$PROJECT_DIR" \]\]; then/);
+	assert.match(smoke, /git -C "\$GIT_BASE_DIR" worktree add -q -b smoke\/dsm-isolated-host "\$PROJECT_DIR" main/);
+	assert.match(smoke, /git -C "\$GIT_BASE_DIR" worktree remove --force "\$PROJECT_DIR"/);
+	assert.match(smoke, /SUBAGENTS_ROOT\/src\/agents\/agents\.js/);
 	assert.match(smoke, /assert_effective_model\(evidence, expected_model\)/);
 	assert.match(smoke, /assert_delivery_done\(Path\(os\.environ\["DSM_SMOKE_DELIVERY_ROOT"\]\)\)/);
 	assert.doesNotMatch(smoke, /grep -Fq "DSM_DELIVERY_SMOKE_DONE"/);
@@ -425,8 +433,8 @@ await runTest("isolated smoke launch evidence ignores parent and sibling output-
 	const helperDir = path.join(extensionDir, "scripts");
 	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-launch-evidence-"));
 	try {
-		const metadataDir = path.join(fixture, "project", ".pi-subagents", "artifacts");
 		const sessionsDir = path.join(fixture, "sessions");
+		const metadataDir = path.join(sessionsDir, "project", "subagent-artifacts");
 		const firstOutput = path.join(fixture, "03-review-1.md");
 		const secondOutput = path.join(fixture, "03-review-2.md");
 		fs.mkdirSync(metadataDir, { recursive: true });
@@ -450,7 +458,7 @@ await runTest("isolated smoke launch evidence ignores parent and sibling output-
 			"-c",
 			"import json,sys; sys.path.insert(0,sys.argv[1]); from pathlib import Path; from isolated_host_launch_evidence import resolve_child_session; path,records=resolve_child_session(Path(sys.argv[2]),Path(sys.argv[3]),'reviewer',sys.argv[4]); print(json.dumps({'path':str(path),'id':records[0]['id']}))",
 			helperDir,
-			metadataDir,
+			sessionsDir,
 			sessionsDir,
 			secondOutput,
 		], { encoding: "utf8" });
@@ -458,6 +466,51 @@ await runTest("isolated smoke launch evidence ignores parent and sibling output-
 			path: path.join(sessionsDir, "reviewrun", "run-1", "session.jsonl"),
 			id: "child-1",
 		});
+	} finally {
+		fs.rmSync(fixture, { recursive: true, force: true });
+	}
+});
+
+await runTest("isolated smoke launch evidence resolves current pi-subagents metadata and session names", () => {
+	const extensionDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+	const helperDir = path.join(extensionDir, "scripts");
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "dsm-launch-evidence-current-runtime-"));
+	try {
+		const sessionsDir = path.join(fixture, "sessions");
+		const metadataDir = path.join(sessionsDir, "project", "subagent-artifacts");
+		const runId = "currentrun";
+		const output = path.join(fixture, "03-review-1.md");
+		const metadataPath = path.join(metadataDir, `${runId}_reviewer_meta.json`);
+		const transcriptPath = path.join(metadataDir, `${runId}_reviewer_transcript.jsonl`);
+		const sessionPath = path.join(sessionsDir, "project", "parent", "child-session", "run-0", "session.jsonl");
+		fs.mkdirSync(metadataDir, { recursive: true });
+		fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+		fs.writeFileSync(metadataPath, JSON.stringify({
+			runId,
+			agent: "reviewer",
+			task: "[prompt redacted]",
+			transcriptPath,
+		}));
+		fs.writeFileSync(transcriptPath, `${JSON.stringify({
+			runId,
+			agent: "reviewer",
+			childIndex: 0,
+			text: `Write your findings to exactly this path: ${output}\nThis path is authoritative for this run.`,
+		})}\n`);
+		fs.writeFileSync(sessionPath, [
+			JSON.stringify({ type: "session", id: "current-child" }),
+			JSON.stringify({ type: "session_info", name: `subagent-reviewer-${runId}-1` }),
+		].join("\n") + "\n");
+		const resolved = execFileSync("python3", [
+			"-B",
+			"-c",
+			"import json,sys; sys.path.insert(0,sys.argv[1]); from pathlib import Path; from isolated_host_launch_evidence import resolve_child_session; path,records=resolve_child_session(Path(sys.argv[2]),Path(sys.argv[3]),'reviewer',sys.argv[4]); print(json.dumps({'path':str(path),'id':records[0]['id']}))",
+			helperDir,
+			sessionsDir,
+			sessionsDir,
+			output,
+		], { encoding: "utf8" });
+		assert.deepEqual(JSON.parse(resolved), { path: sessionPath, id: "current-child" });
 	} finally {
 		fs.rmSync(fixture, { recursive: true, force: true });
 	}

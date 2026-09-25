@@ -37,6 +37,7 @@ EVIDENCE_DIR=${DSM_SMOKE_EVIDENCE_DIR:-$(mktemp -d "/tmp/dsm-isolated-host-smoke
 TIMEOUT_SECONDS=${DSM_SMOKE_TIMEOUT_SECONDS:-720}
 TEMP_AGENT_ROOT=$(mktemp -d "/tmp/dsm-isolated-host-agent.XXXXXX")
 AGENT_DIR="$TEMP_AGENT_ROOT/agent"
+GIT_BASE_DIR="$EVIDENCE_DIR/project-main"
 PROJECT_DIR="$EVIDENCE_DIR/project"
 RESULTS_DIR="$EVIDENCE_DIR/results"
 PACKAGE_DIR="$EVIDENCE_DIR/package"
@@ -79,7 +80,14 @@ else
 fi
 
 SMOKE_HOST_PID=
+OWN_FIXTURE_GIT_DIR=0
 cleanup_agent_home() {
+	if [[ "$OWN_FIXTURE_GIT_DIR" == 1 ]]; then
+		if [[ -d "$GIT_BASE_DIR/.git" ]]; then
+			git -C "$GIT_BASE_DIR" worktree remove --force "$PROJECT_DIR" >/dev/null 2>&1 || true
+		fi
+		rm -rf -- "$GIT_BASE_DIR"
+	fi
 	rm -rf -- "$TEMP_AGENT_ROOT"
 }
 forward_host_signal() {
@@ -97,12 +105,19 @@ trap 'forward_host_signal HUP 129' HUP
 trap 'forward_host_signal INT 130' INT
 trap 'forward_host_signal TERM 143' TERM
 
-mkdir -p "$AGENT_DIR" "$PROJECT_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"
+if [[ -e "$GIT_BASE_DIR" || -e "$PROJECT_DIR" ]]; then
+	echo "isolated smoke fixture path already exists; choose a fresh DSM_SMOKE_EVIDENCE_DIR: $GIT_BASE_DIR or $PROJECT_DIR" >&2
+	exit 2
+fi
+OWN_FIXTURE_GIT_DIR=1
+mkdir -p "$AGENT_DIR" "$GIT_BASE_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"
 # Record the complete source-worktree state so the smoke cannot silently leave
 # bytecode or any other mutation behind in the candidate checkout.
 git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all > "$RESULTS_DIR/source-status-before.txt"
 cp "$REPO_ROOT/package.json" "$PACKAGE_DIR/package.json"
 cp -R "$REPO_ROOT/extensions" "$REPO_ROOT/shared" "$PACKAGE_DIR/"
+mkdir -p "$PACKAGE_DIR/node_modules"
+ln -s "$SUBAGENTS_ROOT" "$PACKAGE_DIR/node_modules/pi-subagents"
 mkdir "$PACKAGE_DIR/.git"
 if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
 	cp "${HOME}/.pi/agent/auth.json" "$AGENT_DIR/auth.json"
@@ -242,11 +257,14 @@ JSON
 
 # The fixture project remains clean; profile agent definitions are intentional
 # isolated-host inputs, not project-local agent injection.
-git -C "$PROJECT_DIR" init -q -b main
-printf '# Isolated DSM host smoke\n' > "$PROJECT_DIR/README.md"
-printf '.pi-subagents/\n' > "$PROJECT_DIR/.gitignore"
-git -C "$PROJECT_DIR" add README.md .gitignore
-git -C "$PROJECT_DIR" -c user.name=Smoke -c user.email=smoke@example.invalid commit -qm init
+git -C "$GIT_BASE_DIR" init -q -b main
+printf '# Isolated DSM host smoke\n' > "$GIT_BASE_DIR/README.md"
+printf '.pi-subagents/\n' > "$GIT_BASE_DIR/.gitignore"
+git -C "$GIT_BASE_DIR" add README.md .gitignore
+git -C "$GIT_BASE_DIR" -c user.name=Smoke -c user.email=smoke@example.invalid commit -qm init
+git -C "$GIT_BASE_DIR" config user.name Smoke
+git -C "$GIT_BASE_DIR" config user.email smoke@example.invalid
+git -C "$GIT_BASE_DIR" worktree add -q -b smoke/dsm-isolated-host "$PROJECT_DIR" main
 git -C "$PROJECT_DIR" config user.name Smoke
 git -C "$PROJECT_DIR" config user.email smoke@example.invalid
 if find "$PROJECT_DIR" -type f \( -path '*/agents/*.md' -o -path '*/.agents/*.md' \) | grep -q .; then
@@ -272,7 +290,7 @@ for (const name of new Set(expectations.agents)) {
   if (!selected.some((agent) => agent.name === name)) process.exit(1);
 }
 if (all.some((agent) => agent.source === "package" && agent.name.startsWith("dsm."))) process.exit(1);
-' "$SUBAGENTS_ROOT/src/agents/agents.ts" "$PACKAGE_DIR" "$RESULTS_DIR/discovery.json" "$RESULTS_DIR/profile-expectations.json"
+' "$SUBAGENTS_ROOT/src/agents/agents.js" "$PACKAGE_DIR" "$RESULTS_DIR/discovery.json" "$RESULTS_DIR/profile-expectations.json"
 
 if [[ -n "$PROMPT_FILE" ]]; then
 	cp "$PROMPT_FILE" "$RESULTS_DIR/orchestrator-prompt.txt"
@@ -283,8 +301,8 @@ Run one complete representative delivery using the delivery-state-machine tools 
 Use this exact bounded loop:
 1. Call delivery_start once with every maxRounds value set to 1.
 2. Call delivery_next once for the current phase.
-3. Call the subagent tool synchronously. For a single launch, pass the exact details.next.launchRef as the task field; for parallel launches, pass each exact details.next.parallel[].launchRef as the corresponding task field. Do not copy or reconstruct the long childPrompt; DSM resolves the canonical prompt and all launch settings before execution. Keep the launch references one-to-one and in the planned phase/attempt. Do not add or substitute model fields, collapse parallel launches, investigate alternatives, or retry a launch.
-4. Read every resulting artifact, then call delivery_report with its phase and aggregate verdict.
+3. Call the subagent tool for the current phase. For a single launch, pass the exact details.next.launchRef as the task field. For parallel launches, make one call with workflow="dsm.delivery-launches", args.launchRefs containing every exact details.next.parallel[].launchRef once, and async=true. Do not copy or reconstruct childPrompt or launch settings; DSM resolves the canonical children before execution. Do not collapse parallel launches, investigate alternatives, or retry a launch.
+4. Wait for the workflow completion notification, read every resulting artifact, then call delivery_report with its phase and aggregate verdict.
 5. Repeat steps 2-4 through IMPLEMENT, VERIFY, REVIEW, CLOSE, and RETRO. If a phase does not pass, report the real result and stop rather than attempting repair.
 6. Call delivery_status. End with exactly DSM_DELIVERY_SMOKE_DONE only when status is DONE.
 
@@ -298,6 +316,7 @@ fi
 # as an uninstrumented hang. Python is used for portable process-group cleanup
 # because macOS does not ship the GNU timeout command.
 export PI_CODING_AGENT_DIR="$AGENT_DIR"
+export NODE_PATH="${NODE_PATH:+$NODE_PATH:}$(dirname "$SUBAGENTS_ROOT")"
 export PI_DELIVERY_PROFILE="$PROFILE"
 export PI_DELIVERY_ARTIFACT_ROOT="$DELIVERY_ROOT"
 export DSM_SMOKE_PI_BIN="$PI_BIN"
@@ -402,7 +421,7 @@ export DSM_SMOKE_BUNDLED_LAUNCHES="$RESULTS_DIR/selected-phase-launches.json"
 export DSM_SMOKE_EXPECTATIONS="$RESULTS_DIR/profile-expectations.json"
 export DSM_SMOKE_EXPECTED_MODEL="$CHILD_MODEL"
 export DSM_SMOKE_SESSIONS_DIR="$AGENT_DIR/sessions"
-export DSM_SMOKE_SUBAGENT_METADATA_DIR="$PROJECT_DIR/.pi-subagents/artifacts"
+export DSM_SMOKE_SUBAGENT_METADATA_DIR="$AGENT_DIR/sessions"
 python3 -B <<'PY'
 import hashlib
 import json
@@ -474,17 +493,36 @@ for transcript in sessions_root.rglob("*.jsonl"):
             if item.get("id") in rejected_call_ids:
                 continue
             args = item.get("arguments", {})
-            # Parallel subagent calls carry launches under tasks[] with shared
-            # context/concurrency fields on the outer arguments object.
-            entries = args.get("tasks") if isinstance(args.get("tasks"), list) else [args]
+            # DSM parallel launches are one named workflow call; its exact launch refs
+            # bind back to the current delivery_next plan for evidence collection.
+            if args.get("workflow") == "dsm.delivery-launches":
+                workflow_args = args.get("args", {})
+                launch_refs = workflow_args.get("launchRefs") if isinstance(workflow_args, dict) else None
+                planned_refs = {entry.get("launchRef") for entry in planned if isinstance(entry, dict)}
+                if not isinstance(launch_refs, list) or len(launch_refs) != len(planned) or len(set(launch_refs)) != len(launch_refs) or set(launch_refs) != planned_refs:
+                    raise SystemExit(f"named DSM workflow did not carry the exact planned launch-ref set: {args}")
+                for launch_ref in launch_refs:
+                    plan = next((candidate for candidate in planned if candidate.get("launchRef") == launch_ref), None)
+                    if plan is None:
+                        raise SystemExit(f"named DSM workflow launch has no delivery_next plan: {launch_ref}")
+                    launch = {key: plan[key] for key in ("agent", "model", "thinking", "context", "output") if key in plan}
+                    launch.update({"cwd": os.environ["DSM_SMOKE_PROJECT_DIR"], "_launchRef": launch_ref})
+                    requested.append({key: launch[key] for key in ("agent", "model", "thinking", "context", "cwd", "output", "_launchRef") if key in launch})
+                continue
+            # Single direct launch arguments carry their launch reference as task.
+            entries = [args]
             for entry in entries:
                 launch = {**{key: args[key] for key in ("model", "thinking", "context", "cwd") if key in args}, **entry}
-                if str(launch.get("agent", "")) not in expected_agents:
-                    continue
-                output = launch.get("output")
                 task = launch.get("task")
                 launch_ref = task if isinstance(task, str) and task.startswith("DSM_LAUNCH_REF:") else None
                 plan = next((candidate for candidate in planned if launch_ref and candidate.get("launchRef") == launch_ref), None)
+                if launch_ref and plan is None:
+                    raise SystemExit(f"single DSM launch reference has no delivery_next plan: {launch_ref}")
+                if plan is not None and launch_ref:
+                    launch["agent"] = plan.get("agent")
+                if str(launch.get("agent", "")) not in expected_agents:
+                    continue
+                output = launch.get("output")
                 if plan is None:
                     plan = next((candidate for candidate in planned if output and candidate.get("output") == output), None)
                 if plan is None and len(planned) == 1 and launch.get("agent") == planned[0].get("agent"):

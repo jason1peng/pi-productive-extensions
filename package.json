@@ -30,9 +30,7 @@
     "verify": "npm run test && npm run report-viewer:verify"
   },
   "dependencies": {
+    "pi-subagents": "0.71.0",
     "promptfoo": "0.121.19"
-  },
-  "devDependencies": {
-    "pi-subagents": "0.35.1"
   }
 }

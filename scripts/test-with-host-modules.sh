@@ -3,7 +3,13 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 MODULE_ROOT=${PI_HOST_MODULE_ROOT:-"$ROOT/node_modules"}
 SUBAGENTS_SOURCE="$MODULE_ROOT/pi-subagents"
-TYPEBOX_SOURCE="$ROOT/node_modules/@earendil-works/pi-ai/node_modules/typebox"
+TYPEBOX_SOURCE="$SUBAGENTS_SOURCE/node_modules/typebox"
+if [[ ! -f "$TYPEBOX_SOURCE/package.json" ]]; then
+  TYPEBOX_SOURCE="$MODULE_ROOT/typebox"
+fi
+if [[ ! -f "$TYPEBOX_SOURCE/package.json" ]]; then
+  TYPEBOX_SOURCE="$ROOT/node_modules/@earendil-works/pi-ai/node_modules/typebox"
+fi
 if [[ ! -d "$SUBAGENTS_SOURCE/src" ]]; then
   echo "required repository pi-subagents test dependency is unavailable: $SUBAGENTS_SOURCE" >&2
   exit 1

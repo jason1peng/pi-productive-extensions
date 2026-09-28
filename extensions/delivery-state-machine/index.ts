@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { registerWorkflowResource } from "pi-subagents/workflow-resources";
 import { addUsageTotals, collectSessionUsage as collectSharedSessionUsage, collectUsageFromSessionFile, emptyUsageTotals, subtractUsageTotals, type UsageTotals } from "../../shared/session-usage.ts";
 import { readPiSubagentMetadataFiles, resolvePiSubagentChildUsage } from "./pi-subagents-usage.ts";
 import type { DeliveryProjectMetadataV1, DeliveryReportJsonV2, DeliveryReportStep } from "../../shared/delivery-report.ts";
@@ -904,6 +905,7 @@ function parallelArtifactPathForLaunch(state: DeliveryState, launch: LaunchConfi
 }
 
 const DELIVERY_LAUNCH_REF_PREFIX = "DSM_LAUNCH_REF";
+const DELIVERY_WORKFLOW_RESOURCE = "dsm.delivery-launches";
 
 function deliveryLaunchRef(state: DeliveryState, phase: RunnablePhase, attempt: number, index: number): string {
 	return `${DELIVERY_LAUNCH_REF_PREFIX}:${phase}:${attempt}:${index}`;
@@ -1048,8 +1050,9 @@ function exposeChildPromptsToCaller(): boolean {
 	return process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS === "1";
 }
 
-function toolNextAction(state: DeliveryState): Record<string, unknown> {
+function toolNextAction(state: DeliveryState, onPlannedAction?: (action: NextAction) => void): Record<string, unknown> {
 	const action = nextAction(state);
+	onPlannedAction?.(action);
 	if (exposeChildPromptsToCaller()) return action as unknown as Record<string, unknown>;
 	const { childPrompt: _childPrompt, parallel, ...single } = action;
 	return {
@@ -1077,6 +1080,66 @@ function canonicalizeSubagentLaunch(target: Record<string, unknown>, launch: Chi
 	else target.thinking = launch.thinking;
 	target.cwd = state.cwd;
 	target.task = launch.childPrompt;
+}
+
+interface DeliveryWorkflowPlan {
+	phase: RunnablePhase;
+	attempt: number;
+	action: NextAction;
+}
+
+function resolveDeliveryWorkflowResource(
+	state: DeliveryState,
+	plan: DeliveryWorkflowPlan | undefined,
+	args: Readonly<Record<string, unknown>>,
+): { script: string } | { error: string } {
+	if (Object.keys(args).some((key) => key !== "launchRefs")) {
+		return { error: "DSM delivery workflow accepts only the launchRefs argument." };
+	}
+	if (!isRunnablePhase(state.phase)) return { error: `Delivery cannot launch children while phase=${state.phase}.` };
+	const attempt = phaseAttemptForStep(state, state.phase);
+	if (!plan || plan.phase !== state.phase || plan.attempt !== attempt || plan.action.phase !== state.phase) {
+		return { error: "Call delivery_next to obtain the exact current launch references before starting the DSM workflow." };
+	}
+	const expected = plan.action.parallel?.length ? plan.action.parallel : [plan.action as ChildLaunch];
+	const launchRefs = args.launchRefs;
+	if (!Array.isArray(launchRefs) || launchRefs.length !== expected.length || expected.length === 0) {
+		return { error: `DSM delivery workflow requires exactly ${expected.length} launch reference${expected.length === 1 ? "" : "s"} from the current delivery_next response.` };
+	}
+
+	const selected = new Map<number, ChildLaunch>();
+	for (const value of launchRefs) {
+		if (typeof value !== "string") return { error: "Every DSM delivery launch reference must be a string." };
+		const parsed = parseDeliveryLaunchRef(value);
+		if (!parsed) return { error: `Invalid DSM delivery launch reference ${value}; use the exact launchRef returned by delivery_next.` };
+		if ("error" in parsed) return { error: parsed.error };
+		if (parsed.phase !== state.phase || parsed.attempt !== attempt) {
+			return { error: `Stale DSM delivery launch reference ${value}; call delivery_next for the current phase and attempt.` };
+		}
+		if (parsed.index < 0 || parsed.index >= expected.length || selected.has(parsed.index)) {
+			return { error: `DSM delivery launch reference ${value} is not a unique planned launch; use each launchRef exactly once.` };
+		}
+		if (value !== deliveryLaunchRef(state, state.phase, attempt, parsed.index)) {
+			return { error: `DSM delivery launch reference ${value} is not canonical; use the exact launchRef returned by delivery_next.` };
+		}
+		const launch = expected[parsed.index];
+		if (!launch?.agent || !launch.childPrompt) return { error: `DSM delivery launch reference ${value} has no complete planned launch.` };
+		selected.set(parsed.index, launch);
+	}
+	if (selected.size !== expected.length) return { error: "DSM delivery launch references must cover every planned launch exactly once." };
+
+	const calls = expected.map((launch, index) => ({
+		key: `dsm-${state.phase.toLowerCase()}-${attempt}-${index}`,
+		agent: launch.agent,
+		task: launch.childPrompt,
+		...(launch.model ? { model: launch.thinking ? `${launch.model}:${launch.thinking}` : launch.model } : {}),
+		...(launch.thinking ? { thinking: launch.thinking } : {}),
+		...(launch.context ? { context: launch.context } : {}),
+		acceptance: false,
+		...(launch.output ? { output: launch.output, outputMode: launch.outputMode ?? "file-only" } : {}),
+		...(state.cwd ? { cwd: state.cwd } : {}),
+	}));
+	return { script: `return runs.all(${JSON.stringify(calls)});` };
 }
 
 // Pi-subagents resolves omitted workflow child cwd values from the outer request, so
@@ -1134,21 +1197,35 @@ function canonicalizeDeliverySubagentCwd(state: DeliveryState, input: unknown): 
 	}
 }
 
+function validateNestedDeliveryLaunchRefs(state: DeliveryState, input: unknown): string | undefined {
+	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const inputRecord = input as Record<string, unknown>;
+	if (inputRecord.workflow === DELIVERY_WORKFLOW_RESOURCE) return undefined;
+	if (typeof inputRecord.workflowScript === "string" && inputRecord.workflowScript.includes(`${DELIVERY_LAUNCH_REF_PREFIX}:`)) {
+		return `Nested delivery launch references must use workflow=${DELIVERY_WORKFLOW_RESOURCE} with the exact launchRefs returned by delivery_next.`;
+	}
+	return undefined;
+}
+
 function materializeDeliveryLaunchRefs(state: DeliveryState, input: unknown): string | undefined {
 	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
 	const inputRecord = input as Record<string, unknown>;
-	if (typeof inputRecord.action === "string") return undefined;
+	if (typeof inputRecord.action === "string" || inputRecord.workflow === DELIVERY_WORKFLOW_RESOURCE) return undefined;
 	const action = nextAction(state);
 	const expected = action.parallel?.length ? action.parallel : [action as ChildLaunch];
 	const rawTasks = Array.isArray(inputRecord.tasks) ? inputRecord.tasks : [inputRecord];
 	const taskRecords = rawTasks.filter((task): task is Record<string, unknown> => Boolean(task) && typeof task === "object" && !Array.isArray(task));
 	const parsed = taskRecords.map((task) => parseDeliveryLaunchRef(task.task));
 	if (!parsed.some(Boolean)) return undefined;
+	if (Array.isArray(inputRecord.tasks) && expected.length > 1) {
+		return `Parallel delivery launch references must use workflow=${DELIVERY_WORKFLOW_RESOURCE} with args.launchRefs; pi-subagents accepts a named workflow, not a top-level tasks array.`;
+	}
 	if (parsed.some((ref) => !ref || "error" in ref)) {
 		return parsed.find((ref): ref is { error: string } => Boolean(ref && "error" in ref))?.error
 			?? "delivery launch reference is missing from one parallel task; use every launchRef returned by delivery_next exactly once.";
 	}
 	if (taskRecords.length !== expected.length) {
+		if (expected.length > 1) return `Parallel delivery launch references must use workflow=${DELIVERY_WORKFLOW_RESOURCE} with every launchRef exactly once.`;
 		return `received ${taskRecords.length} launch references, but delivery_next planned ${expected.length}; use every launchRef exactly once.`;
 	}
 	const contexts = new Set(expected.map((launch) => launch.context ?? null));
@@ -1180,7 +1257,7 @@ function materializeDeliveryLaunchRefs(state: DeliveryState, input: unknown): st
 function validateSubagentLaunchThinking(state: DeliveryState, input: unknown): string | undefined {
 	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
 	const inputRecord = input as Record<string, unknown>;
-	if (typeof inputRecord.action === "string") return undefined;
+	if (typeof inputRecord.action === "string" || inputRecord.workflow === DELIVERY_WORKFLOW_RESOURCE) return undefined;
 	const action = nextAction(state);
 	const expected = action.parallel?.length ? action.parallel : [action];
 	const outer = input as Record<string, unknown>;
@@ -1240,7 +1317,7 @@ function validateSubagentLaunchThinking(state: DeliveryState, input: unknown): s
 function validateSubagentLaunchPrompt(state: DeliveryState, input: unknown): string | undefined {
 	if (!isRunnablePhase(state.phase) || !input || typeof input !== "object" || Array.isArray(input)) return undefined;
 	const inputRecord = input as Record<string, unknown>;
-	if (typeof inputRecord.action === "string") return undefined;
+	if (typeof inputRecord.action === "string" || inputRecord.workflow === DELIVERY_WORKFLOW_RESOURCE) return undefined;
 	const action = nextAction(state);
 	const expected = action.parallel?.length ? action.parallel : [action as ChildLaunch];
 	const outer = input as Record<string, unknown>;
@@ -1842,13 +1919,13 @@ function formatNextAction(state: DeliveryState): string {
 	const launch = action.parallel?.length
 		? `parallel (${action.parallel.length}): ${action.parallel.map(launchOne).join(" | ")}`
 		: launchOne(action);
-	const launchReference = action.parallel?.length
-		? action.parallel.map((item, index) => `parallel[${index}].task=${item.launchRef}`).join(" | ")
-		: `task=${action.launchRef}`;
+	const launchInstruction = action.parallel?.length
+		? `launchRefs: call subagent once with { workflow: "${DELIVERY_WORKFLOW_RESOURCE}", args: { launchRefs: [${action.parallel.map((item) => `"${item.launchRef}"`).join(", ")}] }, async: true }. DSM resolves every canonical childPrompt, model, settings, cwd, and output path before execution.`
+		: `launchRef: pass the exact task=${action.launchRef} value as the subagent task field; DSM resolves the canonical childPrompt, settings, cwd, and output path before execution`;
 	return [
 		`orchestrator: ${action.orchestratorInstruction}`,
 		`launch: ${launch}`,
-		`launchRef: pass the exact ${launchReference} value(s) as the subagent task field; DSM resolves the canonical childPrompt, settings, cwd, and output path before execution`,
+		launchInstruction,
 		`parentReport: ${action.reportInstruction}`,
 	].join("\n");
 }
@@ -2637,12 +2714,37 @@ function closeCommandAuthorized(state: DeliveryState): boolean {
 
 export default function deliveryStateMachine(pi: ExtensionAPI) {
 	let state: DeliveryState = initialState();
+	let workflowLaunchPlan: DeliveryWorkflowPlan | undefined;
+	const workflowRegistrations = new Map<string, { dispose(): void }>();
+
+	function rememberPlannedAction(action: NextAction) {
+		if (!isRunnablePhase(state.phase) || action.phase !== state.phase) {
+			workflowLaunchPlan = undefined;
+			return;
+		}
+		workflowLaunchPlan = { phase: state.phase, attempt: phaseAttemptForStep(state, state.phase), action };
+	}
+
+	function registerDeliveryWorkflowResource(ctx: ExtensionContext) {
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (workflowRegistrations.has(sessionId)) return;
+		const registration = registerWorkflowResource({
+			sessionId,
+			definition: {
+				name: DELIVERY_WORKFLOW_RESOURCE,
+				version: 1,
+				resolve: (args) => resolveDeliveryWorkflowResource(state, workflowLaunchPlan, args),
+			},
+		});
+		workflowRegistrations.set(sessionId, registration);
+	}
 
 	function persist() {
 		pi.appendEntry("delivery-state-machine", cloneState(state));
 	}
 
 	function reconstruct(ctx: ExtensionContext) {
+		workflowLaunchPlan = undefined;
 		state = initialState();
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === "delivery-state-machine") {
@@ -2659,13 +2761,22 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		updateUi(ctx, state);
 	}
 
-	pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
+	pi.on("session_start", async (_event, ctx) => {
+		reconstruct(ctx);
+		registerDeliveryWorkflowResource(ctx);
+	});
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
+	pi.on("session_shutdown", async () => {
+		for (const registration of workflowRegistrations.values()) registration.dispose();
+		workflowRegistrations.clear();
+		workflowLaunchPlan = undefined;
+	});
 
 	pi.on("tool_call", async (event, _ctx) => {
 		if (event.toolName === "subagent") {
 			canonicalizeDeliverySubagentCwd(state, event.input);
-			const reason = materializeDeliveryLaunchRefs(state, event.input)
+			const reason = validateNestedDeliveryLaunchRefs(state, event.input)
+				?? materializeDeliveryLaunchRefs(state, event.input)
 				?? validateSubagentLaunchThinking(state, event.input)
 				?? validateSubagentLaunchPrompt(state, event.input);
 			if (reason) return { block: true, reason };
@@ -2715,6 +2826,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		description: "Reset delivery state machine",
 		handler: async (_args, ctx) => {
 			state = initialState();
+			workflowLaunchPlan = undefined;
 			persist();
 			updateUi(ctx, state);
 			ctx.ui.notify("Delivery state reset", "info");
@@ -2731,13 +2843,14 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			"Bare identifiers, URLs, paths, and empty tasks are rejected; prepare the brief first instead of asking DSM to resolve a reference.",
 			"Follow the returned delivery playbook for the worktree policy, loop order, and delivery-owned artifact/verdict gates.",
 			"Pass deliveryRoot with the absolute path of the dedicated git worktree you already created; a delivery rooted at the repository's main working tree is refused with no opt-out.",
-			"Use delivery_next before launches; prefer each returned launchRef as the subagent task so DSM resolves canonical prompts and settings without LLM rewriting.",
+			`Use delivery_next before launches. Pass a single launchRef as the subagent task; for parallel launches use one subagent call with workflow=${DELIVERY_WORKFLOW_RESOURCE}, every exact ref in args.launchRefs, and async=true.`,
 		],
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const task = requirePreparedTask(params.task);
 			const rootResolution = resolveDeliveryRoot(ctx, (params as { deliveryRoot?: unknown }).deliveryRoot);
 			state = initialState();
+			workflowLaunchPlan = undefined;
 			state.active = true;
 			state.task = task;
 			state.deliveryRoot = rootResolution.deliveryRoot;
@@ -2773,8 +2886,8 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptSnippet: "Return the next required delivery state-machine action",
 		promptGuidelines: [
 			"Use delivery_next before launching any delivery workflow subagent.",
-			"Prefer each details.next.launchRef (or details.next.parallel[].launchRef) as the subagent task; DSM resolves the canonical childPrompt, settings, cwd, and output path before execution.",
-			"Full childPrompt forwarding remains supported for compatibility; configured thinking is mandatory and mismatched or omitted values are blocked.",
+			`For a single launch, pass its exact launchRef as the subagent task. For parallel launches, use one subagent call with workflow=${DELIVERY_WORKFLOW_RESOURCE}, args.launchRefs containing every exact parallel launchRef once, and async=true; DSM resolves canonical child prompts and launch settings.`,
+			"Full childPrompt forwarding remains supported for a single direct launch; configured thinking is mandatory and mismatched or omitted values are blocked.",
 			"Keep details.next.orchestratorInstruction and details.next.reportInstruction with the parent/orchestrator, and do not skip verification/review/close gates.",
 		],
 		parameters: EMPTY_PARAMS,
@@ -2787,7 +2900,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			persist();
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
 			const fullOutputPath = shouldShowSummary(state) && state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
-			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: toolStateSnapshot(state), next: toolNextAction(state) } };
+			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: toolStateSnapshot(state), next: toolNextAction(state, rememberPlannedAction) } };
 		},
 	});
 
@@ -2814,6 +2927,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			transitionAfterReport(candidate, reportParams);
 			synchronizeCloseReadiness(candidate);
 			state = candidate;
+			workflowLaunchPlan = undefined;
 			persist();
 			updateUi(ctx, state);
 			const snapshot = cloneState(state);
@@ -2835,6 +2949,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		parameters: DECIDE_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			assertRecordedDeliveryRoot(ctx, state);
+			workflowLaunchPlan = undefined;
 			applyDecision(state, params.decision as Decision, params.rationale);
 			synchronizeCloseReadiness(state);
 			persist();
@@ -2882,6 +2997,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			state = initialState();
+			workflowLaunchPlan = undefined;
 			persist();
 			updateUi(ctx, state);
 			return { content: [{ type: "text", text: "Delivery state reset." }], details: { state: cloneState(state) } };

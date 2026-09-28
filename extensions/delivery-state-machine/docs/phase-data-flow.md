@@ -45,9 +45,16 @@ sequenceDiagram
     loop Each phase
         Parent->>DSM: delivery_next()
         DSM-->>Parent: Next-action package
-        Parent->>Child: Launch with exact childPrompt / launchRef and artifact path
-        Child->>FS: Write RESULT artifact
-        Child-->>Parent: Completion result
+        alt One planned child
+            Parent->>Child: Launch with exact launchRef; DSM resolves childPrompt and artifact path
+            Child->>FS: Write RESULT artifact
+            Child-->>Parent: Completion result
+        else Parallel planned children
+            Parent->>DSM: subagent(workflow=dsm.delivery-launches, exact launchRefs, async=true)
+            DSM->>Child: Launch each canonical child with planned prompt/settings/output
+            Child->>FS: Write RESULT artifacts
+            Child-->>Parent: Workflow completion
+        end
         Parent->>DSM: delivery_report(phase, verdict, artifact, summary)
         DSM->>FS: Validate artifact and record history
         DSM-->>Parent: Verdict acknowledgement + slim state
@@ -118,7 +125,7 @@ details
     └── parallel[]?                 one package for each parallel child
 ```
 
-The parent must pass `details.next.childPrompt` verbatim as the child task, or use the canonical `launchRef` supplied by the state machine. It must use the exact planned artifact path in `details.next.artifact`.
+For one child, the parent passes its exact `launchRef` as the subagent task (or, for compatibility, the exact `childPrompt`) and uses the planned artifact path. For parallel launches, it makes one async subagent call to the registered `dsm.delivery-launches` workflow with every exact `details.next.parallel[].launchRef` in `args.launchRefs`; DSM validates the complete set and constructs canonical child prompts, settings, cwd, and outputs. Do not pass literal launch references inside raw workflow scripts or legacy `tasks` arrays.
 
 There is no `details.next.prompt` response field. The old compatibility mirror was removed and is not used by the runtime.
 

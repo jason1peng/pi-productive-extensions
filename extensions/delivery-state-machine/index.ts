@@ -68,7 +68,8 @@ type Phase =
 	| "STOPPED"
 	| "WAITING_DECISION";
 
-type Decision = "repair" | "stop" | "accept_risk" | "continue" | "defer";
+type Decision = "repair" | "repair_full_budget" | "stop" | "accept_risk" | "continue" | "defer";
+type Recommendation = "repair" | "stop" | "accept_risk" | "continue" | "defer";
 type IssueSource = "implement" | "verify" | "review" | "close";
 
 interface HistoryEntry {
@@ -87,7 +88,7 @@ interface PendingIssue {
 	verdict: Verdict;
 	summary: string;
 	artifact?: string;
-	recommendedDecision?: Decision;
+	recommendedDecision?: Recommendation;
 }
 
 type PhaseRounds = Record<RunnablePhase, number>;
@@ -123,6 +124,7 @@ interface DeliveryState {
 	reviewRound: number;
 	maxRepairRounds: number;
 	maxPhaseRounds: PhaseRounds;
+	initialMaxPhaseRounds: PhaseRounds;
 	artifactDir?: string;
 	usageAtStart?: UsageTotals;
 	cwd?: string;
@@ -230,7 +232,7 @@ const REPORT_PARAMS = Type.Object({
 });
 
 const DECIDE_PARAMS = Type.Object({
-	decision: StringEnum(["repair", "stop", "accept_risk", "continue", "defer"] as const),
+	decision: StringEnum(["repair", "repair_full_budget", "stop", "accept_risk", "continue", "defer"] as const),
 	rationale: Type.Optional(Type.String({ description: "Why this decision is appropriate" })),
 });
 
@@ -257,6 +259,7 @@ const initialState = (): DeliveryState => ({
 	reviewRound: 0,
 	maxRepairRounds: DEFAULT_MAX_ROUNDS,
 	maxPhaseRounds: { ...DEFAULT_PHASE_ROUNDS },
+	initialMaxPhaseRounds: { ...DEFAULT_PHASE_ROUNDS },
 	readyToClose: false,
 	acceptedRisks: [],
 	history: [],
@@ -277,6 +280,7 @@ function toolStateSnapshot(state: DeliveryState): Partial<DeliveryState> {
 		reviewRound: state.reviewRound,
 		maxRepairRounds: state.maxRepairRounds,
 		maxPhaseRounds: state.maxPhaseRounds,
+		initialMaxPhaseRounds: state.initialMaxPhaseRounds,
 		readyToClose: state.readyToClose,
 		acceptedRisks: [...state.acceptedRisks],
 		updatedAt: state.updatedAt,
@@ -330,6 +334,9 @@ function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 	const maxPhaseRounds = legacyAllRounds !== undefined
 		? allPhaseRounds(legacyAllRounds)
 		: { ...DEFAULT_PHASE_ROUNDS, ...normalizePhaseRounds(raw.maxPhaseRounds) };
+	const initialMaxPhaseRounds = raw.initialMaxPhaseRounds
+		? { ...DEFAULT_PHASE_ROUNDS, ...normalizePhaseRounds(raw.initialMaxPhaseRounds) }
+		: { ...maxPhaseRounds };
 	const restoredPhase = typeof raw.phase === "string" && VALID_PHASES.has(raw.phase as Phase)
 		? raw.phase as Phase
 		: raw.active
@@ -341,6 +348,7 @@ function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 		phase: restoredPhase,
 		maxRepairRounds: maxPhaseRounds.VERIFY,
 		maxPhaseRounds,
+		initialMaxPhaseRounds,
 		...(raw.phaseLaunches !== undefined ? { phaseLaunches: validatePhaseLaunches(raw.phaseLaunches, "restored pinned phase launch bundle") } : {}),
 		acceptedRisks: Array.isArray(raw.acceptedRisks) ? raw.acceptedRisks : [],
 		history: Array.isArray(raw.history) ? raw.history : [],
@@ -769,8 +777,12 @@ function artifactVerdict(artifact?: string): Verdict | undefined {
 	}
 }
 
+function completedPhaseReports(state: DeliveryState, phase: RunnablePhase): number {
+	return state.history.filter((entry) => entry.event === "report" && entry.phase === phase).length;
+}
+
 function completedImplementationReports(state: DeliveryState): number {
-	return state.history.filter((entry) => entry.event === "report" && entry.phase === "IMPLEMENT").length;
+	return completedPhaseReports(state, "IMPLEMENT");
 }
 
 function implementationAttempt(state: DeliveryState): number {
@@ -952,8 +964,16 @@ function decisionPrompt(state: DeliveryState): string {
 		`VERIFY round ${state.verifyRound}/${maxRoundsForPhase(state, "VERIFY")}`,
 		`REVIEW round ${state.reviewRound}/${maxRoundsForPhase(state, "REVIEW")}`,
 	].join(", ");
+	const configuredCapacity = [
+		`IMPLEMENT ${state.initialMaxPhaseRounds.IMPLEMENT}`,
+		`VERIFY ${state.initialMaxPhaseRounds.VERIFY}`,
+		`REVIEW ${state.initialMaxPhaseRounds.REVIEW}`,
+	].join(", ");
 	const repairOutcome = pending
 		? "retry IMPLEMENT and, if it succeeds, run VERIFY, REVIEW, CLOSE, then RETRO; exhausted limits are extended only as needed for that cycle"
+		: "record the decision, but make no transition; delivery remains WAITING_DECISION because no pending issue was restored";
+	const fullBudgetOutcome = pending
+		? "retry IMPLEMENT and the required gates, granting each affected phase its originally configured number of additional attempts; attempt numbers and artifact history remain monotonic"
 		: "record the decision, but make no transition; delivery remains WAITING_DECISION because no pending issue was restored";
 	const riskOutcome = pending
 		? acceptedRiskOutcome(pending)
@@ -967,11 +987,13 @@ Finding: ${pending?.summary ?? "<none recorded>"}
 Evidence artifact: ${pending?.artifact ?? "<none recorded>"}
 Recommendation: ${pending?.recommendedDecision ?? "<none>"}
 Round capacity (current/max): ${capacity}
+Original configured capacity: ${configuredCapacity}
 
-Choose: repair / accept_risk / stop.
+Choose: repair / repair_full_budget / accept_risk / stop.
 
 Options and consequences:
 - repair — ${repairOutcome}.
+- repair_full_budget — ${fullBudgetOutcome}.
 - accept_risk — ${riskOutcome}.
 - stop — terminate this delivery without further implementation or gates.
 
@@ -1710,7 +1732,7 @@ interface DeliveryReportInput {
 	verdict?: Verdict;
 	summary: string;
 	artifact?: string;
-	recommendedDecision?: Decision;
+	recommendedDecision?: Recommendation;
 	usageDelta?: unknown;
 	usageAttribution?: UsageAttribution;
 	usageSource?: DeliveryStep["usageSource"];
@@ -1950,7 +1972,7 @@ function applyAutoRepairDecision(state: DeliveryState, pending: PendingIssue): b
 	return true;
 }
 
-function transitionAfterReport(state: DeliveryState, params: { phase: Phase; verdict?: Verdict; summary: string; artifact?: string; recommendedDecision?: Decision }) {
+function transitionAfterReport(state: DeliveryState, params: { phase: Phase; verdict?: Verdict; summary: string; artifact?: string; recommendedDecision?: Recommendation }) {
 	addHistory(state, {
 		phase: params.phase,
 		event: "report",
@@ -2055,16 +2077,21 @@ function transitionAfterReport(state: DeliveryState, params: { phase: Phase; ver
 	}
 }
 
-function authorizeRepairCapacity(state: DeliveryState, pending: PendingIssue): void {
+function authorizeRepairCapacity(state: DeliveryState, pending: PendingIssue, fullBudget = false): void {
 	const targets = {
 		IMPLEMENT: completedImplementationReports(state) + 1,
 		VERIFY: state.verifyRound + (pending.source === "verify" || pending.source === "review" || pending.source === "close" ? 1 : 0),
 		REVIEW: state.reviewRound + (pending.source === "verify" || pending.source === "review" || pending.source === "close" ? 1 : 0),
 	};
+	const fullBudgetPhases: RunnablePhase[] = pending.source === "implement"
+		? ["IMPLEMENT"]
+		: ["IMPLEMENT", "VERIFY", "REVIEW"];
 	const changes: string[] = [];
 	for (const phase of ["IMPLEMENT", "VERIFY", "REVIEW"] as const) {
 		const oldLimit = maxRoundsForPhase(state, phase);
-		const newLimit = Math.max(oldLimit, targets[phase]);
+		const newLimit = fullBudget && fullBudgetPhases.includes(phase)
+			? Math.max(oldLimit, completedPhaseReports(state, phase) + state.initialMaxPhaseRounds[phase])
+			: Math.max(oldLimit, targets[phase]);
 		if (newLimit === oldLimit) continue;
 		state.maxPhaseRounds[phase] = newLimit;
 		changes.push(`${phase} ${oldLimit}→${newLimit}`);
@@ -2074,8 +2101,10 @@ function authorizeRepairCapacity(state: DeliveryState, pending: PendingIssue): v
 		addHistory(state, {
 			phase: "IMPLEMENT",
 			event: "repair_budget_extension",
-			decision: "repair",
-			summary: `User-authorized complete repair cycle: ${changes.join(", ")}`,
+			decision: fullBudget ? "repair_full_budget" : "repair",
+			summary: fullBudget
+				? `User-authorized original configured repair budget: ${changes.join(", ")}`
+				: `User-authorized complete repair cycle: ${changes.join(", ")}`,
 			artifact: pending.artifact,
 		});
 	}
@@ -2121,8 +2150,8 @@ function applyDecision(state: DeliveryState, decision: Decision, rationale?: str
 		return;
 	}
 
-	// Explicit repair authorizes enough capacity for one complete writer/verify/review cycle.
-	authorizeRepairCapacity(state, pending);
+	// Explicit repair authorizes one cycle; the full-budget choice grants the original per-phase attempt allowance.
+	authorizeRepairCapacity(state, pending, decision === "repair_full_budget");
 	state.pendingIssue = pending;
 	state.readyToClose = false;
 	state.phase = "IMPLEMENT";
@@ -2859,6 +2888,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			const projectRoot = state.gitRoot ?? state.cwd ?? ctx.cwd;
 			const deliveryConfig = loadDeliveryConfig(ctx, projectRoot);
 			state.maxPhaseRounds = resolveMaxPhaseRounds(deliveryConfig, params.maxRepairRounds, params.maxRounds);
+			state.initialMaxPhaseRounds = { ...state.maxPhaseRounds };
 			state.maxRepairRounds = state.maxPhaseRounds.VERIFY;
 			const phaseConfigBundle = loadPhaseConfigBundle();
 			state.phaseLaunches = phaseConfigBundle.launches;
@@ -2940,7 +2970,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "delivery_decide",
 		label: "Delivery Decide",
-		description: "Apply a parent/user decision for a pending verification/review/close issue.",
+		description: "Apply a parent/user decision for a pending delivery issue; choose repair for one cycle or repair_full_budget for the original configured attempt allowance.",
 		promptSnippet: "Record parent decision for pending delivery issue",
 		promptGuidelines: [
 			"Use delivery_decide only after the parent/user has decided how to handle a pending delivery issue.",

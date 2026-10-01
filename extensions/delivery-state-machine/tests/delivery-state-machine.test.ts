@@ -1160,7 +1160,7 @@ await runTest("IMPLEMENT FAIL waits for an explicit decision instead of advancin
 	assert.match(next.details.next.orchestratorInstruction, /accept_risk.*stop delivery because a failed implementation cannot become a verified candidate/is);
 });
 
-await runTest("decision prompts expose only repair, accept_risk, and stop", async () => {
+await runTest("decision prompts expose one-cycle and full-budget repair choices", async () => {
 	const harness = createHarness();
 	await harness.tool("delivery_start", { task: "decision menu regression", maxRounds: { VERIFY: 1 } });
 	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented" });
@@ -1172,7 +1172,8 @@ await runTest("decision prompts expose only repair, accept_risk, and stop", asyn
 	});
 	assert.equal(failed.details.state.phase, "WAITING_DECISION");
 	const next = await harness.tool("delivery_next");
-	assert.match(next.details.next.orchestratorInstruction, /repair \/ accept_risk \/ stop/);
+	assert.match(next.details.next.orchestratorInstruction, /repair \/ repair_full_budget \/ accept_risk \/ stop/);
+	assert.match(JSON.stringify((harness.tools.get("delivery_decide") as any).parameters), /repair_full_budget/);
 	assert.doesNotMatch(next.details.next.orchestratorInstruction, /continue|defer/);
 });
 
@@ -1194,7 +1195,9 @@ await runTest("waiting decisions include enough context and consequences for the
 	assert.match(prompt, /Evidence artifact:\s*\S+/);
 	assert.match(prompt, /Recommendation:\s*repair/);
 	assert.match(prompt, /Round capacity \(current\/max\):.*IMPLEMENT.*VERIFY.*REVIEW/s);
+	assert.match(prompt, /Original configured capacity:.*IMPLEMENT.*VERIFY.*REVIEW/s);
 	assert.match(prompt, /repair.*retry IMPLEMENT.*VERIFY.*REVIEW.*CLOSE.*RETRO/is);
+	assert.match(prompt, /repair_full_budget.*originally configured number of additional attempts.*monotonic/is);
 	assert.match(prompt, /accept_risk.*bypass.*advance to REVIEW/is);
 	assert.match(prompt, /stop.*terminate/is);
 	assert.match(prompt, /Ask the user\/parent to choose one option/);
@@ -1208,6 +1211,7 @@ await runTest("restored waiting decisions without a pending issue expose degrade
 	});
 	const degraded = structuredClone(started.details.state);
 	degraded.phase = "WAITING_DECISION";
+	delete degraded.initialMaxPhaseRounds;
 	delete degraded.pendingIssue;
 
 	const restore = async () => {
@@ -1225,13 +1229,16 @@ await runTest("restored waiting decisions without a pending issue expose degrade
 	assert.match(prompt, /Evidence artifact:\s*<none recorded>/);
 	assert.match(prompt, /Recommendation:\s*<none>/);
 	assert.match(prompt, /Round capacity \(current\/max\): IMPLEMENT completed 0\/2, VERIFY round 1\/3, REVIEW round 1\/4/);
+	assert.match(prompt, /Original configured capacity: IMPLEMENT 2, VERIFY 3, REVIEW 4/);
 	assert.match(prompt, /repair.*make no transition.*remains WAITING_DECISION.*no pending issue was restored/is);
+	assert.match(prompt, /repair_full_budget.*make no transition.*remains WAITING_DECISION.*no pending issue was restored/is);
+	assert.deepEqual(next.details.state.initialMaxPhaseRounds, degraded.maxPhaseRounds, "legacy saved state falls back to its current limits");
 	assert.match(prompt, /accept_risk.*make no transition or accept any risk.*remains WAITING_DECISION.*no pending issue was restored/is);
 	assert.match(prompt, /stop.*terminate this delivery without further implementation or gates/is);
 	assert.match(next.content[0].text, /Task:\s*recover a schema-compatible interrupted decision/);
 	assert.match(next.content[0].text, /Gate result:\s*<missing phase> reported <missing verdict>/);
 
-	for (const decision of ["repair", "accept_risk"] as const) {
+	for (const decision of ["repair", "repair_full_budget", "accept_risk"] as const) {
 		const harness = await restore();
 		const result = await harness.tool("delivery_decide", { decision, rationale: `confirm degraded ${decision}` });
 		assert.equal(result.details.state.phase, "WAITING_DECISION");
@@ -1973,6 +1980,7 @@ await runTest("max rounds can be configured per phase", async () => {
 		assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 2);
 		assert.equal(result.details.state.maxPhaseRounds.VERIFY, 1);
 		assert.equal(result.details.state.maxPhaseRounds.REVIEW, 4);
+		assert.deepEqual(result.details.state.initialMaxPhaseRounds, { IMPLEMENT: 2, VERIFY: 1, REVIEW: 4, CLOSE: 3, RETRO: 3 });
 
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implemented once" });
 		result = await harness.tool("delivery_report", {
@@ -2048,6 +2056,89 @@ await runTest("each repeated exhausted repair requires a new explicit authorizat
 	assert.equal(result.details.state.phase, "IMPLEMENT");
 	assert.deepEqual(result.details.state.maxPhaseRounds, { IMPLEMENT: 3, VERIFY: 3, REVIEW: 2, CLOSE: 1, RETRO: 1 }, "only limits exhausted for the newly authorized complete cycle are extended");
 	assert.equal(result.details.state.history.filter((entry: any) => entry.event === "repair_budget_extension").length, 2);
+});
+
+await runTest("full-budget repair grants the configured number of additional attempts without resetting counters", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", {
+		task: "full-budget repair from exhausted verification",
+		maxRounds: { IMPLEMENT: 3, VERIFY: 3, REVIEW: 3, CLOSE: 1, RETRO: 1 },
+	});
+
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: `implementation ${attempt}` });
+		const failed = await harness.tool("delivery_report", {
+			phase: "VERIFY",
+			verdict: "FAIL",
+			summary: `verification ${attempt} failed`,
+			recommendedDecision: "repair",
+		});
+		if (attempt < 3) assert.equal(failed.details.state.phase, "IMPLEMENT", "in-budget repairs remain automatic");
+		else assert.equal(failed.details.state.phase, "WAITING_DECISION", "the exhausted round pauses for user input");
+	}
+
+	const result = await harness.tool("delivery_decide", { decision: "repair_full_budget", rationale: "authorize three additional attempts" });
+	assert.equal(result.details.state.phase, "IMPLEMENT");
+	assert.deepEqual(result.details.state.initialMaxPhaseRounds, { IMPLEMENT: 3, VERIFY: 3, REVIEW: 3, CLOSE: 1, RETRO: 1 });
+	assert.deepEqual(result.details.state.maxPhaseRounds, { IMPLEMENT: 6, VERIFY: 6, REVIEW: 3, CLOSE: 1, RETRO: 1 });
+	assert.equal(result.details.state.verifyRound, 3, "verify counter is preserved");
+	assert.equal(result.details.state.reviewRound, 1, "review counter is preserved");
+	assert.match(result.details.next.launchRef, /:IMPLEMENT:4:0$/, "new attempts keep their monotonic ordinal");
+	const authorization = result.details.state.history.findLast((entry: any) => entry.decision === "repair_full_budget");
+	assert.match(authorization.summary, /original configured repair budget.*IMPLEMENT 3→6.*VERIFY 3→6/i);
+});
+
+await runTest("full-budget repair after IMPLEMENT failure extends only the exhausted writer budget", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", {
+		task: "full-budget repair after implementation failure",
+		maxRounds: { IMPLEMENT: 3, VERIFY: 3, REVIEW: 3, CLOSE: 1, RETRO: 1 },
+	});
+
+	for (let attempt = 1; attempt <= 2; attempt++) {
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "FAIL", summary: `implementation ${attempt} failed` });
+		await harness.tool("delivery_decide", { decision: "repair", rationale: `retry implementation ${attempt}` });
+	}
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "FAIL", summary: "implementation 3 failed" });
+	const result = await harness.tool("delivery_decide", { decision: "repair_full_budget", rationale: "grant three additional implementation attempts" });
+
+	assert.deepEqual(result.details.state.maxPhaseRounds, { IMPLEMENT: 6, VERIFY: 3, REVIEW: 3, CLOSE: 1, RETRO: 1 });
+	assert.equal(result.details.state.verifyRound, 1);
+	assert.equal(result.details.state.history.findLast((entry: any) => entry.event === "repair_budget_extension").decision, "repair_full_budget");
+});
+
+await runTest("full-budget repair uses original configured limits after a one-cycle extension", async () => {
+	const harness = createHarness();
+	await harness.tool("delivery_start", {
+		task: "full budget remains anchored to initial limits",
+		maxRounds: { IMPLEMENT: 3, VERIFY: 3, REVIEW: 3, CLOSE: 1, RETRO: 1 },
+	});
+
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: `implementation ${attempt}` });
+		await harness.tool("delivery_report", {
+			phase: "VERIFY",
+			verdict: "FAIL",
+			summary: `verification ${attempt} failed`,
+			recommendedDecision: "repair",
+		});
+	}
+	let result = await harness.tool("delivery_decide", { decision: "repair", rationale: "authorize one more cycle" });
+	assert.deepEqual(result.details.state.maxPhaseRounds, { IMPLEMENT: 4, VERIFY: 4, REVIEW: 3, CLOSE: 1, RETRO: 1 });
+	await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implementation 4" });
+	result = await harness.tool("delivery_report", {
+		phase: "VERIFY",
+		verdict: "FAIL",
+		summary: "verification 4 failed",
+		recommendedDecision: "repair",
+	});
+	assert.equal(result.details.state.phase, "WAITING_DECISION");
+
+	result = await harness.tool("delivery_decide", { decision: "repair_full_budget", rationale: "authorize three more attempts" });
+	assert.equal(result.details.state.initialMaxPhaseRounds.VERIFY, 3);
+	assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 7);
+	assert.equal(result.details.state.maxPhaseRounds.VERIFY, 7);
+	assert.equal(result.details.state.verifyRound, 4, "full-budget authorization does not reset current progress");
 });
 
 await runTest("non-repair decisions never extend exhausted budgets", async () => {

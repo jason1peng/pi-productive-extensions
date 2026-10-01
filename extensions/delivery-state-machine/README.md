@@ -101,7 +101,7 @@ The same workflow is available to agents through `delivery_start`, `delivery_nex
 
 ### Optional cmux sidebar status
 
-When DSM runs in a cmux terminal, it publishes `running: <phase>` or `waiting: <source>` to that workspace's sidebar status. The indicator clears on completion, stop, reset, or session shutdown. It uses cmux's installed CLI and `CMUX_WORKSPACE_ID`, and quietly does nothing outside cmux or when cmux is unavailable. This is a phase badge, not percentage or per-agent progress reporting.
+When DSM runs in a cmux terminal, it publishes `running: <phase>` or `waiting: <source>` to that workspace's sidebar status and shows a coarse phase progress bar: IMPLEMENT 10%, VERIFY 30%, REVIEW 50%, CLOSE 70%, and RETRO 90%. These are workflow milestones, not time estimates; a repair that returns to IMPLEMENT can move the bar backward, and waiting keeps the current issue's milestone. The badge and bar clear on completion, stop, reset, or active-session shutdown. DSM uses cmux's installed CLI and `CMUX_WORKSPACE_ID`, and quietly does nothing outside cmux or when cmux is unavailable. It does not report per-agent progress.
 
 ## Feature showcase
 

@@ -800,6 +800,13 @@ function statusText(state: DeliveryState): string {
 }
 
 const CMUX_STATUS_KEY = "delivery-sm";
+const CMUX_PHASE_PROGRESS: Record<RunnablePhase, number> = {
+	IMPLEMENT: 0.1,
+	VERIFY: 0.3,
+	REVIEW: 0.5,
+	CLOSE: 0.7,
+	RETRO: 0.9,
+};
 type CmuxStatusCommandRunner = (args: string[]) => void;
 
 function runCmuxStatusCommand(args: string[]) {
@@ -814,25 +821,30 @@ function tryCmuxStatusCommand(run: CmuxStatusCommandRunner, args: string[]) {
 	}
 }
 
-function clearCmuxStatus(run: CmuxStatusCommandRunner = runCmuxStatusCommand) {
+function clearCmuxIndicators(run: CmuxStatusCommandRunner = runCmuxStatusCommand) {
 	const workspace = process.env.CMUX_WORKSPACE_ID;
 	if (!workspace) return;
 	tryCmuxStatusCommand(run, ["clear-status", CMUX_STATUS_KEY, "--workspace", workspace]);
+	tryCmuxStatusCommand(run, ["clear-progress", "--workspace", workspace]);
 }
 
 function updateCmuxStatus(state: DeliveryState, run: CmuxStatusCommandRunner = runCmuxStatusCommand) {
 	const workspace = process.env.CMUX_WORKSPACE_ID;
 	if (!workspace || state.phase === "IDLE") return;
 	if (!state.active || state.phase === "DONE" || state.phase === "STOPPED") {
-		clearCmuxStatus(run);
+		clearCmuxIndicators(run);
 		return;
 	}
 	const waiting = state.phase === "WAITING_DECISION";
 	const value = waiting
 		? `waiting: ${state.pendingIssue?.source ?? "decision"}`
 		: `running: ${phaseLabel(state)}`;
+	const progressPhase = waiting ? state.pendingIssue?.phase : state.phase;
+	const progress = progressPhase && isRunnablePhase(progressPhase) ? CMUX_PHASE_PROGRESS[progressPhase] : CMUX_PHASE_PROGRESS.IMPLEMENT;
+	const progressLabel = waiting ? value : phaseLabel(state);
 	const color = waiting ? "#FF9F0A" : "#0A84FF";
 	tryCmuxStatusCommand(run, ["set-status", CMUX_STATUS_KEY, value, "--color", color, "--workspace", workspace]);
+	tryCmuxStatusCommand(run, ["set-progress", String(progress), "--label", progressLabel, "--workspace", workspace]);
 }
 
 function updateUi(ctx: ExtensionContext, state: DeliveryState, runCmuxCommand: CmuxStatusCommandRunner = runCmuxStatusCommand) {
@@ -2804,7 +2816,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI, runCmuxCommand: C
 	});
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
 	pi.on("session_shutdown", async () => {
-		if (state.active) clearCmuxStatus(runCmuxCommand);
+		if (state.active) clearCmuxIndicators(runCmuxCommand);
 		for (const registration of workflowRegistrations.values()) registration.dispose();
 		workflowRegistrations.clear();
 		workflowLaunchPlan = undefined;
@@ -2867,7 +2879,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI, runCmuxCommand: C
 			state = initialState();
 			workflowLaunchPlan = undefined;
 			persist();
-			if (hadActiveDelivery) clearCmuxStatus(runCmuxCommand);
+			if (hadActiveDelivery) clearCmuxIndicators(runCmuxCommand);
 			updateUi(ctx, state, runCmuxCommand);
 			ctx.ui.notify("Delivery state reset", "info");
 		},
@@ -3040,7 +3052,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI, runCmuxCommand: C
 			state = initialState();
 			workflowLaunchPlan = undefined;
 			persist();
-			if (hadActiveDelivery) clearCmuxStatus(runCmuxCommand);
+			if (hadActiveDelivery) clearCmuxIndicators(runCmuxCommand);
 			updateUi(ctx, state, runCmuxCommand);
 			return { content: [{ type: "text", text: "Delivery state reset." }], details: { state: cloneState(state) } };
 		},

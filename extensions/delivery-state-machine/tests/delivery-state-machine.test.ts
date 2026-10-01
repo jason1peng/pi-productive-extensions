@@ -1040,24 +1040,37 @@ await runTest("cmux sidebar reflects delivery phases and clears when reset", asy
 	const originalWorkspace = process.env.CMUX_WORKSPACE_ID;
 	delete process.env.CMUX_WORKSPACE_ID;
 	const harness = createHarness();
-	const assertRunning = (index: number, phase: string) => {
-		const args = harness.cmuxCommands[index] ?? [];
-		assert.deepEqual(args.slice(0, 2), ["set-status", "delivery-sm"]);
+	const lastCommand = (name: string) => harness.cmuxCommands.findLast((args) => args[0] === name) ?? [];
+	const assertRunning = (phase: string) => {
+		const args = lastCommand("set-status");
+		assert.equal(args[1], "delivery-sm");
 		assert.ok(args[2]?.startsWith(`running: ${phase} attempt 1/`), args.join(" "));
 		assert.deepEqual(args.slice(3), ["--color", "#0A84FF", "--workspace", "workspace:test"]);
+	};
+	const assertProgress = (value: string, labelPrefix: string) => {
+		const args = lastCommand("set-progress");
+		assert.deepEqual(args.slice(0, 3), ["set-progress", value, "--label"]);
+		assert.ok(args[3]?.startsWith(labelPrefix), args.join(" "));
+		assert.deepEqual(args.slice(4), ["--workspace", "workspace:test"]);
 	};
 	try {
 		await harness.tool("delivery_status");
 		assert.deepEqual(harness.cmuxCommands, [], "cmux integration should be inert outside a cmux workspace");
 		process.env.CMUX_WORKSPACE_ID = "workspace:test";
 		await harness.tool("delivery_start", { task: "publish DSM phase status" });
-		assertRunning(0, "implement");
+		assertRunning("implement");
+		assertProgress("0.1", "implement attempt 1/");
 		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implementation complete" });
-		assertRunning(harness.cmuxCommands.length - 1, "verify");
+		assertRunning("verify");
+		assertProgress("0.3", "verify attempt 1/");
 		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "FAIL", summary: "waiting for a decision" });
-		assert.deepEqual(harness.cmuxCommands.at(-1), ["set-status", "delivery-sm", "waiting: verify", "--color", "#FF9F0A", "--workspace", "workspace:test"]);
+		assert.deepEqual(lastCommand("set-status"), ["set-status", "delivery-sm", "waiting: verify", "--color", "#FF9F0A", "--workspace", "workspace:test"]);
+		assertProgress("0.3", "waiting: verify");
 		await harness.tool("delivery_reset");
-		assert.deepEqual(harness.cmuxCommands.at(-1), ["clear-status", "delivery-sm", "--workspace", "workspace:test"]);
+		assert.deepEqual(harness.cmuxCommands.slice(-2), [
+			["clear-status", "delivery-sm", "--workspace", "workspace:test"],
+			["clear-progress", "--workspace", "workspace:test"],
+		]);
 	} finally {
 		if (originalWorkspace === undefined) delete process.env.CMUX_WORKSPACE_ID;
 		else process.env.CMUX_WORKSPACE_ID = originalWorkspace;

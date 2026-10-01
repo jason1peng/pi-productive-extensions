@@ -4,7 +4,7 @@ import type { UsageTotals } from "./session-usage.ts";
 export type DeliveryReportPhase = "IDLE" | "IMPLEMENT" | "VERIFY" | "REVIEW" | "CLOSE" | "RETRO" | "DONE" | "STOPPED" | "WAITING_DECISION";
 export type DeliveryReportRunnablePhase = "IMPLEMENT" | "VERIFY" | "REVIEW" | "CLOSE" | "RETRO";
 export type DeliveryReportVerdict = "PASS" | "PASS_WITH_NON_BLOCKING_NOTES" | "FAIL" | "INCONCLUSIVE" | "DONE" | "MR_CREATED";
-export type DeliveryReportDecision = "repair" | "stop" | "accept_risk" | "continue" | "defer";
+export type DeliveryReportDecision = "repair" | "repair_full_budget" | "stop" | "accept_risk" | "continue" | "defer";
 export type DeliveryReportIssueSource = "implement" | "verify" | "review" | "close";
 export type DeliveryReportUsageAttribution = "exact" | "subagent-reported" | "best-effort" | "phase-aggregate" | "parent-overhead" | "unavailable";
 

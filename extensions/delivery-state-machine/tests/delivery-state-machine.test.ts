@@ -1029,6 +1029,7 @@ Clarifications: none`;
 	assert.match(started.content[0].text, /Run the delivery state machine for this prepared brief/);
 	assert.match(started.content[0].text, /User-scope artifact directory for this run:/);
 	assert.match(started.content[0].text, /latest fetched (?:`main`|main)/i);
+	assert.match(started.content[0].text, /repair_full_budget.*originally configured number of additional attempts/i);
 	assert.match(started.details.next.orchestratorInstruction, /implementation subagent/i);
 	const toolGuidelines = harness.tools.get("delivery_start")?.promptGuidelines?.join(" ") ?? "";
 	assert.match(toolGuidelines, /prepares a clear brief/i);
@@ -2086,6 +2087,42 @@ await runTest("full-budget repair grants the configured number of additional att
 	assert.match(result.details.next.launchRef, /:IMPLEMENT:4:0$/, "new attempts keep their monotonic ordinal");
 	const authorization = result.details.state.history.findLast((entry: any) => entry.decision === "repair_full_budget");
 	assert.match(authorization.summary, /original configured repair budget.*IMPLEMENT 3→6.*VERIFY 3→6/i);
+});
+
+await runTest("full-budget repair survives reconstruction from the latest slim tool result", async () => {
+	const original = createHarness();
+	await original.tool("delivery_start", {
+		task: "resume full-budget repair from slim tool state",
+		maxRounds: { IMPLEMENT: 3, VERIFY: 3, REVIEW: 3, CLOSE: 1, RETRO: 1 },
+	});
+
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		await original.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: `implementation ${attempt}` });
+		await original.tool("delivery_report", {
+			phase: "VERIFY",
+			verdict: "FAIL",
+			summary: `verification ${attempt} failed`,
+			recommendedDecision: "repair",
+		});
+	}
+	const waiting = await original.tool("delivery_next");
+	assert.equal(waiting.details.state.history, undefined, "delivery_next keeps its returned snapshot slim");
+	assert.equal(waiting.details.state.steps, undefined, "delivery_next keeps its returned snapshot slim");
+
+	const resumed = createHarness({
+		branchEntries: [
+			...original.appendedEntries,
+			{ type: "message", message: { role: "toolResult", toolName: "delivery_next", details: { state: waiting.details.state } } },
+		],
+	});
+	await resumed.emit("session_start");
+	const result = await resumed.tool("delivery_decide", { decision: "repair_full_budget", rationale: "authorize three more attempts after resume" });
+
+	assert.deepEqual(result.details.state.maxPhaseRounds, { IMPLEMENT: 6, VERIFY: 6, REVIEW: 3, CLOSE: 1, RETRO: 1 });
+	assert.equal(result.details.state.verifyRound, 3, "restored VERIFY progress is preserved");
+	assert.equal(result.details.state.history.filter((entry: any) => entry.event === "report" && entry.phase === "VERIFY").length, 3);
+	assert.ok(result.details.state.steps.length > 0, "append-only report steps are restored from full custom state");
+	assert.match(result.details.next.launchRef, /:IMPLEMENT:4:0$/, "restored history preserves the next attempt and artifact ordinal");
 });
 
 await runTest("full-budget repair after IMPLEMENT failure extends only the exhausted writer budget", async () => {

@@ -327,6 +327,14 @@ function synchronizeCloseReadiness(state: DeliveryState): void {
 	state.readyToClose = state.active && state.phase === "CLOSE";
 }
 
+function restoreToolResultState(previous: DeliveryState, snapshot: Partial<DeliveryState>): DeliveryState {
+	const restored = normalizeState(snapshot);
+	// Tool results intentionally omit these append-only records; retain them from the latest full custom entry.
+	if (!Array.isArray(snapshot.history)) restored.history = previous.history;
+	if (!Array.isArray(snapshot.steps)) restored.steps = previous.steps;
+	return restored;
+}
+
 function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 	const base = initialState();
 	if (!raw) return base;
@@ -2783,7 +2791,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 				const toolName = entry.message.toolName;
 				if (toolName?.startsWith("delivery_")) {
 					const details = entry.message.details as { state?: Partial<DeliveryState> } | undefined;
-					if (details?.state) state = normalizeState(details.state);
+					if (details?.state) state = restoreToolResultState(state, details.state);
 				}
 			}
 		}

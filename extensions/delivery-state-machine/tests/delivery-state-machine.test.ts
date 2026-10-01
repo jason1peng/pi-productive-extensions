@@ -2125,6 +2125,73 @@ await runTest("full-budget repair survives reconstruction from the latest slim t
 	assert.match(result.details.next.launchRef, /:IMPLEMENT:4:0$/, "restored history preserves the next attempt and artifact ordinal");
 });
 
+await runTest("legacy full-budget repair infers configured limits through a slim resumed snapshot", async () => {
+	const original = createHarness();
+	const task = "legacy full-budget repair keeps the original cap";
+	const maxPhaseRounds = { IMPLEMENT: 4, VERIFY: 4, REVIEW: 3, CLOSE: 1, RETRO: 1 };
+	const history = [
+		{ timestamp: 1, phase: "IMPLEMENT", event: "start", summary: task },
+		{ timestamp: 2, phase: "IMPLEMENT", event: "report", verdict: "PASS", summary: "implementation 1" },
+		{ timestamp: 3, phase: "VERIFY", event: "report", verdict: "FAIL", summary: "verification 1" },
+		{ timestamp: 4, phase: "IMPLEMENT", event: "report", verdict: "PASS", summary: "implementation 2" },
+		{ timestamp: 5, phase: "VERIFY", event: "report", verdict: "FAIL", summary: "verification 2" },
+		{ timestamp: 6, phase: "IMPLEMENT", event: "report", verdict: "PASS", summary: "implementation 3" },
+		{ timestamp: 7, phase: "VERIFY", event: "report", verdict: "FAIL", summary: "verification 3" },
+		{ timestamp: 8, phase: "IMPLEMENT", event: "repair_budget_extension", decision: "repair", summary: "User-authorized complete repair cycle: IMPLEMENT 3→4, VERIFY 3→4" },
+		{ timestamp: 9, phase: "IMPLEMENT", event: "report", verdict: "PASS", summary: "implementation 4" },
+		{ timestamp: 10, phase: "VERIFY", event: "report", verdict: "FAIL", summary: "verification 4" },
+	];
+	const legacyState = {
+		active: true,
+		task,
+		phase: "WAITING_DECISION",
+		verifyRound: 4,
+		reviewRound: 1,
+		maxRepairRounds: 4,
+		maxPhaseRounds,
+		artifactDir: undefined,
+		cwd: original.ctx.cwd,
+		deliveryRoot: original.ctx.cwd,
+		worktreePolicy: `worktree policy satisfied: linked git worktree ${original.ctx.cwd}`,
+		readyToClose: false,
+		pendingIssue: { source: "verify", phase: "VERIFY", verdict: "FAIL", summary: "verification 4", recommendedDecision: "repair" },
+		acceptedRisks: [],
+		history,
+		steps: [],
+		updatedAt: 10,
+	};
+	const slimSnapshot = {
+		active: true,
+		task,
+		phase: "WAITING_DECISION",
+		verifyRound: 4,
+		reviewRound: 1,
+		maxRepairRounds: 4,
+		maxPhaseRounds,
+		readyToClose: false,
+		pendingIssue: legacyState.pendingIssue,
+		acceptedRisks: [],
+		updatedAt: 10,
+		cwd: original.ctx.cwd,
+		deliveryRoot: original.ctx.cwd,
+		worktreePolicy: legacyState.worktreePolicy,
+	};
+	const resumed = createHarness({
+		branchEntries: [
+			{ type: "custom", customType: "delivery-state-machine", data: legacyState },
+			{ type: "message", message: { role: "toolResult", toolName: "delivery_next", details: { state: slimSnapshot } } },
+		],
+	});
+	await resumed.emit("session_start");
+	assert.equal((await resumed.tool("delivery_status")).details.state.initialMaxPhaseRounds.VERIFY, 3);
+	const result = await resumed.tool("delivery_decide", { decision: "repair_full_budget", rationale: "grant three additional attempts" });
+
+	assert.equal(result.details.state.maxPhaseRounds.IMPLEMENT, 7);
+	assert.equal(result.details.state.maxPhaseRounds.VERIFY, 7);
+	assert.equal(result.details.state.verifyRound, 4);
+	assert.match(result.details.next.launchRef, /:IMPLEMENT:5:0$/);
+});
+
 await runTest("full-budget repair after IMPLEMENT failure extends only the exhausted writer budget", async () => {
 	const harness = createHarness();
 	await harness.tool("delivery_start", {

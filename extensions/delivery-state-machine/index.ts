@@ -329,10 +329,25 @@ function synchronizeCloseReadiness(state: DeliveryState): void {
 
 function restoreToolResultState(previous: DeliveryState, snapshot: Partial<DeliveryState>): DeliveryState {
 	const restored = normalizeState(snapshot);
-	// Tool results intentionally omit these append-only records; retain them from the latest full custom entry.
+	// Tool results intentionally omit these run records; retain them from the latest full custom entry.
 	if (!Array.isArray(snapshot.history)) restored.history = previous.history;
 	if (!Array.isArray(snapshot.steps)) restored.steps = previous.steps;
+	if (!snapshot.initialMaxPhaseRounds) restored.initialMaxPhaseRounds = previous.initialMaxPhaseRounds;
 	return restored;
+}
+
+function inferInitialPhaseRounds(current: PhaseRounds, history: HistoryEntry[]): PhaseRounds {
+	const inferred = { ...current };
+	for (const entry of [...history].reverse()) {
+		if (entry.event !== "repair_budget_extension" || entry.decision === "repair_full_budget" || typeof entry.summary !== "string") continue;
+		for (const match of entry.summary.matchAll(/\b(IMPLEMENT|VERIFY|REVIEW) (\d+)→(\d+)\b/g)) {
+			const phase = match[1] as "IMPLEMENT" | "VERIFY" | "REVIEW";
+			const originalLimit = Number(match[2]);
+			const extendedLimit = Number(match[3]);
+			if (inferred[phase] === extendedLimit) inferred[phase] = originalLimit;
+		}
+	}
+	return inferred;
 }
 
 function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
@@ -342,9 +357,10 @@ function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 	const maxPhaseRounds = legacyAllRounds !== undefined
 		? allPhaseRounds(legacyAllRounds)
 		: { ...DEFAULT_PHASE_ROUNDS, ...normalizePhaseRounds(raw.maxPhaseRounds) };
+	const history = Array.isArray(raw.history) ? raw.history : [];
 	const initialMaxPhaseRounds = raw.initialMaxPhaseRounds
 		? { ...DEFAULT_PHASE_ROUNDS, ...normalizePhaseRounds(raw.initialMaxPhaseRounds) }
-		: { ...maxPhaseRounds };
+		: inferInitialPhaseRounds(maxPhaseRounds, history);
 	const restoredPhase = typeof raw.phase === "string" && VALID_PHASES.has(raw.phase as Phase)
 		? raw.phase as Phase
 		: raw.active
@@ -359,7 +375,7 @@ function normalizeState(raw?: Partial<DeliveryState>): DeliveryState {
 		initialMaxPhaseRounds,
 		...(raw.phaseLaunches !== undefined ? { phaseLaunches: validatePhaseLaunches(raw.phaseLaunches, "restored pinned phase launch bundle") } : {}),
 		acceptedRisks: Array.isArray(raw.acceptedRisks) ? raw.acceptedRisks : [],
-		history: Array.isArray(raw.history) ? raw.history : [],
+		history,
 		steps: Array.isArray((raw as { steps?: unknown }).steps) ? (raw as { steps: DeliveryStep[] }).steps : [],
 	} as DeliveryState;
 	synchronizeCloseReadiness(restored);

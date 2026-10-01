@@ -22,6 +22,14 @@ Reports current pi session token/cost usage including pi-subagents child session
 - Tool: `session_usage_all`
 - Details: [extensions/session-usage/README.md](extensions/session-usage/README.md)
 
+### session-report
+
+Generates a deterministic, privacy-safe report from persisted parent and delegated child session JSONL.
+
+- Command: `/session-report`
+- Tool: `session_report`
+- Details: [docs/session-report-schema-v1.md](docs/session-report-schema-v1.md)
+
 ### git-cleanup
 
 Post-merge housekeeping for local git worktrees.
@@ -77,4 +85,8 @@ Git package usage is also supported:
 npm run verify
 ```
 
-`npm run verify` runs the delivery-state-machine, session-usage, and report-viewer test suites.
+`npm run verify` runs the delivery-state-machine, session-usage, session-report, and report-viewer test suites. If the host-provided `pi-subagents` package is outside this checkout, set `PI_HOST_MODULE_ROOT` to its `node_modules` directory:
+
+```bash
+PI_HOST_MODULE_ROOT=/path/to/node_modules npm run verify
+```

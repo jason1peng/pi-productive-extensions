@@ -13,6 +13,7 @@ Start here when planning or implementing changes in this repository.
 
 - `docs/principles.md` — concise engineering standards for validation, tests, readability, and modularity.
 - `docs/delivery-report-schema-v2.md` — stable JSON report and project metadata contract shared by the delivery extension and report viewer.
+- `docs/session-report-schema-v1.md` — deterministic local session-report JSON/Markdown contract.
 - `docs/paseo-extension-command-lifecycle.md` — deferred Paseo/Pi RPC lifecycle issue and the temporary `/cleanup` workaround.
 
 ## Component documentation
@@ -20,6 +21,7 @@ Start here when planning or implementing changes in this repository.
 - `extensions/delivery-state-machine/README.md` — commands, state machine behavior, artifact layout, phase/profile config, and report summary behavior.
 - `extensions/delivery-state-machine/docs/index.md` — extension-specific guides, including user-space overrides.
 - `extensions/session-usage/README.md` — session/subagent usage data source, fields, token policy, and limitations.
+- `extensions/session-report/README.md` — expanded deterministic local session report.
 - `extensions/git-cleanup/README.md` — `/cleanup` post-merge worktree housekeeping command.
 - `apps/report-viewer/README.md` — running/configuring the viewer, routes, behavior, and safety gates.
 

@@ -193,6 +193,8 @@ A failed VERIFY or REVIEW is not silently ignored:
 
 - a supported must-fix finding can route back to IMPLEMENT;
 - an exhausted or ambiguous failure pauses for the parent's explicit decision;
+- `repair` authorizes one complete repair cycle, while `repair_full_budget` grants each affected phase its originally configured number of additional attempts;
+- full-budget repair extends round limits but does not reset attempt counters, so reports and artifact identifiers remain monotonic;
 - `accept_risk`, `stop`, and `defer` decisions are recorded rather than inferred.
 
 ## 7. Quick reference

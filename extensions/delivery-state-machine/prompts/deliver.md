@@ -36,6 +36,6 @@ Ask me before adopting a new product, safety, concurrency, or threat-model contr
 
 If pi-subagents reports spawn exhaustion, do not report PASS and do not substitute parent self-verification for a required independent gate. Report the blocked gate and state that a new Pi session is required.
 
-If `delivery_next` says `WAITING_DECISION`, ask me for a decision or use `delivery_decide` only when I already gave one.
+If `delivery_next` says `WAITING_DECISION`, ask me to choose an option from its prompt. `repair` authorizes one complete repair cycle; `repair_full_budget` authorizes the originally configured number of additional attempts for each affected phase. Use `delivery_decide` only after I choose.
 
 Do not push or create an MR until `delivery_next` reaches `CLOSE`.

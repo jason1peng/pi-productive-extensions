@@ -16,6 +16,7 @@ const hostWorkflowScript = await import(new URL("../workflows/scripted-workflow.
 
 const testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-sm-agent-"));
 process.env.PI_CODING_AGENT_DIR = testAgentDir;
+// Keep extension tests isolated from live cmux sidebars; tests inject a command recorder.
 // Most unit tests inspect canonical prompts directly; the production-default
 // pointer-only contract is covered by a focused test below.
 process.env.DSM_SMOKE_EXPOSE_CHILD_PROMPTS = "1";
@@ -109,6 +110,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 	const eventHandlers = new Map<string, (event: unknown, ctx: FakeContext) => Promise<any>>();
 	const sentMessages: string[] = [];
 	const sessionNames: string[] = [];
+	const cmuxCommands: string[][] = [];
 	const appendedEntries: Array<{ type: "custom"; customType: string; data: unknown }> = [];
 
 	const pi = {
@@ -149,7 +151,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 		},
 	};
 
-	deliveryStateMachine(pi as any);
+	deliveryStateMachine(pi as any, (args) => cmuxCommands.push(args));
 
 	async function emit(eventName: string, event: unknown = {}) {
 		const handler = eventHandlers.get(eventName);
@@ -198,7 +200,7 @@ function createHarness(options: { cwd?: string; sessionFile?: string; branchEntr
 	}
 
 	harnessCleanups.push(shutdown);
-	return { tools, commands, eventHandlers, sentMessages, sessionNames, appendedEntries, ctx, tool, emit, resolveWorkflow, shutdown };
+	return { tools, commands, eventHandlers, sentMessages, sessionNames, cmuxCommands, appendedEntries, ctx, tool, emit, resolveWorkflow, shutdown };
 }
 
 const testFailures: Array<{ name: string; error: unknown }> = [];
@@ -1032,6 +1034,34 @@ Clarifications: none`;
 	assert.match(started.details.next.orchestratorInstruction, /implementation subagent/i);
 	const toolGuidelines = harness.tools.get("delivery_start")?.promptGuidelines?.join(" ") ?? "";
 	assert.match(toolGuidelines, /prepares a clear brief/i);
+});
+
+await runTest("cmux sidebar reflects delivery phases and clears when reset", async () => {
+	const originalWorkspace = process.env.CMUX_WORKSPACE_ID;
+	delete process.env.CMUX_WORKSPACE_ID;
+	const harness = createHarness();
+	const assertRunning = (index: number, phase: string) => {
+		const args = harness.cmuxCommands[index] ?? [];
+		assert.deepEqual(args.slice(0, 2), ["set-status", "delivery-sm"]);
+		assert.ok(args[2]?.startsWith(`running: ${phase} attempt 1/`), args.join(" "));
+		assert.deepEqual(args.slice(3), ["--color", "#0A84FF", "--workspace", "workspace:test"]);
+	};
+	try {
+		await harness.tool("delivery_status");
+		assert.deepEqual(harness.cmuxCommands, [], "cmux integration should be inert outside a cmux workspace");
+		process.env.CMUX_WORKSPACE_ID = "workspace:test";
+		await harness.tool("delivery_start", { task: "publish DSM phase status" });
+		assertRunning(0, "implement");
+		await harness.tool("delivery_report", { phase: "IMPLEMENT", verdict: "PASS", summary: "implementation complete" });
+		assertRunning(harness.cmuxCommands.length - 1, "verify");
+		await harness.tool("delivery_report", { phase: "VERIFY", verdict: "FAIL", summary: "waiting for a decision" });
+		assert.deepEqual(harness.cmuxCommands.at(-1), ["set-status", "delivery-sm", "waiting: verify", "--color", "#FF9F0A", "--workspace", "workspace:test"]);
+		await harness.tool("delivery_reset");
+		assert.deepEqual(harness.cmuxCommands.at(-1), ["clear-status", "delivery-sm", "--workspace", "workspace:test"]);
+	} finally {
+		if (originalWorkspace === undefined) delete process.env.CMUX_WORKSPACE_ID;
+		else process.env.CMUX_WORKSPACE_ID = originalWorkspace;
+	}
 });
 
 await runTest("delivery_start rejects bare references without creating state or files", async () => {

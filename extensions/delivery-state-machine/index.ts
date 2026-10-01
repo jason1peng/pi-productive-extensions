@@ -799,9 +799,46 @@ function statusText(state: DeliveryState): string {
 	return bits.join(" | ");
 }
 
-function updateUi(ctx: ExtensionContext, state: DeliveryState) {
+const CMUX_STATUS_KEY = "delivery-sm";
+type CmuxStatusCommandRunner = (args: string[]) => void;
+
+function runCmuxStatusCommand(args: string[]) {
+	execFileSync("cmux", args, { stdio: "ignore", timeout: 1_000 });
+}
+
+function tryCmuxStatusCommand(run: CmuxStatusCommandRunner, args: string[]) {
+	try {
+		run(args);
+	} catch {
+		// cmux is optional; status reporting must never block or fail a delivery.
+	}
+}
+
+function clearCmuxStatus(run: CmuxStatusCommandRunner = runCmuxStatusCommand) {
+	const workspace = process.env.CMUX_WORKSPACE_ID;
+	if (!workspace) return;
+	tryCmuxStatusCommand(run, ["clear-status", CMUX_STATUS_KEY, "--workspace", workspace]);
+}
+
+function updateCmuxStatus(state: DeliveryState, run: CmuxStatusCommandRunner = runCmuxStatusCommand) {
+	const workspace = process.env.CMUX_WORKSPACE_ID;
+	if (!workspace || state.phase === "IDLE") return;
+	if (!state.active || state.phase === "DONE" || state.phase === "STOPPED") {
+		clearCmuxStatus(run);
+		return;
+	}
+	const waiting = state.phase === "WAITING_DECISION";
+	const value = waiting
+		? `waiting: ${state.pendingIssue?.source ?? "decision"}`
+		: `running: ${phaseLabel(state)}`;
+	const color = waiting ? "#FF9F0A" : "#0A84FF";
+	tryCmuxStatusCommand(run, ["set-status", CMUX_STATUS_KEY, value, "--color", color, "--workspace", workspace]);
+}
+
+function updateUi(ctx: ExtensionContext, state: DeliveryState, runCmuxCommand: CmuxStatusCommandRunner = runCmuxStatusCommand) {
 	const displayState = cloneState(state);
 	refreshGitInfo(ctx, displayState);
+	updateCmuxStatus(displayState, runCmuxCommand);
 	if (!ctx.hasUI) return;
 	const theme = ctx.ui.theme;
 	const status = displayState.phase === "STOPPED"
@@ -2712,7 +2749,7 @@ function closeCommandAuthorized(state: DeliveryState): boolean {
 	return state.phase === "CLOSE" || state.phase === "RETRO" || state.phase === "DONE";
 }
 
-export default function deliveryStateMachine(pi: ExtensionAPI) {
+export default function deliveryStateMachine(pi: ExtensionAPI, runCmuxCommand: CmuxStatusCommandRunner = runCmuxStatusCommand) {
 	let state: DeliveryState = initialState();
 	let workflowLaunchPlan: DeliveryWorkflowPlan | undefined;
 	const workflowRegistrations = new Map<string, { dispose(): void }>();
@@ -2758,7 +2795,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 				}
 			}
 		}
-		updateUi(ctx, state);
+		updateUi(ctx, state, runCmuxCommand);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -2767,6 +2804,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 	});
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
 	pi.on("session_shutdown", async () => {
+		if (state.active) clearCmuxStatus(runCmuxCommand);
 		for (const registration of workflowRegistrations.values()) registration.dispose();
 		workflowRegistrations.clear();
 		workflowLaunchPlan = undefined;
@@ -2825,10 +2863,12 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 	pi.registerCommand("delivery-reset", {
 		description: "Reset delivery state machine",
 		handler: async (_args, ctx) => {
+			const hadActiveDelivery = state.active;
 			state = initialState();
 			workflowLaunchPlan = undefined;
 			persist();
-			updateUi(ctx, state);
+			if (hadActiveDelivery) clearCmuxStatus(runCmuxCommand);
+			updateUi(ctx, state, runCmuxCommand);
 			ctx.ui.notify("Delivery state reset", "info");
 		},
 	});
@@ -2873,7 +2913,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			const action = nextAction(state);
 			recordPlannedSteps(state, ctx, action);
 			persist();
-			updateUi(ctx, state);
+			updateUi(ctx, state, runCmuxCommand);
 			pi.setSessionName(`deliver: ${truncate(task, 50)}`);
 			return { content: [{ type: "text", text: boundedToolContent(renderDeliverPrompt(state)) }], details: { state: cloneState(state), next: toolNextAction(state) } };
 		},
@@ -2894,7 +2934,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			assertRecordedDeliveryRoot(ctx, state);
 			refreshGitInfo(ctx, state);
-			updateUi(ctx, state);
+			updateUi(ctx, state, runCmuxCommand);
 			const action = nextAction(state);
 			recordPlannedSteps(state, ctx, action);
 			persist();
@@ -2929,7 +2969,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			state = candidate;
 			workflowLaunchPlan = undefined;
 			persist();
-			updateUi(ctx, state);
+			updateUi(ctx, state, runCmuxCommand);
 			const snapshot = cloneState(state);
 			if (shouldShowSummary(snapshot)) formatDeliverySummary(snapshot, ctx);
 			const text = formatReportAcknowledgement(snapshot, reportParams);
@@ -2953,7 +2993,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 			applyDecision(state, params.decision as Decision, params.rationale);
 			synchronizeCloseReadiness(state);
 			persist();
-			updateUi(ctx, state);
+			updateUi(ctx, state, runCmuxCommand);
 			return { content: [{ type: "text", text: boundedToolContent(formatState(state)) }], details: { state: cloneState(state), next: toolNextAction(state) } };
 		},
 	});
@@ -2968,7 +3008,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			assertRecordedDeliveryRoot(ctx, state);
 			refreshGitInfo(ctx, state);
-			updateUi(ctx, state);
+			updateUi(ctx, state, runCmuxCommand);
 			const text = shouldShowSummary(state) ? formatDeliverySummary(state, ctx) : formatState(state);
 			const fullOutputPath = shouldShowSummary(state) && state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
 			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: cloneState(state), next: toolNextAction(state) } };
@@ -2983,7 +3023,7 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		promptGuidelines: ["Use delivery_summary when the user asks for delivery phase counts, summary report, or overall delivery cost."],
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			updateUi(ctx, state);
+			updateUi(ctx, state, runCmuxCommand);
 			const text = formatDeliverySummary(state, ctx);
 			const fullOutputPath = state.artifactDir ? path.join(state.artifactDir, "00-delivery-summary.md") : undefined;
 			return { content: [{ type: "text", text: boundedToolContent(text, fullOutputPath) }], details: { state: cloneState(state), usage: collectSessionUsage(ctx) } };
@@ -2996,10 +3036,12 @@ export default function deliveryStateMachine(pi: ExtensionAPI) {
 		description: "Reset the delivery state machine to idle.",
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const hadActiveDelivery = state.active;
 			state = initialState();
 			workflowLaunchPlan = undefined;
 			persist();
-			updateUi(ctx, state);
+			if (hadActiveDelivery) clearCmuxStatus(runCmuxCommand);
+			updateUi(ctx, state, runCmuxCommand);
 			return { content: [{ type: "text", text: "Delivery state reset." }], details: { state: cloneState(state) } };
 		},
 	});

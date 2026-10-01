@@ -99,6 +99,10 @@ Useful commands:
 
 The same workflow is available to agents through `delivery_start`, `delivery_next`, `delivery_report`, `delivery_decide`, `delivery_status`, `delivery_summary`, and `delivery_reset`.
 
+### Optional cmux sidebar status
+
+When DSM runs in a cmux terminal, it publishes `running: <phase>` or `waiting: <source>` to that workspace's sidebar status. The indicator clears on completion, stop, reset, or session shutdown. It uses cmux's installed CLI and `CMUX_WORKSPACE_ID`, and quietly does nothing outside cmux or when cmux is unavailable. This is a phase badge, not percentage or per-agent progress reporting.
+
 ## Feature showcase
 
 ### Independent parallel review
